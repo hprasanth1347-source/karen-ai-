@@ -302,8 +302,20 @@ export const DrivePage: React.FC = () => {
                     src={previewBlobUrl}
                     title={selectedFile.name}
                     className="w-full h-[70vh] border-2 border-ink bg-cream-50"
+                    sandbox="allow-scripts allow-same-origin allow-forms"
+                    onError={() => setPreviewBlobUrl(null)}
                   />
                 )
+              ) : previewTab === 'visual' && selectedFile.webViewLink ? (
+                <div className="flex flex-col items-center justify-center h-[70vh] gap-4">
+                  <p className="text-xs text-ink-muted text-center">In-app binary preview loaded via Drive viewer.</p>
+                  <iframe
+                    src={`https://drive.google.com/file/d/${selectedFile.id}/preview`}
+                    title={selectedFile.name}
+                    className="w-full h-[60vh] border-2 border-ink bg-cream-50"
+                    allow="autoplay"
+                  />
+                </div>
               ) : selectedFile.content ? (
                 <pre className="whitespace-pre-wrap font-sans leading-relaxed">{selectedFile.content}</pre>
               ) : (
