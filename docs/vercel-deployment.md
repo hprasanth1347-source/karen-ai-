@@ -1,6 +1,6 @@
 # Vercel deployment
 
-The root `vercel.json` configures one Vercel project with two services:
+The root `vercel.json` configures one Vercel project with two services and installs development dependencies for each build (the API build requires TypeScript):
 
 - `web` is public for all paths except `/api/*`.
 - `api` is public through the `/api/*` rewrite.
