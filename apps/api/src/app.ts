@@ -10,6 +10,8 @@ import { requestId } from './middleware/requestId.js';
 import router from './routes/index.js';
 
 const app = express();
+// Trust the first proxy (Vercel / reverse proxy) so req.ip reflects X-Forwarded-For.
+app.set('trust proxy', 1);
 
 const helmetMiddleware = (helmet as unknown as () => express.RequestHandler)();
 app.use(helmetMiddleware);
