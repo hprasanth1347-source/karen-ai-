@@ -116,8 +116,10 @@ router.post('/documents/analyze', aiLimit, validate(analyzeSchema), async (req, 
     targets = documentsStore.slice(0, 5).map((d) => ({ name: d.name, content: d.content }));
   }
 
-  if (targets.length === 0 && inlineDocs && inlineDocs.length > 0) {
-    targets = inlineDocs;
+  if (targets.length === 0 && Array.isArray(inlineDocs) && inlineDocs.length > 0) {
+    targets = inlineDocs
+      .filter((d): d is { name: string; content: string } => Boolean(d && typeof d.name === 'string' && typeof d.content === 'string'))
+      .map((d) => ({ name: String(d.name), content: String(d.content) }));
   }
 
   if (targets.length === 0) {
