@@ -619,7 +619,7 @@ export const InstagramPage: React.FC = () => {
         </div>
       )}
 
-      {/* 2. KAREN ULTRA INSTAGRAM VOICE COMMAND CENTER */}
+      {/* 2. Karen AI INSTAGRAM VOICE COMMAND CENTER */}
       <div className="bg-cream-100 border-3 border-ink p-5 shadow-brutal space-y-4">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b-2 border-ink pb-3">
           <div className="flex items-center gap-2">

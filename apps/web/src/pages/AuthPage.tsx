@@ -37,7 +37,7 @@ export const AuthPage: React.FC = () => {
         <div className="text-center space-y-2">
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-coral text-white font-extrabold text-sm border-2 border-ink shadow-brutal-sm">
             <Sparkles className="w-4 h-4" />
-            KAREN ULTRA 1.0
+            Karen AI
           </div>
           <h1 className="text-2xl font-black">Personal AI Operating System</h1>
           <p className="text-xs text-ink-muted">

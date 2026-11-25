@@ -12,7 +12,7 @@ import googleDriveRoutes from './googleDrive.js';
 import cronRoutes from './cron.js';
 import instagramRoutes from './instagram.js';
 import skillRoutes from './skills.js';
-import { telegramWebhook } from '../providers/telegram.js';
+import telegramRoutes from './telegram.js';
 
 const router = Router();
 
@@ -30,15 +30,12 @@ router.use('/v1', googleDriveRoutes);
 router.use('/v1', cronRoutes);
 router.use('/v1/instagram', instagramRoutes);
 router.use('/v1', skillRoutes);
+router.use('/v1', telegramRoutes);
 
 // Top-level aliases
 router.use('/', healthRoutes);
 router.use('/', integrationRoutes);
 router.use('/', aiRoutes);
 router.use('/instagram', instagramRoutes);
-
-// Telegram Webhooks
-router.post('/telegram/webhook', telegramWebhook);
-router.post('/api/telegram/webhook', telegramWebhook);
 
 export default router;

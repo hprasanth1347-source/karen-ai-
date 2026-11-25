@@ -7,7 +7,7 @@ export const LoadingPage: React.FC = () => {
       <div className="bg-white border-3 border-ink p-6 shadow-brutal flex items-center gap-3">
         <RefreshCw className="w-5 h-5 animate-spin text-coral" />
         <span className="text-xs font-mono font-bold tracking-wider">
-          LOADING KAREN ULTRA CORE...
+          LOADING Karen AI CORE...
         </span>
       </div>
     </div>

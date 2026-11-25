@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Send, Bot, User, RefreshCw, Mic, Volume2, ShieldAlert, Check, X } from 'lucide-react';
+import { Send, Bot, User, RefreshCw, Mic, Volume2, ShieldAlert, Check, X, History, Plus, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 
 type AIProvider = 'gemini' | 'groq' | 'copilot';
@@ -102,17 +102,27 @@ async function readApiData<T>(response: Response): Promise<T> {
   return payload.data;
 }
 
+interface SavedConversation {
+  id: string;
+  title: string;
+  channel: string;
+  message_count: number;
+  last_message_at: string;
+}
+
 export const AIChatPage: React.FC = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content:
-        'Vanakkam! Naan ungalloda Karen AI. help eadha chum  venum ma ? Ennala reminders poda mudiyum, emails draft panna mudiyum, documents analyze panna mudiyum, and memory save panna mudiyum.',
-      timestamp: 'Just now',
-      provider: 'Karen Brain',
-    },
-  ]);
+  const initialGreeting: ChatMessage = {
+    id: '1',
+    role: 'assistant',
+    content:
+      'Vanakkam! Naan ungalloda Karen AI. help eadha chum  venum ma ? Ennala reminders poda mudiyum, emails draft panna mudiyum, documents analyze panna mudiyum, and memory save panna mudiyum.',
+    timestamp: 'Just now',
+    provider: 'Karen Brain',
+  };
+  const [messages, setMessages] = useState<ChatMessage[]>([initialGreeting]);
+  const [conversations, setConversations] = useState<SavedConversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState<boolean>(true);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [provider, setProvider] = useState<AIProvider>('groq');
@@ -121,6 +131,65 @@ export const AIChatPage: React.FC = () => {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelError, setModelError] = useState('');
   const sendingInstagramMessages = useRef(new Set<string>());
+
+  const loadConversations = async () => {
+    try {
+      const res = await api.get<{ ok: boolean; data: SavedConversation[] }>('/ai/conversations');
+      if (Array.isArray(res.data?.data)) {
+        setConversations(res.data.data);
+      }
+    } catch {
+      // Ignore if backend is starting up
+    }
+  };
+
+  useEffect(() => {
+    void loadConversations();
+  }, []);
+
+  const handleNewChat = () => {
+    setActiveConversationId(null);
+    setMessages([initialGreeting]);
+  };
+
+  const handleSelectConversation = async (id: string) => {
+    try {
+      const res = await api.get<{
+        ok: boolean;
+        data: Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; created_at: string; ai_provider?: string; ai_model?: string }>;
+      }>(`/ai/conversations/${id}/messages`);
+      const rows = res.data?.data || [];
+      setActiveConversationId(id);
+      setMessages(
+        rows.length > 0
+          ? rows
+              .filter((r) => r.role === 'user' || r.role === 'assistant')
+              .map((r) => ({
+                id: r.id,
+                role: r.role as 'user' | 'assistant',
+                content: r.content,
+                timestamp: new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                provider: r.ai_provider ? `${r.ai_provider.toUpperCase()}${r.ai_model ? ` · ${r.ai_model}` : ''}` : undefined,
+              }))
+          : [initialGreeting]
+      );
+    } catch {
+      // Keep current messages if fetch fails
+    }
+  };
+
+  const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    try {
+      await api.delete(`/ai/conversations/${id}`);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (activeConversationId === id) {
+        handleNewChat();
+      }
+    } catch {
+      // Ignore error
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -426,6 +495,7 @@ export const AIChatPage: React.FC = () => {
           history: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
           provider,
           model: model || undefined,
+          conversationId: activeConversationId || undefined,
         }),
       });
 
@@ -433,9 +503,14 @@ export const AIChatPage: React.FC = () => {
         reply: string;
         provider: string;
         model: string;
+        conversationId?: string;
         pendingApproval?: { id: string; summary: string };
       }>(res);
       if (!result.reply) throw new Error('AI returned an empty response.');
+      if (result.conversationId) {
+        setActiveConversationId(result.conversationId);
+        void loadConversations();
+      }
 
       const botMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
@@ -527,10 +602,65 @@ export const AIChatPage: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7rem)] space-y-4">
+    <div className="flex flex-col lg:flex-row h-[calc(100vh-7rem)] gap-4">
+      {/* Chat Library Sidebar */}
+      <div className={`${libraryOpen ? 'w-full lg:w-64' : 'hidden'} bg-white border-3 border-ink shadow-brutal flex flex-col shrink-0 max-h-60 lg:max-h-full`}>
+        <div className="p-3 border-b-2 border-ink flex items-center justify-between bg-cream-50">
+          <span className="font-extrabold text-xs flex items-center gap-1.5">
+            <History className="w-4 h-4 text-teal" />
+            CHAT LIBRARY
+          </span>
+          <button
+            onClick={handleNewChat}
+            className="px-2 py-1 bg-teal text-white border border-ink font-mono text-[10px] font-bold flex items-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> NEW
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+          {conversations.length === 0 ? (
+            <div className="text-[11px] font-mono text-ink-muted p-2">
+              No saved chats yet. Start chatting to save automatically.
+            </div>
+          ) : (
+            conversations.map((conv) => (
+              <div
+                key={conv.id}
+                onClick={() => void handleSelectConversation(conv.id)}
+                className={`p-2 border-2 border-ink cursor-pointer flex items-center justify-between gap-2 text-xs ${
+                  activeConversationId === conv.id ? 'bg-yellow' : 'bg-cream-50 hover:bg-cream-100'
+                }`}
+              >
+                <div className="min-w-0">
+                  <div className="font-bold truncate">{conv.title || 'Untitled Chat'}</div>
+                  <div className="text-[10px] font-mono text-ink-muted">
+                    {conv.message_count} msgs
+                  </div>
+                </div>
+                <button
+                  onClick={(e) => void handleDeleteConversation(e, conv.id)}
+                  title="Delete chat"
+                  className="p-1 text-coral hover:bg-coral hover:text-white border border-ink shrink-0"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col space-y-4 min-w-0">
       {/* Header controls */}
       <div className="bg-white border-3 border-ink p-3 shadow-brutal flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setLibraryOpen((v) => !v)}
+            className="p-1.5 bg-cream-100 hover:bg-cream-200 border-2 border-ink shadow-brutal-sm"
+            title="Toggle Chat Library"
+          >
+            <History className="w-4 h-4" />
+          </button>
           <span className="p-1.5 bg-coral text-white border-2 border-ink shadow-brutal-sm">
             <Bot className="w-5 h-5" />
           </span>
@@ -751,6 +881,7 @@ export const AIChatPage: React.FC = () => {
           <span className="hidden sm:inline">Send</span>
         </button>
       </form>
+      </div>
     </div>
   );
 };

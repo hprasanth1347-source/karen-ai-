@@ -59,7 +59,7 @@ export const OverviewPage: React.FC = () => {
               <span>PERSONAL AI OPERATING SYSTEM</span>
             </div>
             <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-              Vanakkam! 👋 Naan Karen Ultra.
+              Vanakkam! 👋 Naan Karen AI.
             </h1>
             <p className="text-sm font-medium text-ink-muted mt-1 max-w-2xl">
               Ungaloda personal AI assistant. All communications, reminders, documents, and memory oru central secure dashboard-la manage pannunga.

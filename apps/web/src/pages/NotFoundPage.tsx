@@ -10,7 +10,7 @@ export const NotFoundPage: React.FC = () => {
       </div>
       <h1 className="text-2xl font-black">404 — Module Not Found</h1>
       <p className="text-xs text-ink-muted">
-        The requested module or command route does not exist in Karen Ultra.
+        The requested module or command route does not exist in Karen AI.
       </p>
       <Link to="/" className="btn-ghost inline-flex items-center gap-2 text-xs">
         <ArrowLeft className="w-4 h-4" />

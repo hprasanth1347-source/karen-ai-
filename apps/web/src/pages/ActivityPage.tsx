@@ -5,7 +5,7 @@ export const ActivityPage: React.FC = () => {
   const activities = [
     { id: '1', action: 'DATABASE_MIGRATION', actor: 'system', details: 'Applied 0002_karen_ultra_complete.sql with 22 tables & RLS', time: '2026-11-23 21:46 IST' },
     { id: '2', action: 'VOICE_POLICY_CHECK', actor: 'system', details: 'Confirmed female voice ID; male fallback blocked', time: '2026-11-23 21:30 IST' },
-    { id: '3', action: 'CORE_INIT', actor: 'owner', details: 'Karen Ultra Personal AI OS started in development mode', time: '2026-11-23 21:15 IST' },
+    { id: '3', action: 'CORE_INIT', actor: 'owner', details: 'Karen AI Personal AI OS started in development mode', time: '2026-11-23 21:15 IST' },
   ];
 
   return (

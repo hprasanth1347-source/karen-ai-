@@ -5,6 +5,11 @@ import { listTasks } from '../services/task.service.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
 import { getGoogleContextForPrompt, hydrateGoogleTokensFromRequest } from './googleDrive.js';
 import { sendTelegramMessage } from '../providers/telegram.js';
+import {
+  generateAndSendGreeting,
+  runCompanionTick,
+  type GreetingSlot,
+} from '../services/dailyCompanion.service.js';
 import { success, error } from '../utils/response.js';
 
 const router = Router();
@@ -58,6 +63,42 @@ router.post('/cron/morning-briefing', async (_req, res) => {
     return success(res, result);
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Morning briefing failed', 500);
+  }
+});
+
+/** Evaluate IST time and send any due Daily Companion greeting (idempotent) */
+router.get('/cron/companion-tick', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.header('authorization') !== `Bearer ${cronSecret}`) {
+    return error(res, 'Unauthorized cron invocation', 401, 'UNAUTHORIZED');
+  }
+  try {
+    const result = await runCompanionTick();
+    return success(res, result);
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Companion tick failed', 500);
+  }
+});
+
+router.post('/cron/companion-tick', async (_req, res) => {
+  try {
+    const result = await runCompanionTick();
+    return success(res, result);
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Companion tick failed', 500);
+  }
+});
+
+router.post('/cron/greeting/:slot', async (req, res) => {
+  const slot = String(req.params.slot) as GreetingSlot;
+  if (!['morning', 'afternoon', 'evening', 'night'].includes(slot)) {
+    return error(res, 'Invalid greeting slot', 400);
+  }
+  try {
+    const result = await generateAndSendGreeting(slot, { force: Boolean(req.body?.force) });
+    return success(res, result);
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Greeting trigger failed', 500);
   }
 });
 

@@ -23,7 +23,7 @@ class AppErrorBoundary extends React.Component<
       return (
         <div className="min-h-screen bg-cream flex items-center justify-center p-6 font-sans text-ink">
           <div className="max-w-lg w-full bg-white border-3 border-ink p-6 shadow-brutal space-y-4">
-            <h1 className="text-xl font-black text-coral">KAREN ULTRA — RECOVERY MODE</h1>
+            <h1 className="text-xl font-black text-coral">Karen AI — RECOVERY MODE</h1>
             <p className="text-xs font-mono bg-cream-100 border-2 border-ink p-3 break-words">
               {this.state.message}
             </p>

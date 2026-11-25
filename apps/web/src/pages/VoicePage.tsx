@@ -114,7 +114,7 @@ export const VoicePage: React.FC = () => {
         <div className="text-xs space-y-1">
           <span className="font-extrabold text-coral uppercase block">Mandatory Voice Policy Lock:</span>
           <p className="text-ink/80 text-[11px] leading-relaxed">
-            Karen Ultra only speaks with an owner-approved ElevenLabs female voice ID. If ElevenLabs is unconfigured, Karen stays in text mode rather than using a generic browser fallback.
+            Karen AI only speaks with an owner-approved ElevenLabs female voice ID. If ElevenLabs is unconfigured, Karen stays in text mode rather than using a generic browser fallback.
           </p>
         </div>
       </div>
