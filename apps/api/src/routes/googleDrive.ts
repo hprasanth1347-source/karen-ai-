@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { config } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
+import { aiLimit } from '../middleware/rateLimit.js';
+import { generateAIReply } from '../services/ai.service.js';
 import { logger } from '../config/logger.js';
 import { success, error } from '../utils/response.js';
 
@@ -32,14 +34,15 @@ function getRedirectUri(req: { headers: Record<string, string | string[] | undef
   return config.GOOGLE_REDIRECT_URI;
 }
 
-function buildGoogleAuthUrl(redirectUri: string): string {
+function buildGoogleAuthUrl(redirectUri: string, state: 'drive' | 'gmail' = 'drive'): string {
   const params = new URLSearchParams({
     client_id: config.GOOGLE_CLIENT_ID,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'https://www.googleapis.com/auth/drive.readonly',
+    scope: 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly',
     access_type: 'offline',
     prompt: 'consent',
+    state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
@@ -79,11 +82,12 @@ async function getValidAccessToken(): Promise<string | null> {
 router.get('/auth/google/callback', async (req, res) => {
   const code = typeof req.query.code === 'string' ? req.query.code : '';
   const oauthError = typeof req.query.error === 'string' ? req.query.error : '';
+  const targetPage = req.query.state === 'gmail' ? '/gmail' : '/drive';
   if (oauthError || !code) {
-    return res.redirect(`/drive?error=${encodeURIComponent(oauthError || 'missing_code')}`);
+    return res.redirect(`${targetPage}?error=${encodeURIComponent(oauthError || 'missing_code')}`);
   }
   if (!isGoogleConfigured()) {
-    return res.redirect('/drive?error=google_not_configured');
+    return res.redirect(`${targetPage}?error=google_not_configured`);
   }
 
   try {
@@ -103,7 +107,7 @@ router.get('/auth/google/callback', async (req, res) => {
     const json = await tokenRes.json();
     if (!tokenRes.ok || !json.access_token) {
       logger.warn('Google OAuth token exchange failed', json);
-      return res.redirect(`/drive?error=${encodeURIComponent(json.error_description || json.error || 'token_exchange_failed')}`);
+      return res.redirect(`${targetPage}?error=${encodeURIComponent(json.error_description || json.error || 'token_exchange_failed')}`);
     }
 
     driveTokens = {
@@ -111,10 +115,10 @@ router.get('/auth/google/callback', async (req, res) => {
       refreshToken: json.refresh_token || driveTokens?.refreshToken || '',
       expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
     };
-    return res.redirect('/drive?connected=1');
+    return res.redirect(`${targetPage}?connected=1`);
   } catch (err) {
     logger.error('Google OAuth callback error:', err);
-    return res.redirect('/drive?error=oauth_callback_error');
+    return res.redirect(`${targetPage}?error=oauth_callback_error`);
   }
 });
 
@@ -137,8 +141,9 @@ router.get('/drive/auth-url', (req, res) => {
     return error(res, 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not configured in Vercel.', 400, 'GOOGLE_NOT_CONFIGURED');
   }
   const redirectUri = getRedirectUri(req);
+  const state = req.query.source === 'gmail' ? 'gmail' : 'drive';
   return success(res, {
-    url: buildGoogleAuthUrl(redirectUri),
+    url: buildGoogleAuthUrl(redirectUri, state),
     redirectUri,
   });
 });
@@ -178,6 +183,83 @@ router.get('/drive/files', async (req, res) => {
     return success(res, json.files || []);
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Failed to list Drive files', 502);
+  }
+});
+
+router.use('/gmail', (req, res, next) => {
+  if (config.NODE_ENV !== 'production') {
+    return next();
+  }
+  return requireAuth(req, res, next);
+});
+
+async function fetchRecentGmailMessages(token: string) {
+  const listRes = await fetch(
+    'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const listJson = await listRes.json();
+  if (!listRes.ok) {
+    throw new Error(listJson.error?.message || 'Gmail API error');
+  }
+
+  const refs: Array<{ id: string }> = listJson.messages || [];
+  const details = await Promise.all(
+    refs.map(async ({ id }) => {
+      const msgRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const msgJson = await msgRes.json();
+      const headers: Array<{ name: string; value: string }> = msgJson.payload?.headers || [];
+      const getHeader = (name: string) =>
+        headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+
+      return {
+        id,
+        subject: getHeader('Subject') || '(No Subject)',
+        from: getHeader('From') || 'Unknown sender',
+        date: getHeader('Date') || '',
+        snippet: msgJson.snippet || '',
+      };
+    })
+  );
+  return details;
+}
+
+router.get('/gmail/messages', async (_req, res) => {
+  const token = await getValidAccessToken();
+  if (!token) {
+    return error(res, 'Gmail is not connected yet. Click "Connect Google / Gmail" first.', 401, 'GMAIL_NOT_CONNECTED');
+  }
+  try {
+    const messages = await fetchRecentGmailMessages(token);
+    return success(res, messages);
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Failed to fetch Gmail messages', 502);
+  }
+});
+
+router.post('/gmail/digest', aiLimit, async (_req, res) => {
+  const token = await getValidAccessToken();
+  if (!token) {
+    return error(res, 'Gmail is not connected yet.', 401, 'GMAIL_NOT_CONNECTED');
+  }
+  try {
+    const messages = await fetchRecentGmailMessages(token);
+    if (messages.length === 0) {
+      return success(res, { digest: 'No recent emails found in your inbox.' });
+    }
+    const summaryInput = messages
+      .map((m, idx) => `${idx + 1}. From: ${m.from} | Subject: ${m.subject} | Date: ${m.date}\n   Snippet: ${m.snippet}`)
+      .join('\n');
+    const result = await generateAIReply(
+      `Summarize these recent emails into a crisp Daily Digest with key deadlines, bills, or action items:\n\n${summaryInput}`,
+      []
+    );
+    return success(res, { digest: result.reply, provider: result.provider, model: result.model });
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Failed to generate email digest', 502);
   }
 });
 

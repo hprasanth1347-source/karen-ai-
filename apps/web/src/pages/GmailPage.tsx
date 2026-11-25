@@ -1,7 +1,91 @@
-import React from 'react';
-import { Mail, CheckCircle2, AlertCircle, FileText, Send, Sparkles } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Mail, Sparkles, RefreshCw, Loader2 } from 'lucide-react';
+import { api } from '../lib/api';
+
+interface EmailSummary {
+  id: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+}
 
 export const GmailPage: React.FC = () => {
+  const [configured, setConfigured] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [digestLoading, setDigestLoading] = useState(false);
+  const [emails, setEmails] = useState<EmailSummary[]>([]);
+  const [digest, setDigest] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchEmails = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.get('/gmail/messages');
+      setEmails(res.data?.data ?? []);
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Could not fetch Gmail messages.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const refreshStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/drive/status');
+      const status = res.data?.data;
+      setConfigured(Boolean(status?.configured));
+      setConnected(Boolean(status?.connected));
+      if (status?.connected) {
+        await fetchEmails();
+      } else {
+        setLoading(false);
+      }
+    } catch (err: any) {
+      setError(
+        err?.response?.status === 401
+          ? 'Sign in at /auth first to connect and view Gmail.'
+          : err?.response?.data?.error || 'Failed to check Gmail status.'
+      );
+      setLoading(false);
+    }
+  }, [fetchEmails]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauthErr = params.get('error');
+    if (oauthErr) setError(`Google OAuth error: ${oauthErr}`);
+    refreshStatus();
+  }, [refreshStatus]);
+
+  const handleConnect = async () => {
+    setError(null);
+    try {
+      const res = await api.get('/drive/auth-url', { params: { source: 'gmail' } });
+      if (res.data?.data?.url) {
+        window.location.href = res.data.data.url;
+      }
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Could not start Google OAuth.');
+    }
+  };
+
+  const handleRunDigest = async () => {
+    setDigestLoading(true);
+    setError(null);
+    try {
+      const res = await api.post('/gmail/digest');
+      setDigest(res.data?.data?.digest || 'No digest generated.');
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Failed to run daily digest.');
+    } finally {
+      setDigestLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-white border-3 border-ink p-5 shadow-brutal flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -12,63 +96,91 @@ export const GmailPage: React.FC = () => {
           </div>
           <h1 className="text-xl md:text-2xl font-black">Gmail Intelligence & Daily Digest</h1>
           <p className="text-xs text-ink-muted mt-1 max-w-xl">
-            Read, categorize, summarize emails, extract action deadlines, and prepare AI draft replies. Emails are never silently sent without explicit owner approval.
+            Read your latest Gmail messages, summarize inbox activity, and extract deadlines. Read-only access—emails are never sent silently.
           </p>
         </div>
-        <div className="flex gap-2">
-          <button className="btn-ghost text-xs">Run Daily Digest</button>
-          <button className="btn-coral text-xs">Fetch Latest Emails</button>
+        <div className="flex flex-wrap gap-2">
+          {connected ? (
+            <>
+              <button
+                type="button"
+                disabled={digestLoading}
+                onClick={handleRunDigest}
+                className="btn-ghost text-xs flex items-center gap-1.5 disabled:opacity-60"
+              >
+                {digestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {digestLoading ? 'Summarizing...' : 'Run Daily Digest'}
+              </button>
+              <button
+                type="button"
+                onClick={fetchEmails}
+                className="btn-coral text-xs flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Fetch Latest Emails
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={handleConnect}
+              className="btn-coral text-xs flex items-center gap-1.5"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              Connect Gmail
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {['Important', 'Personal', 'Work', 'Bills & Receipts', 'Promotions', 'Action Required'].map((cat, i) => (
-          <div key={i} className="bg-white border-2 border-ink p-3 shadow-brutal-sm flex justify-between items-center">
-            <span className="font-bold text-xs">{cat}</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 border border-ink bg-cream-100">
-              {i === 0 ? '3 Unread' : i === 3 ? '1 Bill Due' : '0 Pending'}
-            </span>
-          </div>
-        ))}
-      </div>
+      {error && (
+        <div className="p-3 border-2 border-ink bg-coral/15 text-coral text-xs font-bold">
+          {error}
+        </div>
+      )}
+
+      {digest && (
+        <div className="bg-yellow/20 border-3 border-ink p-4 shadow-brutal space-y-2 text-xs">
+          <div className="font-extrabold font-mono text-coral">KAREN DAILY EMAIL DIGEST</div>
+          <p className="whitespace-pre-wrap leading-relaxed">{digest}</p>
+        </div>
+      )}
 
       <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-4">
         <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2 flex items-center justify-between">
-          <span>EMAIL DIGEST & EXTRACTED DEADLINES</span>
-          <span className="text-[10px] font-mono text-ink-muted">AI CLASSIFIED</span>
+          <span>RECENT INBOX MESSAGES ({emails.length})</span>
+          <span className="text-[10px] font-mono text-ink-muted">
+            {connected ? 'CONNECTED' : configured ? 'NOT CONNECTED' : 'MISSING GOOGLE OAUTH ENV'}
+          </span>
         </h3>
 
-        <div className="space-y-3">
-          <div className="p-3 border-2 border-ink bg-cream-50 space-y-2 text-xs">
-            <div className="flex items-center justify-between font-bold">
-              <span className="text-coral">Amazon Web Services • Cloud Billing Invoice</span>
-              <span className="text-[10px] font-mono text-ink-muted">Today 09:15 AM</span>
-            </div>
-            <p className="text-ink/80 text-[11px]">
-              Summary: Monthly cloud bill generated: \$14.20. Payment will be automatically deducted on 25th Nov.
-            </p>
-            <div className="flex items-center gap-2 pt-1">
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-mint/40 border border-ink">
-                ACTION: Logged to Finance Memory
-              </span>
-            </div>
+        {loading ? (
+          <div className="text-xs font-mono flex items-center gap-2 py-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading Gmail inbox...
           </div>
-
-          <div className="p-3 border-2 border-ink bg-cream-50 space-y-2 text-xs">
-            <div className="flex items-center justify-between font-bold">
-              <span className="text-ink">University Coordinator • Project Review Schedule</span>
-              <span className="text-[10px] font-mono text-ink-muted">Yesterday 16:40 PM</span>
-            </div>
-            <p className="text-ink/80 text-[11px]">
-              Summary: Final code review deadline fixed for Friday 3:00 PM IST. Documentation submission required.
-            </p>
-            <div className="flex items-center gap-2 pt-1">
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-yellow/40 border border-ink">
-                DEADLINE: Fri 15:00 IST • Task Created
-              </span>
-            </div>
+        ) : !connected ? (
+          <p className="text-xs text-ink-muted">
+            {configured
+              ? 'Click "Connect Gmail" above to authorize read-only Gmail + Drive access with one Google sign-in.'
+              : 'Add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in Vercel Environment Variables and redeploy.'}
+          </p>
+        ) : emails.length === 0 ? (
+          <p className="text-xs text-ink-muted">No recent emails found.</p>
+        ) : (
+          <div className="space-y-3">
+            {emails.map((email) => (
+              <div key={email.id} className="p-3 border-2 border-ink bg-cream-50 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2 font-bold">
+                  <span className="text-coral truncate">{email.subject}</span>
+                  <span className="text-[10px] font-mono text-ink-muted shrink-0">{email.date}</span>
+                </div>
+                <div className="text-[11px] font-mono text-ink-muted truncate">{email.from}</div>
+                <p className="text-ink/80 text-[11px]">{email.snippet}</p>
+              </div>
+            ))}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
