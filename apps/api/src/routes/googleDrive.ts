@@ -205,7 +205,7 @@ async function fetchRecentGmailMessages(token: string) {
 
   const refs: Array<{ id: string }> = listJson.messages || [];
   const details = await Promise.all(
-    refs.map(async ({ id }) => {
+    refs.slice(0, 10).map(async ({ id }) => {
       const msgRes = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -262,5 +262,58 @@ router.post('/gmail/digest', aiLimit, async (_req, res) => {
     return error(res, err instanceof Error ? err.message : 'Failed to generate email digest', 502);
   }
 });
+
+export async function getGoogleContextForPrompt(prompt: string): Promise<string> {
+  const wantsEmail = /\b(email|emails|mail|gmail|inbox|message|bill|invoice|schedule|deadline)\b/i.test(prompt);
+  const wantsDrive = /\b(drive|file|files|document|documents|doc|pdf|folder|notes)\b/i.test(prompt);
+  if (!wantsEmail && !wantsDrive) return '';
+
+  const token = await getValidAccessToken();
+  if (!token) return '';
+
+  const sections: string[] = [];
+
+  if (wantsDrive) {
+    try {
+      const params = new URLSearchParams({
+        q: 'trashed = false',
+        pageSize: '8',
+        orderBy: 'modifiedTime desc',
+        fields: 'files(name,mimeType,modifiedTime,webViewLink)',
+      });
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const files: Array<{ name: string; modifiedTime?: string }> = json.files || [];
+        if (files.length > 0) {
+          sections.push(
+            `Recent Google Drive Files:\n${files.map((f, i) => `${i + 1}. ${f.name}`).join('\n')}`
+          );
+        }
+      }
+    } catch {
+      // Ignore Drive context errors so chat still responds
+    }
+  }
+
+  if (wantsEmail) {
+    try {
+      const messages = (await fetchRecentGmailMessages(token)).slice(0, 6);
+      if (messages.length > 0) {
+        sections.push(
+          `Recent Gmail Messages:\n${messages
+            .map((m, i) => `${i + 1}. From: ${m.from} | Subject: ${m.subject} | Snippet: ${m.snippet}`)
+            .join('\n')}`
+        );
+      }
+    } catch {
+      // Ignore Gmail context errors so chat still responds
+    }
+  }
+
+  return sections.length > 0 ? `\n\n${sections.join('\n\n')}` : '';
+}
 
 export default router;
