@@ -18,11 +18,16 @@ api.interceptors.request.use(async (config) => {
   return config
 })
 
-// Handle 401 → sign out
+// Handle 401 → sign out only for actual session auth failures
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
-    if (error.response?.status === 401) {
+    const code = error.response?.data?.code
+    if (
+      error.response?.status === 401 &&
+      code !== 'DRIVE_NOT_CONNECTED' &&
+      code !== 'GMAIL_NOT_CONNECTED'
+    ) {
       if (supabase) await supabase.auth.signOut()
       window.location.href = '/auth'
     }

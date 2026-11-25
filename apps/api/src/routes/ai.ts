@@ -10,6 +10,7 @@ import {
   type AIProvider,
 } from '../services/ai.service.js';
 import { voiceStatus, synthesizeFemaleVoice } from '../voice/policy.js';
+import { hydrateGoogleTokensFromRequest } from './googleDrive.js';
 import { success, error } from '../utils/response.js';
 
 const router = Router();
@@ -52,6 +53,7 @@ router.get('/ai/models', aiLimit, async (req, res) => {
 });
 
 router.post('/ai/chat', aiLimit, validate(chatSchema), async (req, res) => {
+  hydrateGoogleTokensFromRequest(req);
   try {
     const result = await generateAIReply(
       req.body.message,

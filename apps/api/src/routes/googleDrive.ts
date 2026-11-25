@@ -1,4 +1,5 @@
-import { Router } from 'express';
+import crypto from 'node:crypto';
+import { Router, type Request } from 'express';
 import { config } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { aiLimit } from '../middleware/rateLimit.js';
@@ -12,8 +13,57 @@ interface DriveTokenState {
   expiresAt: number;
 }
 
+const GOOGLE_COOKIE_NAME = 'karen_google_oauth';
 let driveTokens: DriveTokenState | null = null;
 const router = Router();
+
+function getCookieCipherKey(): Buffer {
+  const secret = config.ENCRYPTION_KEY || config.APP_SECRET || 'karen-local-oauth-fallback-key';
+  return crypto.createHash('sha256').update(secret).digest();
+}
+
+function encryptTokenCookie(tokens: DriveTokenState): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', getCookieCipherKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(tokens), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]).toString('base64url');
+}
+
+function decryptTokenCookie(raw?: string): DriveTokenState | null {
+  if (!raw) return null;
+  try {
+    const buf = Buffer.from(raw, 'base64url');
+    if (buf.length < 29) return null;
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(12, 28);
+    const data = buf.subarray(28);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', getCookieCipherKey(), iv);
+    decipher.setAuthTag(tag);
+    const json = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+    const parsed = JSON.parse(json) as DriveTokenState;
+    return parsed?.accessToken ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readCookieValue(req: Request, name: string): string | undefined {
+  const header = req.headers.cookie;
+  if (!header) return undefined;
+  for (const part of header.split(';')) {
+    const [k, ...rest] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(rest.join('='));
+  }
+  return undefined;
+}
+
+export function hydrateGoogleTokensFromRequest(req: Request): void {
+  const fromCookie = decryptTokenCookie(readCookieValue(req, GOOGLE_COOKIE_NAME));
+  if (fromCookie) {
+    driveTokens = fromCookie;
+  }
+}
 
 function isGoogleConfigured(): boolean {
   return Boolean(config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET);
@@ -51,7 +101,10 @@ function buildGoogleAuthUrl(redirectUri: string, state: 'drive' | 'gmail' = 'dri
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-async function getValidAccessToken(): Promise<string | null> {
+async function getValidAccessToken(req?: Request): Promise<string | null> {
+  if (req) {
+    hydrateGoogleTokensFromRequest(req);
+  }
   if (!driveTokens) return null;
   if (Date.now() < driveTokens.expiresAt - 60_000) {
     return driveTokens.accessToken;
@@ -119,6 +172,13 @@ router.get('/auth/google/callback', async (req, res) => {
       refreshToken: json.refresh_token || driveTokens?.refreshToken || '',
       expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
     };
+    res.cookie(GOOGLE_COOKIE_NAME, encryptTokenCookie(driveTokens), {
+      httpOnly: true,
+      secure: config.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
     return res.redirect(`${targetPage}?connected=1`);
   } catch (err) {
     logger.error('Google OAuth callback error:', err);
@@ -133,7 +193,8 @@ router.use('/drive', (req, res, next) => {
   return requireAuth(req, res, next);
 });
 
-router.get('/drive/status', (_req, res) => {
+router.get('/drive/status', (req, res) => {
+  hydrateGoogleTokensFromRequest(req);
   return success(res, {
     configured: isGoogleConfigured(),
     connected: Boolean(driveTokens?.accessToken),
@@ -154,11 +215,12 @@ router.get('/drive/auth-url', (req, res) => {
 
 router.post('/drive/disconnect', (_req, res) => {
   driveTokens = null;
+  res.clearCookie(GOOGLE_COOKIE_NAME, { path: '/' });
   return success(res, { disconnected: true });
 });
 
 router.get('/drive/files', async (req, res) => {
-  const token = await getValidAccessToken();
+  const token = await getValidAccessToken(req);
   if (!token) {
     return error(res, 'Google Drive is not connected yet.', 401, 'DRIVE_NOT_CONNECTED');
   }
@@ -323,7 +385,7 @@ async function fetchDriveFilePreview(
 }
 
 router.get('/drive/files/:id/content', async (req, res) => {
-  const token = await getValidAccessToken();
+  const token = await getValidAccessToken(req);
   if (!token) {
     return error(res, 'Google Drive is not connected yet.', 401, 'DRIVE_NOT_CONNECTED');
   }
@@ -336,7 +398,7 @@ router.get('/drive/files/:id/content', async (req, res) => {
 });
 
 router.get('/gmail/messages/:id', async (req, res) => {
-  const token = await getValidAccessToken();
+  const token = await getValidAccessToken(req);
   if (!token) {
     return error(res, 'Gmail is not connected yet.', 401, 'GMAIL_NOT_CONNECTED');
   }
@@ -488,7 +550,7 @@ export async function sendGmailMessage(
 }
 
 router.get('/gmail/messages', async (req, res) => {
-  const token = await getValidAccessToken();
+  const token = await getValidAccessToken(req);
   if (!token) {
     return error(res, 'Gmail is not connected yet. Click "Connect Google / Gmail" first.', 401, 'GMAIL_NOT_CONNECTED');
   }
@@ -503,6 +565,7 @@ router.get('/gmail/messages', async (req, res) => {
 });
 
 router.post('/gmail/send', async (req, res) => {
+  hydrateGoogleTokensFromRequest(req);
   const { to, subject, body } = req.body || {};
   if (!to || !subject || !body) {
     return error(res, 'to, subject, and body are required', 400);
@@ -514,8 +577,8 @@ router.post('/gmail/send', async (req, res) => {
   return success(res, { sent: true });
 });
 
-router.post('/gmail/digest', aiLimit, async (_req, res) => {
-  const token = await getValidAccessToken();
+router.post('/gmail/digest', aiLimit, async (req, res) => {
+  const token = await getValidAccessToken(req);
   if (!token) {
     return error(res, 'Gmail is not connected yet.', 401, 'GMAIL_NOT_CONNECTED');
   }
