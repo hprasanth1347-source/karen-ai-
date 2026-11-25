@@ -32,6 +32,7 @@ import {
   detectLoveModeDeactivation,
   incrementLoveModeMessageCount,
 } from '../services/loveMode.service.js';
+import { executeInstagramVoiceCommand } from './instagram.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -365,6 +366,22 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
         ? `✅ Instagram connected (Account: @${config.INSTAGRAM_PAGE_ID || 'owner'}).`
         : '❌ Instagram not configured. Add INSTAGRAM_ACCESS_TOKEN in Vercel env vars.';
 
+    case '/insta': {
+      if (!config.INSTAGRAM_ACCESS_TOKEN) {
+        return '❌ Instagram not connected. Add INSTAGRAM_ACCESS_TOKEN in Vercel env vars.';
+      }
+      if (!args.trim()) {
+        return `📸 *Instagram Commands*\n\nUsage:\n• \`/insta send raghul I am on the way\`\n• \`/insta raghul ku hello solu\`\n• \`/insta check messages\`\n• \`/insta list posts\`\n\nOr just type naturally:\n"send message to raghul hey"\n"raghul ku message anupu hello"`;
+      }
+      try {
+        const result = await executeInstagramVoiceCommand(args.trim());
+        return result.replyMessage || (result.success ? '✅ Done!' : '❌ Instagram command failed.');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        return `❌ Instagram error: ${msg}`;
+      }
+    }
+
     case '/drive':
       return config.GOOGLE_CLIENT_ID
         ? '✅ Google Drive OAuth is configured. Connect at karen-ai-me.vercel.app/drive'
@@ -506,8 +523,25 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
         // Full AI conversation — no Google hydration needed here (only for /digest or Drive commands)
         const history = getHistory(chatId);
 
-        // ── Love Mode detection ────────────────────────────────────────────
-        if (detectLoveModeDeactivation(text)) {
+        // ── Instagram natural language detection ──────────────────────────────
+        const isInstagramCommand = config.INSTAGRAM_ACCESS_TOKEN && (
+          /\b(send\s+(msg|message|dm)\s+to|dm|tell)\s+\w/i.test(text) ||
+          /\b\w+\s+(ku|kku)\s+(msg|message|anupu|solu)\b/i.test(text) ||
+          /\b(check|read)\s+(my\s+)?(instagram\s+)?(dms?|messages?|inbox)\b/i.test(text) ||
+          /\binsta(gram)?\s+(dm|message|send)\b/i.test(text)
+        );
+
+        if (isInstagramCommand) {
+          try {
+            const result = await executeInstagramVoiceCommand(text);
+            reply = result.replyMessage || (result.success ? '✅ Done!' : '❌ Instagram action failed.');
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Unknown error';
+            reply = `❌ Instagram error: ${msg}`;
+          }
+        }
+        // ── Love Mode detection ──────────────────────────────────────────────
+        else if (detectLoveModeDeactivation(text)) {
           await setLoveModeActive(chatId, false);
           reply = `Seri da ❤️ Love Mode off. But whenever you need to talk, I'm here. Take care of yourself. 💙`;
         } else {
@@ -774,6 +808,7 @@ export async function setTelegramCommands(): Promise<void> {
       { command: 'lonely', description: 'I need company right now' },
       { command: 'endlove', description: 'Exit Love Mode, back to normal' },
       { command: 'normal', description: 'Switch back to normal mode' },
+      { command: 'insta', description: 'Instagram: /insta send raghul hello' },
     ],
   });
 }

@@ -10,7 +10,7 @@ import {
 import { getGoogleContextForPrompt, sendGmailMessage } from '../routes/googleDrive.js';
 import { getDocumentsContextPrompt } from '../routes/documents.js';
 import { addTask, getTasksContextPrompt, type TaskPriority } from './task.service.js';
-import { getInstagramConversations, sendInstagramMessage } from '../providers/instagram.js';
+import { sendInstagramMessage, resolveInstagramRecipient } from '../providers/instagram.js';
 import {
   createApprovalRequest,
   isSensitiveSend,
@@ -152,19 +152,17 @@ async function finalizeAIReply(
         cleaned += `\n\n⚠ Approval required before sending sensitive Instagram DM to @${targetUser}. Click "Approve & Send" below to confirm.`;
       } else {
         try {
-          const threads = await getInstagramConversations();
-          const found = threads.find(
-            (t) =>
-              t.participant?.username?.toLowerCase().includes(targetUser) ||
-              t.participant?.id === targetUser
-          );
-          if (found?.participant?.id) {
-            const res = await sendInstagramMessage(found.participant.id, msg);
-            if (!res.success) {
-              cleaned += `\n\n(Note: Instagram DM to @${targetUser} failed: ${res.error})`;
+          // Use resolveInstagramRecipient: checks KNOWN_CONTACTS dict first, then live threads
+          const recipient = await resolveInstagramRecipient(targetUser);
+          if (recipient?.id) {
+            const res = await sendInstagramMessage(recipient.id, msg);
+            if (res.success) {
+              cleaned += `\n\n✅ Instagram DM sent to @${recipient.username}.`;
+            } else {
+              cleaned += `\n\n(Note: Instagram DM to @${recipient.username} failed: ${res.error})`;
             }
           } else {
-            cleaned += `\n\n(Note: Could not find an active Instagram DM thread for @${targetUser}.)`;
+            cleaned += `\n\n(Note: Could not find Instagram account for "${targetUser}". Try the exact handle like "@_.raghul._.15".)`;
           }
         } catch (err) {
           logger.warn('AI chat Instagram send failed', { err });
