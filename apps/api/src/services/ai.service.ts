@@ -1,14 +1,16 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
-import { getMemoryContextPrompt } from './memory.service.js';
+import { addMemory, getMemoryContextPrompt, type MemoryCategory } from './memory.service.js';
 import {
   formatSearchContext,
   isWebSearchConfigured,
   searchWebWithGoogle,
   shouldSearchWeb,
 } from './search.service.js';
-import { getGoogleContextForPrompt } from '../routes/googleDrive.js';
+import { getGoogleContextForPrompt, sendGmailMessage } from '../routes/googleDrive.js';
+import { getDocumentsContextPrompt } from '../routes/documents.js';
 import { addTask, getTasksContextPrompt, type TaskPriority } from './task.service.js';
+import { getInstagramConversations, sendInstagramMessage } from '../providers/instagram.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -80,10 +82,10 @@ async function finalizeAIReply(
   provider: string,
   model: string
 ): Promise<{ reply: string; provider: string; model: string }> {
-  const taskTagRegex = /\[\[TASK:\s*([^|\]]+?)(?:\s*\|\s*([^|\]]*?))?(?:\s*\|\s*(low|medium|high|urgent))?\s*\]\]/gi;
   let cleaned = rawReply;
-  const matches = [...rawReply.matchAll(taskTagRegex)];
-  for (const match of matches) {
+
+  const taskTagRegex = /\[\[TASK:\s*([^|\]]+?)(?:\s*\|\s*([^|\]]*?))?(?:\s*\|\s*(low|medium|high|urgent))?\s*\]\]/gi;
+  for (const match of rawReply.matchAll(taskTagRegex)) {
     const title = match[1]?.trim();
     const due = match[2]?.trim() || undefined;
     const priority = (match[3]?.toLowerCase() as TaskPriority | undefined) || 'medium';
@@ -92,6 +94,58 @@ async function finalizeAIReply(
     }
     cleaned = cleaned.replace(match[0], '').trim();
   }
+
+  const memoryTagRegex = /\[\[MEMORY:\s*([^|\]]+?)(?:\s*\|\s*(personal|work|preference|fact|instruction|reminder|other))?\s*\]\]/gi;
+  for (const match of rawReply.matchAll(memoryTagRegex)) {
+    const content = match[1]?.trim();
+    const category = (match[2]?.toLowerCase() as MemoryCategory | undefined) || 'personal';
+    if (content) {
+      await addMemory(content, category);
+    }
+    cleaned = cleaned.replace(match[0], '').trim();
+  }
+
+  const emailTagRegex = /\[\[SEND_EMAIL:\s*([^|\]]+?)\s*\|\s*([^|\]]+?)\s*\|\s*([^\]]+?)\s*\]\]/gi;
+  for (const match of rawReply.matchAll(emailTagRegex)) {
+    const to = match[1]?.trim();
+    const subject = match[2]?.trim();
+    const body = match[3]?.trim();
+    if (to && subject && body) {
+      const res = await sendGmailMessage(to, subject, body);
+      if (!res.success) {
+        cleaned += `\n\n(Note: Email to ${to} could not be sent: ${res.error})`;
+      }
+    }
+    cleaned = cleaned.replace(match[0], '').trim();
+  }
+
+  const instaTagRegex = /\[\[SEND_INSTA:\s*([^|\]]+?)\s*\|\s*([^\]]+?)\s*\]\]/gi;
+  for (const match of rawReply.matchAll(instaTagRegex)) {
+    const targetUser = match[1]?.trim().replace(/^@/, '').toLowerCase();
+    const msg = match[2]?.trim();
+    if (targetUser && msg) {
+      try {
+        const threads = await getInstagramConversations();
+        const found = threads.find(
+          (t) =>
+            t.participant?.username?.toLowerCase().includes(targetUser) ||
+            t.participant?.id === targetUser
+        );
+        if (found?.participant?.id) {
+          const res = await sendInstagramMessage(found.participant.id, msg);
+          if (!res.success) {
+            cleaned += `\n\n(Note: Instagram DM to @${targetUser} failed: ${res.error})`;
+          }
+        } else {
+          cleaned += `\n\n(Note: Could not find an active Instagram DM thread for @${targetUser}.)`;
+        }
+      } catch (err) {
+        logger.warn('AI chat Instagram send failed', { err });
+      }
+    }
+    cleaned = cleaned.replace(match[0], '').trim();
+  }
+
   return { reply: cleaned.trim(), provider, model };
 }
 
@@ -112,6 +166,7 @@ export async function generateAIReply(
     getMemoryContextPrompt(),
     getTasksContextPrompt(),
   ]);
+  const docsContext = getDocumentsContextPrompt();
 
   const nowIst = new Date().toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
@@ -121,12 +176,17 @@ export async function generateAIReply(
   const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
   const systemPrompt =
-    `You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath.
+    `You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath with full access across Personal Memory, Tasks, Document Vault, Google Drive, Gmail, Instagram, and Live Web Search.
 Current Live Date & Time (Asia/Kolkata IST): ${nowIst} (ISO date: ${todayIso}). Always use this exact live date and time when asked for the current date, time, day, or relative dates like today/tomorrow.
 Language Rule: Communicate in clear, natural English by default. Only reply in Thanglish or Tamil if the user writes in Tamil/Thanglish or the prompt explicitly requests Thanglish (e.g., Instagram DMs).
-Task Scheduling Rule: If the user asks you to schedule, add, or create a task or reminder, confirm it concisely and append [[TASK: <short task title> | <YYYY-MM-DD> | <low|medium|high|urgent>]] at the very end of your response so it is saved live.` +
+Live Actions (append tags at the very end when the user asks you to perform them):
+- Schedule/create a task: [[TASK: <title> | <YYYY-MM-DD> | <low|medium|high|urgent>]]
+- Save a personal memory/detail: [[MEMORY: <fact> | <personal|work|preference|fact|instruction|other>]]
+- Send an email (or share a Drive file link by email): [[SEND_EMAIL: <recipient_email> | <subject> | <body with Drive link if applicable>]]
+- Send an Instagram DM (or share a Drive file link via Instagram): [[SEND_INSTA: <instagram_username> | <message with Drive link if applicable>]]` +
     memoryContext +
     tasksContext +
+    docsContext +
     googleContext +
     formatSearchContext(searchResults);
 

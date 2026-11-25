@@ -137,4 +137,12 @@ User Question: ${query}`;
   }
 });
 
+export function getDocumentsContextPrompt(): string {
+  if (documentsStore.length === 0) return '';
+  const lines = documentsStore
+    .slice(0, 5)
+    .map((d) => `- ${d.name}: ${d.content.slice(0, 600).replace(/\s+/g, ' ')}`);
+  return `\n\nUploaded Documents in Vault:\n${lines.join('\n')}`;
+}
+
 export default router;

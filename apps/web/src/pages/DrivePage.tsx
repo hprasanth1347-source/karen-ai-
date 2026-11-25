@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { HardDrive, Search, Lock, FileText, ExternalLink, RefreshCw, Unplug, Loader2 } from 'lucide-react';
+import { HardDrive, Search, Lock, FileText, ExternalLink, RefreshCw, Unplug, Loader2, Mail } from 'lucide-react';
 import { api } from '../lib/api';
 
 interface DriveFile {
@@ -9,6 +9,14 @@ interface DriveFile {
   size?: string;
   modifiedTime?: string;
   webViewLink?: string;
+}
+
+interface ImportantEmail {
+  id: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
 }
 
 function formatSize(bytes?: string): string {
@@ -24,6 +32,7 @@ export const DrivePage: React.FC = () => {
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [files, setFiles] = useState<DriveFile[]>([]);
+  const [importantEmails, setImportantEmails] = useState<ImportantEmail[]>([]);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -31,8 +40,12 @@ export const DrivePage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/drive/files', { params: q ? { q } : undefined });
-      setFiles(res.data?.data ?? []);
+      const [driveRes, gmailRes] = await Promise.all([
+        api.get('/drive/files', { params: q ? { q } : undefined }),
+        api.get('/gmail/messages', { params: { important: '1' } }).catch(() => ({ data: { data: [] } })),
+      ]);
+      setFiles(driveRes.data?.data ?? []);
+      setImportantEmails(gmailRes.data?.data ?? []);
     } catch (err: any) {
       setError(err?.response?.data?.error || 'Could not load Google Drive files.');
     } finally {
@@ -207,19 +220,37 @@ export const DrivePage: React.FC = () => {
 
         <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
           <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2 flex items-center gap-2">
-            <Lock className="w-4 h-4 text-coral" />
-            OAUTH & CONNECTION STATUS
+            <Mail className="w-4 h-4 text-coral" />
+            IMPORTANT EMAILS ({importantEmails.length})
           </h3>
-          <div className="p-3 border-2 border-ink bg-yellow/20 text-xs font-mono space-y-1">
-            <div>GOOGLE OAUTH ENV: {configured ? 'CONFIGURED' : 'MISSING CLIENT ID / SECRET'}</div>
-            <div>DRIVE SESSION: {connected ? 'CONNECTED (READ-ONLY)' : 'NOT CONNECTED'}</div>
-          </div>
-          <p className="text-xs text-ink-muted leading-relaxed">
-            In Google Cloud Console → OAuth 2.0 Client → Authorized redirect URIs, add:
-            <code className="block mt-1 p-1.5 bg-cream-100 border border-ink text-[11px] break-all">
-              https://karen-ai-me.vercel.app/api/v1/auth/google/callback
-            </code>
-          </p>
+          {!connected ? (
+            <p className="text-xs text-ink-muted">
+              Connect Google above to view your important Gmail messages alongside Drive files.
+            </p>
+          ) : importantEmails.length === 0 ? (
+            <p className="text-xs text-ink-muted">No important emails found.</p>
+          ) : (
+            <div className="space-y-2 text-xs max-h-72 overflow-y-auto">
+              {importantEmails.map((em) => (
+                <div key={em.id} className="p-2.5 border border-ink bg-cream-50 space-y-1">
+                  <div className="font-bold text-coral truncate">{em.subject}</div>
+                  <div className="text-[10px] font-mono text-ink-muted truncate">{em.from}</div>
+                  <p className="text-[11px] text-ink/80 line-clamp-2">{em.snippet}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
+        <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2 flex items-center gap-2">
+          <Lock className="w-4 h-4 text-coral" />
+          OAUTH &amp; CONNECTION STATUS
+        </h3>
+        <div className="p-3 border-2 border-ink bg-yellow/20 text-xs font-mono space-y-1">
+          <div>GOOGLE OAUTH ENV: {configured ? 'CONFIGURED' : 'MISSING CLIENT ID / SECRET'}</div>
+          <div>DRIVE &amp; GMAIL SESSION: {connected ? 'CONNECTED (DRIVE + GMAIL)' : 'NOT CONNECTED'}</div>
         </div>
       </div>
     </div>

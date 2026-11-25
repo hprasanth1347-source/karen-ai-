@@ -39,7 +39,11 @@ function buildGoogleAuthUrl(redirectUri: string, state: 'drive' | 'gmail' = 'dri
     client_id: config.GOOGLE_CLIENT_ID,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly',
+    scope: [
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send',
+    ].join(' '),
     access_type: 'offline',
     prompt: 'consent',
     state,
@@ -193,9 +197,13 @@ router.use('/gmail', (req, res, next) => {
   return requireAuth(req, res, next);
 });
 
-async function fetchRecentGmailMessages(token: string) {
+async function fetchRecentGmailMessages(token: string, query = '') {
+  const params = new URLSearchParams({ maxResults: '10' });
+  if (query.trim()) {
+    params.set('q', query.trim());
+  }
   const listRes = await fetch(
-    'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const listJson = await listRes.json();
@@ -227,17 +235,63 @@ async function fetchRecentGmailMessages(token: string) {
   return details;
 }
 
-router.get('/gmail/messages', async (_req, res) => {
+export async function sendGmailMessage(
+  to: string,
+  subject: string,
+  body: string
+): Promise<{ success: boolean; error?: string }> {
+  const token = await getValidAccessToken();
+  if (!token) {
+    return { success: false, error: 'Gmail is not connected.' };
+  }
+  const rawEmail = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    body,
+  ].join('\r\n');
+  const encoded = Buffer.from(rawEmail).toString('base64url');
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw: encoded }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    return { success: false, error: json.error?.message || 'Failed to send email' };
+  }
+  return { success: true };
+}
+
+router.get('/gmail/messages', async (req, res) => {
   const token = await getValidAccessToken();
   if (!token) {
     return error(res, 'Gmail is not connected yet. Click "Connect Google / Gmail" first.', 401, 'GMAIL_NOT_CONNECTED');
   }
   try {
-    const messages = await fetchRecentGmailMessages(token);
+    const importantOnly = req.query.important === '1' || req.query.important === 'true';
+    const q = typeof req.query.q === 'string' ? req.query.q : importantOnly ? 'is:important' : '';
+    const messages = await fetchRecentGmailMessages(token, q);
     return success(res, messages);
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Failed to fetch Gmail messages', 502);
   }
+});
+
+router.post('/gmail/send', async (req, res) => {
+  const { to, subject, body } = req.body || {};
+  if (!to || !subject || !body) {
+    return error(res, 'to, subject, and body are required', 400);
+  }
+  const result = await sendGmailMessage(String(to), String(subject), String(body));
+  if (!result.success) {
+    return error(res, result.error || 'Failed to send email', 502);
+  }
+  return success(res, { sent: true });
 });
 
 router.post('/gmail/digest', aiLimit, async (_req, res) => {
@@ -263,35 +317,63 @@ router.post('/gmail/digest', aiLimit, async (_req, res) => {
   }
 });
 
+function extractSearchKeyword(prompt: string): string {
+  const quoted = prompt.match(/["']([^"']{2,60})["']/);
+  if (quoted?.[1]) return quoted[1].trim();
+  const fileMatch = prompt.match(/([A-Za-z0-9._-]+\.(?:pdf|docx?|xlsx?|pptx?|txt|md|csv|png|jpg|jpeg))/i);
+  if (fileMatch?.[1]) return fileMatch[1].trim();
+  const stopWords = new Set([
+    'find', 'fetch', 'get', 'show', 'open', 'send', 'share', 'read', 'check', 'my', 'the', 'a', 'an',
+    'in', 'on', 'from', 'to', 'of', 'for', 'with', 'about', 'email', 'emails', 'mail', 'gmail', 'inbox',
+    'drive', 'file', 'files', 'document', 'documents', 'important', 'recent', 'latest', 'karen', 'please',
+    'can', 'you', 'what', 'is', 'are', 'me', 'some', 'someone', 'name', 'called', 'named',
+  ]);
+  const words = prompt
+    .replace(/[^\w\s.-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !stopWords.has(w.toLowerCase()));
+  return words.slice(0, 2).join(' ');
+}
+
 export async function getGoogleContextForPrompt(prompt: string): Promise<string> {
-  const wantsEmail = /\b(email|emails|mail|gmail|inbox|message|bill|invoice|schedule|deadline)\b/i.test(prompt);
-  const wantsDrive = /\b(drive|file|files|document|documents|doc|pdf|folder|notes)\b/i.test(prompt);
+  const wantsEmail = /\b(email|emails|mail|gmail|inbox|message|bill|invoice|schedule|deadline|important|send)\b/i.test(prompt);
+  const wantsDrive = /\b(drive|file|files|document|documents|doc|pdf|folder|notes|send|share|fetch|find|important)\b/i.test(prompt);
   if (!wantsEmail && !wantsDrive) return '';
 
   const token = await getValidAccessToken();
   if (!token) return '';
 
+  const keyword = extractSearchKeyword(prompt);
   const sections: string[] = [];
 
   if (wantsDrive) {
     try {
+      const escaped = keyword.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      const q = escaped ? `trashed = false and name contains '${escaped}'` : 'trashed = false';
       const params = new URLSearchParams({
-        q: 'trashed = false',
+        q,
         pageSize: '8',
         orderBy: 'modifiedTime desc',
-        fields: 'files(name,mimeType,modifiedTime,webViewLink)',
+        fields: 'files(id,name,mimeType,modifiedTime,webViewLink)',
       });
-      const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+      let res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        const json = await res.json();
-        const files: Array<{ name: string; modifiedTime?: string }> = json.files || [];
-        if (files.length > 0) {
-          sections.push(
-            `Recent Google Drive Files:\n${files.map((f, i) => `${i + 1}. ${f.name}`).join('\n')}`
-          );
-        }
+      let json = res.ok ? await res.json() : { files: [] };
+      if ((!json.files || json.files.length === 0) && escaped) {
+        params.set('q', 'trashed = false');
+        res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        json = res.ok ? await res.json() : { files: [] };
+      }
+      const files: Array<{ name: string; webViewLink?: string }> = json.files || [];
+      if (files.length > 0) {
+        sections.push(
+          `Google Drive Files${keyword ? ` (matched/recent for "${keyword}")` : ''}:\n${files
+            .map((f, i) => `${i + 1}. ${f.name}${f.webViewLink ? ` — Link: ${f.webViewLink}` : ''}`)
+            .join('\n')}`
+        );
       }
     } catch {
       // Ignore Drive context errors so chat still responds
@@ -300,10 +382,15 @@ export async function getGoogleContextForPrompt(prompt: string): Promise<string>
 
   if (wantsEmail) {
     try {
-      const messages = (await fetchRecentGmailMessages(token)).slice(0, 6);
+      const isImportant = /\bimportant\b/i.test(prompt);
+      const emailQuery = isImportant ? 'is:important' : keyword || '';
+      let messages = (await fetchRecentGmailMessages(token, emailQuery)).slice(0, 6);
+      if (messages.length === 0 && emailQuery) {
+        messages = (await fetchRecentGmailMessages(token)).slice(0, 6);
+      }
       if (messages.length > 0) {
         sections.push(
-          `Recent Gmail Messages:\n${messages
+          `Gmail Messages${isImportant ? ' (Important)' : ''}:\n${messages
             .map((m, i) => `${i + 1}. From: ${m.from} | Subject: ${m.subject} | Snippet: ${m.snippet}`)
             .join('\n')}`
         );
