@@ -58,6 +58,10 @@ const envSchema = z.object({
   META_GRAPH_API_VERSION: z.string().default('v21.0'),
   META_VERIFY_TOKEN: z.string().optional(),
   INSTAGRAM_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
+  INSTAGRAM_AUTO_REPLY_POLLING_ENABLED: z
+    .enum(['true', 'false'])
+    .default(process.env.VERCEL ? 'false' : 'true')
+    .transform((value) => value === 'true'),
 
   // WhatsApp
   WHATSAPP_ACCESS_TOKEN: z.string().optional().default(''),

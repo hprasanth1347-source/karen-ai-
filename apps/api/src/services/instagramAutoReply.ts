@@ -56,7 +56,9 @@ class InstagramAutoReplyService {
   private scanInProgress = false;
 
   constructor() {
-    this.startBackgroundPoller();
+    if (config.INSTAGRAM_AUTO_REPLY_POLLING_ENABLED) {
+      this.startBackgroundPoller();
+    }
   }
 
   public getConfig(): AutoReplyConfig {

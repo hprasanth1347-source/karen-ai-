@@ -186,7 +186,7 @@ router.post('/webhook', async (req, res) => {
   logger.info('Received and authenticated Instagram Webhook Event');
   const body = req.body;
 
-  // Process incoming messages asynchronously
+  // Process webhook messages before acknowledging so serverless runtimes can finish the work.
   if (body.object === 'instagram' && Array.isArray(body.entry)) {
     for (const entry of body.entry) {
       if (Array.isArray(entry.messaging)) {
@@ -199,10 +199,16 @@ router.post('/webhook', async (req, res) => {
 
             logger.info(`Instagram webhook received message for sender ${senderId}`);
 
-            // Trigger auto-reply in background
-            instagramAutoReplyService
-              .handleIncomingMessage(senderId, senderUsername, messageId, messageText)
-              .catch((err) => logger.error('Error handling webhook auto-reply:', err));
+            try {
+              await instagramAutoReplyService.handleIncomingMessage(
+                senderId,
+                senderUsername,
+                messageId,
+                messageText
+              );
+            } catch (err) {
+              logger.error('Error handling webhook auto-reply:', err);
+            }
           }
         }
       }
