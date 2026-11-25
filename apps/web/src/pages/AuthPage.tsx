@@ -1,17 +1,34 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Sparkles, Key, Lock, ArrowRight } from 'lucide-react';
+import { Sparkles, ArrowRight } from 'lucide-react';
+import { useAuthContext } from '../contexts/AuthContext';
+import { isSupabaseConfigured } from '../lib/supabase';
 
 export const AuthPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
+  const { login } = useAuthContext();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    // In local development mode, logging in directly redirects to dashboard
-    navigate('/');
+    setError(null);
+    if (!isSupabaseConfigured) {
+      navigate('/');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await login(email.trim(), password);
+      navigate('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sign-in failed');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -51,11 +68,18 @@ export const AuthPage: React.FC = () => {
             />
           </div>
 
+          {error && (
+            <div className="p-2.5 border-2 border-ink bg-coral/15 text-coral text-xs font-bold">
+              {error}
+            </div>
+          )}
+
           <button
             type="submit"
-            className="w-full btn-coral py-2.5 text-xs font-black flex items-center justify-center gap-2 shadow-brutal"
+            disabled={submitting}
+            className="w-full btn-coral py-2.5 text-xs font-black flex items-center justify-center gap-2 shadow-brutal disabled:opacity-60"
           >
-            <span>Enter AI Command Centre</span>
+            <span>{submitting ? 'Signing in...' : 'Enter AI Command Centre'}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </form>
