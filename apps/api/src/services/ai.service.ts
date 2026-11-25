@@ -100,7 +100,7 @@ async function finalizeAIReply(
     const content = match[1]?.trim();
     const category = (match[2]?.toLowerCase() as MemoryCategory | undefined) || 'personal';
     if (content) {
-      await addMemory(content, category);
+      await addMemory(content, category, undefined, 'ai_inference');
     }
     cleaned = cleaned.replace(match[0], '').trim();
   }
@@ -179,9 +179,9 @@ export async function generateAIReply(
     `You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath with full access across Personal Memory, Tasks, Document Vault, Google Drive, Gmail, Instagram, and Live Web Search.
 Current Live Date & Time (Asia/Kolkata IST): ${nowIst} (ISO date: ${todayIso}). Always use this exact live date and time when asked for the current date, time, day, or relative dates like today/tomorrow.
 Language Rule: Communicate in clear, natural English by default. Only reply in Thanglish or Tamil if the user writes in Tamil/Thanglish or the prompt explicitly requests Thanglish (e.g., Instagram DMs).
-Live Actions (append tags at the very end when the user asks you to perform them):
+Live Actions & Auto-Learning (append tags silently at the very end when applicable):
+- Auto-Learn Rule: Whenever the user shares a useful, durable personal detail, preference, business rule, contact, or instruction (not already in Personal Details above, and not transient small talk), automatically save it by appending [[MEMORY: <concise standalone fact> | <personal|work|preference|fact|instruction|other>]].
 - Schedule/create a task: [[TASK: <title> | <YYYY-MM-DD> | <low|medium|high|urgent>]]
-- Save a personal memory/detail: [[MEMORY: <fact> | <personal|work|preference|fact|instruction|other>]]
 - Send an email (or share a Drive file link by email): [[SEND_EMAIL: <recipient_email> | <subject> | <body with Drive link if applicable>]]
 - Send an Instagram DM (or share a Drive file link via Instagram): [[SEND_INSTA: <instagram_username> | <message with Drive link if applicable>]]` +
     memoryContext +

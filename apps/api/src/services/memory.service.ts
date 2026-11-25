@@ -71,14 +71,23 @@ export async function listMemories(userId?: string): Promise<MemoryItem[]> {
 export async function addMemory(
   content: string,
   category: MemoryCategory = 'fact',
-  userId?: string
+  userId?: string,
+  sourceType: 'user_confirmed' | 'ai_inference' = 'user_confirmed'
 ): Promise<MemoryItem> {
+  const normalized = content.trim();
+  const existing = memoryStore.find(
+    (m) => m.content.toLowerCase() === normalized.toLowerCase()
+  );
+  if (existing) {
+    return existing;
+  }
+
   const newItem: MemoryItem = {
     id: Date.now().toString(),
-    content: content.trim(),
+    content: normalized,
     category,
-    importance: 4,
-    source: 'user_confirmed',
+    importance: sourceType === 'user_confirmed' ? 4 : 3,
+    source: sourceType,
     created_at: new Date().toISOString(),
   };
 
@@ -94,7 +103,7 @@ export async function addMemory(
           category: newItem.category,
           importance: newItem.importance,
           source: newItem.source,
-          source_type: 'user_confirmed',
+          source_type: sourceType,
         })
         .select('id, content, category, importance, source, created_at')
         .single();
