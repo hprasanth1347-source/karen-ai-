@@ -23,8 +23,11 @@ export const isSupabaseConfigured = Boolean(
 let client: SupabaseClient | null = null;
 if (isSupabaseConfigured) {
   try {
+    const sessionStorageAdapter =
+      typeof window !== 'undefined' ? window.sessionStorage : undefined;
     client = createClient(rawUrl, rawKey, {
       auth: {
+        storage: sessionStorageAdapter,
         persistSession: true,
         autoRefreshToken: true,
       },

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Sparkles, ArrowRight } from 'lucide-react';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -10,7 +10,18 @@ export const AuthPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
-  const { login } = useAuthContext();
+  const { login, user, loading } = useAuthContext();
+
+  // Auto-redirect if already authenticated
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      navigate('/');
+      return;
+    }
+    if (!loading && user) {
+      navigate('/');
+    }
+  }, [user, loading, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

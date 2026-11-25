@@ -4,7 +4,7 @@ import { validate } from '../middleware/validate.js';
 import { authLimit } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/auth.js';
 import { success, error } from '../utils/response.js';
-import { bootstrapOwner, loginWithPassword, logoutUser } from '../services/auth.service.js';
+import { bootstrapOwner, hasOwnerAccount, loginWithPassword, logoutUser } from '../services/auth.service.js';
 import { config } from '../config/env.js';
 
 const router = Router();
@@ -21,13 +21,23 @@ const bootstrapSchema = z.object({
   displayName: z.string().optional(),
 });
 
+router.get('/auth/status', async (_req, res) => {
+  const hasOwner = await hasOwnerAccount();
+  return success(res, { hasOwner });
+});
+
 router.post('/auth/bootstrap', validate(bootstrapSchema), async (req, res) => {
   if (req.body.secret !== config.BOOTSTRAP_SECRET) {
     return error(res, 'Invalid bootstrap secret', 403, 'FORBIDDEN');
   }
   try {
     const user = await bootstrapOwner(req.body.email, req.body.password, req.body.displayName);
-    return success(res, { message: 'Owner account created', user }, 201);
+    const sessionData = await loginWithPassword(req.body.email, req.body.password);
+    return success(
+      res,
+      { message: 'Owner account created', user: sessionData.user ?? user, session: sessionData.session },
+      201
+    );
   } catch (err: any) {
     return error(res, err.message, 400);
   }

@@ -16,6 +16,7 @@ import {
   isSensitiveSend,
   type ApprovalItem,
 } from './approval.service.js';
+import { getLoveModeSystemPrompt } from './loveMode.service.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -183,18 +184,22 @@ export async function generateAIReply(
   preferredModel?: string,
   signal?: AbortSignal
 ): Promise<{ reply: string; provider: string; model: string; pendingApproval?: ApprovalItem }> {
+  // ── Love Mode prefix detection ──────────────────────────────────────────────
+  const isLoveMode = prompt.startsWith('[LOVE_MODE] ');
+  const cleanPrompt = isLoveMode ? prompt.slice('[LOVE_MODE] '.length) : prompt;
+
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
   const reqSignal = signal ?? AbortSignal.timeout(15000);
-  const needsSearch = shouldSearchWeb(prompt);
+  const needsSearch = !isLoveMode && shouldSearchWeb(cleanPrompt);
   const [searchResults, googleContext, memoryContext, tasksContext] = await Promise.all([
     needsSearch && isWebSearchConfigured()
-      ? searchWebWithGoogle(prompt, 5, reqSignal)
+      ? searchWebWithGoogle(cleanPrompt, 5, reqSignal)
       : Promise.resolve([]),
-    getGoogleContextForPrompt(prompt),
+    isLoveMode ? Promise.resolve('') : getGoogleContextForPrompt(cleanPrompt),
     getMemoryContextPrompt(),
-    getTasksContextPrompt(),
+    isLoveMode ? Promise.resolve('') : getTasksContextPrompt(),
   ]);
-  const docsContext = getDocumentsContextPrompt();
+  const docsContext = isLoveMode ? '' : getDocumentsContextPrompt();
 
   const nowIst = new Date().toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
@@ -203,7 +208,9 @@ export async function generateAIReply(
   });
   const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
-  const systemPrompt =
+  const systemPrompt = isLoveMode
+    ? getLoveModeSystemPrompt() + memoryContext
+    :
     `You are Karen AI, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath with full access across Personal Memory, Tasks, Document Vault, Google Drive, Gmail, Instagram, and Live Web Search.
 
 ⚠️ CRITICAL DATE OVERRIDE — IGNORE YOUR TRAINING CUTOFF DATE COMPLETELY:
@@ -222,6 +229,9 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
     googleContext +
     formatSearchContext(searchResults);
 
+  // Use cleaned prompt (strips [LOVE_MODE] prefix if present)
+  const effectivePrompt = isLoveMode ? cleanPrompt : prompt;
+
   // 1. Groq Cloud (Qwen 3.8 27B) - Verified & Operational
   if (provider === 'groq' && config.GROQ_API_KEY) {
     try {
@@ -231,7 +241,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
           content: systemPrompt,
         },
         ...history.map((h) => ({ role: h.role, content: h.content })),
-        { role: 'user', content: prompt },
+        { role: 'user', content: effectivePrompt },
       ];
 
       const modelId = preferredModel || getDefaultAIModel('groq');
@@ -280,7 +290,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
             role: h.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: h.content }],
           })),
-          { role: 'user', parts: [{ text: prompt }] },
+          { role: 'user', parts: [{ text: effectivePrompt }] },
         ],
       };
 
@@ -333,7 +343,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
               content: systemPrompt,
             },
             ...history.map((h) => ({ role: h.role, content: h.content })),
-            { role: 'user', content: prompt },
+            { role: 'user', content: effectivePrompt },
           ],
         }),
         signal: reqSignal,

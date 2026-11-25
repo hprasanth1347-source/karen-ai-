@@ -25,6 +25,13 @@ import { getGoogleContextForPrompt } from '../routes/googleDrive.js';
 import { extractTextFromBuffer } from '../utils/docParser.js';
 import { logger } from '../config/logger.js';
 import { config } from '../config/env.js';
+import {
+  getLoveModeState,
+  setLoveModeActive,
+  detectLoveModeActivation,
+  detectLoveModeDeactivation,
+  incrementLoveModeMessageCount,
+} from '../services/loveMode.service.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -380,6 +387,19 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     case '/chat':
       return '💬 Chat mode active. Just type your message and I\'ll reply.';
 
+    case '/love':
+    case '/comfort':
+    case '/lonely': {
+      await setLoveModeActive(chatId, true);
+      return `Heyyy ❤️ I'm here da. Enna achu? Come, tell me everything. Don't keep everything inside. I'm listening. 🥺`;
+    }
+
+    case '/endlove':
+    case '/normal': {
+      await setLoveModeActive(chatId, false);
+      return `Seri da ❤️ Love Mode off. But whenever you need to talk, I'm here. Take care of yourself. 💙`;
+    }
+
     default:
       return `❓ Unknown command: ${cmd}\n\nType /help for all available commands.`;
   }
@@ -485,19 +505,38 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
       } else {
         // Full AI conversation — no Google hydration needed here (only for /digest or Drive commands)
         const history = getHistory(chatId);
-        const aiRes = await generateAIReply(
-          text,
-          history,
-          undefined,
-          undefined,
-          AbortSignal.timeout(15000)
-        );
-        pushHistory(chatId, 'user', text);
-        pushHistory(chatId, 'assistant', aiRes.reply);
-        reply = aiRes.reply;
 
-        if (aiRes.pendingApproval) {
-          reply += `\n\n⚠️ *Approval Required*\n${aiRes.pendingApproval.summary}\n\nType \`/approve ${aiRes.pendingApproval.id}\` to confirm or \`/reject ${aiRes.pendingApproval.id}\` to cancel.`;
+        // ── Love Mode detection ────────────────────────────────────────────
+        if (detectLoveModeDeactivation(text)) {
+          await setLoveModeActive(chatId, false);
+          reply = `Seri da ❤️ Love Mode off. But whenever you need to talk, I'm here. Take care of yourself. 💙`;
+        } else {
+          const loveState = await getLoveModeState(chatId);
+          const shouldActivate = !loveState.active && detectLoveModeActivation(text);
+          if (shouldActivate) {
+            await setLoveModeActive(chatId, true);
+          }
+          const loveModeActive = loveState.active || shouldActivate;
+          const aiPrompt = loveModeActive ? `[LOVE_MODE] ${text}` : text;
+
+          const aiRes = await generateAIReply(
+            aiPrompt,
+            history,
+            undefined,
+            undefined,
+            AbortSignal.timeout(15000)
+          );
+          pushHistory(chatId, 'user', text);
+          pushHistory(chatId, 'assistant', aiRes.reply);
+          reply = aiRes.reply;
+
+          if (loveModeActive) {
+            await incrementLoveModeMessageCount(chatId);
+          }
+
+          if (aiRes.pendingApproval) {
+            reply += `\n\n⚠️ *Approval Required*\n${aiRes.pendingApproval.summary}\n\nType \`/approve ${aiRes.pendingApproval.id}\` to confirm or \`/reject ${aiRes.pendingApproval.id}\` to cancel.`;
+          }
         }
       }
     }
@@ -730,6 +769,11 @@ export async function setTelegramCommands(): Promise<void> {
       { command: 'instagram', description: 'Instagram status' },
       { command: 'drive', description: 'Google Drive status' },
       { command: 'settings', description: 'Karen settings overview' },
+      { command: 'love', description: 'Activate Love & Comfort Mode ❤️' },
+      { command: 'comfort', description: 'Activate emotional support mode' },
+      { command: 'lonely', description: 'I need company right now' },
+      { command: 'endlove', description: 'Exit Love Mode, back to normal' },
+      { command: 'normal', description: 'Switch back to normal mode' },
     ],
   });
 }

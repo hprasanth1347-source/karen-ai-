@@ -1,8 +1,10 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/queryClient';
 import { AuthProvider } from './contexts/AuthContext';
+import { useAuthContext } from './contexts/AuthContext';
+import { isSupabaseConfigured } from './lib/supabase';
 import AppLayout from './components/layout/AppLayout';
 
 class AppErrorBoundary extends React.Component<
@@ -65,6 +67,30 @@ import ActivityPage from './pages/ActivityPage';
 import SettingsPage from './pages/SettingsPage';
 import AuthPage from './pages/AuthPage';
 import NotFoundPage from './pages/NotFoundPage';
+import LoveModePage from './pages/LoveModePage';
+
+// ─── Auth Guard ──────────────────────────────────────────────────────────────
+
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen bg-cream flex items-center justify-center">
+      <div className="text-center space-y-3">
+        <div className="text-2xl font-black text-ink animate-pulse">Karen AI</div>
+        <div className="text-xs font-mono text-ink/50">Loading...</div>
+      </div>
+    </div>
+  );
+}
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuthContext();
+  if (!isSupabaseConfigured) return <>{children}</>;
+  if (loading) return <LoadingScreen />;
+  if (!user) return <Navigate to="/auth" replace />;
+  return <>{children}</>;
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
 
 export function App() {
   return (
@@ -77,32 +103,35 @@ export function App() {
             <Route
               path="/*"
               element={
-                <AppLayout>
-                  <Routes>
-                    <Route path="/" element={<OverviewPage />} />
-                    <Route path="/ai-chat" element={<AIChatPage />} />
-                    <Route path="/whatsapp" element={<WhatsAppPage />} />
-                    <Route path="/instagram" element={<InstagramPage />} />
-                    <Route path="/gmail" element={<GmailPage />} />
-                    <Route path="/drive" element={<DrivePage />} />
-                    <Route path="/memory" element={<MemoryPage />} />
-                    <Route path="/documents" element={<DocumentsPage />} />
-                    <Route path="/voice" element={<VoicePage />} />
-                    <Route path="/telegram" element={<TelegramPage />} />
-                    <Route path="/notifications" element={<NotificationsPage />} />
-                    <Route path="/contacts" element={<ContactsPage />} />
-                    <Route path="/automation" element={<AutomationPage />} />
-                    <Route path="/tasks" element={<TasksPage />} />
-                    <Route path="/reminders" element={<RemindersPage />} />
-                    <Route path="/security" element={<SecurityPage />} />
-                    <Route path="/api-management" element={<ApiManagementPage />} />
-                    <Route path="/database" element={<DatabasePage />} />
-                    <Route path="/monitor" element={<MonitorPage />} />
-                    <Route path="/activity" element={<ActivityPage />} />
-                    <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="*" element={<NotFoundPage />} />
-                  </Routes>
-                </AppLayout>
+                <RequireAuth>
+                  <AppLayout>
+                    <Routes>
+                      <Route path="/" element={<OverviewPage />} />
+                      <Route path="/ai-chat" element={<AIChatPage />} />
+                      <Route path="/whatsapp" element={<WhatsAppPage />} />
+                      <Route path="/instagram" element={<InstagramPage />} />
+                      <Route path="/gmail" element={<GmailPage />} />
+                      <Route path="/drive" element={<DrivePage />} />
+                      <Route path="/memory" element={<MemoryPage />} />
+                      <Route path="/documents" element={<DocumentsPage />} />
+                      <Route path="/voice" element={<VoicePage />} />
+                      <Route path="/telegram" element={<TelegramPage />} />
+                      <Route path="/notifications" element={<NotificationsPage />} />
+                      <Route path="/contacts" element={<ContactsPage />} />
+                      <Route path="/automation" element={<AutomationPage />} />
+                      <Route path="/tasks" element={<TasksPage />} />
+                      <Route path="/reminders" element={<RemindersPage />} />
+                      <Route path="/security" element={<SecurityPage />} />
+                      <Route path="/api-management" element={<ApiManagementPage />} />
+                      <Route path="/database" element={<DatabasePage />} />
+                      <Route path="/monitor" element={<MonitorPage />} />
+                      <Route path="/activity" element={<ActivityPage />} />
+                      <Route path="/settings" element={<SettingsPage />} />
+                      <Route path="/love-mode" element={<LoveModePage />} />
+                      <Route path="*" element={<NotFoundPage />} />
+                    </Routes>
+                  </AppLayout>
+                </RequireAuth>
               }
             />
           </Routes>

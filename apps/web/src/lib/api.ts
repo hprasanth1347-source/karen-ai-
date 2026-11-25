@@ -7,16 +7,32 @@ export const api = axios.create({
   withCredentials: true,
 })
 
-// Inject auth token on each request
+// Inject auth token on each request (Supabase sessionStorage or backend session token)
 api.interceptors.request.use(async (config) => {
-  if (!supabase) return config
-  const { data } = await supabase.auth.getSession()
-  const token = data.session?.access_token
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
+  let token: string | undefined;
+
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    token = data.session?.access_token;
   }
-  return config
-})
+
+  if (!token && typeof window !== 'undefined') {
+    try {
+      const raw = window.sessionStorage.getItem('karen_auth_session');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { accessToken?: string };
+        token = parsed.accessToken;
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+  }
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 // Handle response errors without forcing hard page reloads
 api.interceptors.response.use(

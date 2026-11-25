@@ -22,6 +22,7 @@ import {
   Activity,
   History,
   Settings,
+  Heart,
   X
 } from 'lucide-react';
 
@@ -37,6 +38,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
       items: [
         { path: '/', label: 'Overview', icon: LayoutDashboard },
         { path: '/ai-chat', label: 'Karen AI Chat', icon: MessageSquare },
+        { path: '/love-mode', label: 'Love & Comfort ❤️', icon: Heart },
       ],
     },
     {
@@ -98,7 +100,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
               KAREN
             </span>
             <span className="font-mono text-xs font-bold tracking-widest text-ink">
-              ULTRA 1.0
+              AI
             </span>
           </div>
           <button
