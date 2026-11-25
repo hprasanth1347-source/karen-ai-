@@ -1,0 +1,50 @@
+-- Karen Ultra Seed Data
+-- Version: 0003
+-- Description: Default seed data for Karen Ultra Personal AI OS
+--
+-- NOTE: This file contains example/default data.
+-- It is NOT auto-inserted — run manually after the first owner account is bootstrapped.
+-- Use Supabase Studio SQL editor or the bootstrap endpoint at POST /api/v1/auth/bootstrap
+
+-- ─── NOTIFICATION PREFERENCE DEFAULTS ─────────────────────────────────────────
+-- After creating the first owner account, run this with their user UUID:
+--
+-- DO $$
+-- DECLARE
+--   owner_id UUID := '<paste-owner-uuid-here>';
+-- BEGIN
+--   INSERT INTO public.notification_preferences (user_id, event_type, enabled, channels)
+--   VALUES
+--     (owner_id, 'whatsapp_message',    true,  '{web,whatsapp}'),
+--     (owner_id, 'instagram_message',   true,  '{web}'),
+--     (owner_id, 'telegram_message',    true,  '{web,telegram}'),
+--     (owner_id, 'gmail_received',      true,  '{web}'),
+--     (owner_id, 'task_due',            true,  '{web,telegram}'),
+--     (owner_id, 'reminder_fire',       true,  '{web,whatsapp}'),
+--     (owner_id, 'automation_waiting',  true,  '{web}'),
+--     (owner_id, 'approval_requested',  true,  '{web,telegram}'),
+--     (owner_id, 'ai_response',         false, '{web}'),
+--     (owner_id, 'document_processed',  true,  '{web}'),
+--     (owner_id, 'security_alert',      true,  '{web,telegram}'),
+--     (owner_id, 'system_update',       true,  '{web}')
+--   ON CONFLICT (user_id, event_type) DO NOTHING;
+-- END $$;
+
+-- ─── DEFAULT USER SETTINGS ────────────────────────────────────────────────────
+-- After creating the first owner account, run this with their user UUID:
+--
+-- DO $$
+-- DECLARE
+--   owner_id UUID := '<paste-owner-uuid-here>';
+-- BEGIN
+--   INSERT INTO public.user_settings (user_id, key, value)
+--   VALUES
+--     (owner_id, 'ai_model',          '"gemini-2.0-flash"'),
+--     (owner_id, 'ai_fallback_model', '"groq-llama-3-70b"'),
+--     (owner_id, 'voice_id',          '"21m00Tcm4TlvDq8ikWAM"'),
+--     (owner_id, 'max_tokens',        '4096'),
+--     (owner_id, 'temperature',       '0.7'),
+--     (owner_id, 'auto_summarize',    'true'),
+--     (owner_id, 'memory_enabled',    'true')
+--   ON CONFLICT (user_id, key) DO NOTHING;
+-- END $$;

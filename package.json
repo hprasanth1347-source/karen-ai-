@@ -1,0 +1,30 @@
+{
+  "name": "karen-ultra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Karen Ultra — Personal AI Operating System",
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "apps/worker",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:worker\"",
+    "dev:web": "npm --workspace=apps/web run dev",
+    "dev:api": "npm --workspace=apps/api run dev",
+    "dev:worker": "npm --workspace=apps/worker run dev",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "node --test tests/unit/*.test.js",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings 0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "typescript": "^5.4.5"
+  }
+}

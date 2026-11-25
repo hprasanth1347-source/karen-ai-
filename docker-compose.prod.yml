@@ -1,0 +1,63 @@
+version: '3.9'
+
+# Karen Ultra — Production Docker Compose
+# Usage: docker compose -f docker-compose.prod.yml up -d
+# Set all environment variables on the host or via a secrets manager.
+
+services:
+  # ─── Nginx reverse-proxy ──────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: karen-nginx
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - api
+      - web
+    restart: always
+
+  # ─── API ─────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+      target: production
+    container_name: karen-api-prod
+    env_file: .env
+    expose:
+      - '8080'
+    restart: always
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/api/v1/health']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ─── Web ─────────────────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+      target: production
+    container_name: karen-web-prod
+    expose:
+      - '80'
+    restart: always
+
+  # ─── Worker ──────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+      target: production
+    container_name: karen-worker-prod
+    env_file: .env
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: always

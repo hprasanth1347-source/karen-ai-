@@ -1,0 +1,67 @@
+version: '3.9'
+
+# Karen Ultra — Development Docker Compose
+# Usage: docker compose up --build
+# Reads environment from .env at project root
+
+services:
+  # ─── API ────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+      target: development
+    container_name: karen-api
+    env_file: .env
+    ports:
+      - '8080:8080'
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages/shared:/app/packages/shared
+      - api_node_modules:/app/apps/api/node_modules
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/api/v1/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─── Web ─────────────────────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+      target: development
+    container_name: karen-web
+    env_file: .env
+    ports:
+      - '5173:5173'
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages/shared:/app/packages/shared
+      - web_node_modules:/app/apps/web/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    restart: unless-stopped
+
+  # ─── Worker ──────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+      target: development
+    container_name: karen-worker
+    env_file: .env
+    volumes:
+      - ./apps/worker:/app/apps/worker
+      - ./packages/shared:/app/packages/shared
+      - worker_node_modules:/app/apps/worker/node_modules
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  api_node_modules:
+  web_node_modules:
+  worker_node_modules:

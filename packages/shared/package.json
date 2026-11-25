@@ -1,0 +1,20 @@
+{
+  "name": "@karen/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared TypeScript types, constants, utils, and validators for Karen Ultra",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}
