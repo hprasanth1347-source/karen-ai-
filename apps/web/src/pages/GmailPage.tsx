@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Mail, Sparkles, RefreshCw, Loader2 } from 'lucide-react';
+import { Mail, Sparkles, RefreshCw, Loader2, X } from 'lucide-react';
 import { api } from '../lib/api';
 
 interface EmailSummary {
@@ -10,6 +10,11 @@ interface EmailSummary {
   snippet: string;
 }
 
+interface FullEmail extends EmailSummary {
+  to?: string;
+  body: string;
+}
+
 export const GmailPage: React.FC = () => {
   const [configured, setConfigured] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -17,6 +22,8 @@ export const GmailPage: React.FC = () => {
   const [digestLoading, setDigestLoading] = useState(false);
   const [emails, setEmails] = useState<EmailSummary[]>([]);
   const [digest, setDigest] = useState<string | null>(null);
+  const [selectedEmail, setSelectedEmail] = useState<FullEmail | null>(null);
+  const [loadingEmail, setLoadingEmail] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchEmails = useCallback(async () => {
@@ -86,6 +93,21 @@ export const GmailPage: React.FC = () => {
     }
   };
 
+  const handleOpenEmail = async (id: string) => {
+    setLoadingEmail(true);
+    setError(null);
+    try {
+      const res = await api.get(`/gmail/messages/${id}`);
+      if (res.data?.data) {
+        setSelectedEmail(res.data.data);
+      }
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Could not open email.');
+    } finally {
+      setLoadingEmail(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-white border-3 border-ink p-5 shadow-brutal flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -96,7 +118,7 @@ export const GmailPage: React.FC = () => {
           </div>
           <h1 className="text-xl md:text-2xl font-black">Gmail Intelligence & Daily Digest</h1>
           <p className="text-xs text-ink-muted mt-1 max-w-xl">
-            Read your latest Gmail messages, summarize inbox activity, and extract deadlines. Read-only access—emails are never sent silently.
+            Click any email to read the full message, or run a Daily Digest. Karen AI can also read and send emails from AI Chat.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -146,11 +168,36 @@ export const GmailPage: React.FC = () => {
         </div>
       )}
 
+      {selectedEmail && (
+        <div className="fixed inset-0 bg-ink/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white border-3 border-ink shadow-brutal-xl max-w-2xl w-full max-h-[85vh] flex flex-col">
+            <div className="p-4 border-b-3 border-ink flex items-start justify-between gap-4 bg-cream-100">
+              <div className="min-w-0">
+                <h3 className="font-black text-sm">{selectedEmail.subject}</h3>
+                <p className="text-[11px] font-mono text-ink-muted truncate mt-0.5">
+                  From: {selectedEmail.from} • {selectedEmail.date}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedEmail(null)}
+                className="p-1 border-2 border-ink bg-white hover:bg-coral hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto text-xs whitespace-pre-wrap leading-relaxed">
+              {selectedEmail.body}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-4">
         <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2 flex items-center justify-between">
           <span>RECENT INBOX MESSAGES ({emails.length})</span>
           <span className="text-[10px] font-mono text-ink-muted">
-            {connected ? 'CONNECTED' : configured ? 'NOT CONNECTED' : 'MISSING GOOGLE OAUTH ENV'}
+            {loadingEmail ? 'OPENING EMAIL...' : connected ? 'CLICK ANY EMAIL TO READ' : configured ? 'NOT CONNECTED' : 'MISSING GOOGLE OAUTH ENV'}
           </span>
         </h3>
 
@@ -162,7 +209,7 @@ export const GmailPage: React.FC = () => {
         ) : !connected ? (
           <p className="text-xs text-ink-muted">
             {configured
-              ? 'Click "Connect Gmail" above to authorize read-only Gmail + Drive access with one Google sign-in.'
+              ? 'Click "Connect Gmail" above to authorize Gmail + Drive access with one Google sign-in.'
               : 'Add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in Vercel Environment Variables and redeploy.'}
           </p>
         ) : emails.length === 0 ? (
@@ -170,14 +217,19 @@ export const GmailPage: React.FC = () => {
         ) : (
           <div className="space-y-3">
             {emails.map((email) => (
-              <div key={email.id} className="p-3 border-2 border-ink bg-cream-50 space-y-1.5 text-xs">
+              <button
+                key={email.id}
+                type="button"
+                onClick={() => handleOpenEmail(email.id)}
+                className="w-full text-left p-3 border-2 border-ink bg-cream-50 hover:bg-yellow/20 transition-colors space-y-1.5 text-xs cursor-pointer"
+              >
                 <div className="flex items-center justify-between gap-2 font-bold">
                   <span className="text-coral truncate">{email.subject}</span>
                   <span className="text-[10px] font-mono text-ink-muted shrink-0">{email.date}</span>
                 </div>
                 <div className="text-[11px] font-mono text-ink-muted truncate">{email.from}</div>
                 <p className="text-ink/80 text-[11px]">{email.snippet}</p>
-              </div>
+              </button>
             ))}
           </div>
         )}

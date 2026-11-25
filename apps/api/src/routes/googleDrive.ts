@@ -235,6 +235,138 @@ async function fetchRecentGmailMessages(token: string, query = '') {
   return details;
 }
 
+function decodeBase64Url(data?: string): string {
+  if (!data) return '';
+  try {
+    return Buffer.from(data, 'base64url').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function extractGmailBody(payload: any): string {
+  if (!payload) return '';
+  if (payload.mimeType === 'text/plain' && payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+  if (Array.isArray(payload.parts)) {
+    for (const part of payload.parts) {
+      const plain = extractGmailBody(part);
+      if (plain) return plain;
+    }
+  }
+  if (payload.mimeType === 'text/html' && payload.body?.data) {
+    return decodeBase64Url(payload.body.data)
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+  return '';
+}
+
+async function fetchDriveFilePreview(
+  token: string,
+  fileId: string
+): Promise<{ id: string; name: string; mimeType: string; webViewLink?: string; content?: string; previewUnavailable?: boolean }> {
+  const metaRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,webViewLink`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const meta = await metaRes.json();
+  if (!metaRes.ok) {
+    throw new Error(meta.error?.message || 'Could not load Drive file metadata');
+  }
+
+  const mime = String(meta.mimeType || '');
+  let content = '';
+  let previewUnavailable = false;
+
+  if (mime === 'application/vnd.google-apps.document') {
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=text/plain`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (r.ok) content = await r.text();
+  } else if (mime === 'application/vnd.google-apps.spreadsheet') {
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=text/csv`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (r.ok) content = await r.text();
+  } else if (
+    mime.startsWith('text/') ||
+    mime === 'application/json' ||
+    /\.(txt|md|csv|json|log|ts|js|py|html|xml)$/i.test(meta.name || '')
+  ) {
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (r.ok) content = await r.text();
+  } else {
+    previewUnavailable = true;
+  }
+
+  return {
+    id: meta.id,
+    name: meta.name,
+    mimeType: mime,
+    webViewLink: meta.webViewLink,
+    content: content ? content.slice(0, 20000) : undefined,
+    previewUnavailable,
+  };
+}
+
+router.get('/drive/files/:id/content', async (req, res) => {
+  const token = await getValidAccessToken();
+  if (!token) {
+    return error(res, 'Google Drive is not connected yet.', 401, 'DRIVE_NOT_CONNECTED');
+  }
+  try {
+    const file = await fetchDriveFilePreview(token, String(req.params.id));
+    return success(res, file);
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Failed to open Drive file', 502);
+  }
+});
+
+router.get('/gmail/messages/:id', async (req, res) => {
+  const token = await getValidAccessToken();
+  if (!token) {
+    return error(res, 'Gmail is not connected yet.', 401, 'GMAIL_NOT_CONNECTED');
+  }
+  try {
+    const msgRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(String(req.params.id))}?format=full`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const msgJson = await msgRes.json();
+    if (!msgRes.ok) {
+      return error(res, msgJson.error?.message || 'Failed to open email', msgRes.status);
+    }
+    const headers: Array<{ name: string; value: string }> = msgJson.payload?.headers || [];
+    const getHeader = (name: string) =>
+      headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+    const body = extractGmailBody(msgJson.payload) || msgJson.snippet || '';
+    return success(res, {
+      id: msgJson.id,
+      subject: getHeader('Subject') || '(No Subject)',
+      from: getHeader('From') || 'Unknown sender',
+      to: getHeader('To') || '',
+      date: getHeader('Date') || '',
+      snippet: msgJson.snippet || '',
+      body,
+    });
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Failed to open email', 502);
+  }
+});
+
 async function findDriveFileWithContent(
   token: string,
   nameQuery: string
@@ -455,12 +587,21 @@ export async function getGoogleContextForPrompt(prompt: string): Promise<string>
         });
         json = res.ok ? await res.json() : { files: [] };
       }
-      const files: Array<{ name: string; webViewLink?: string }> = json.files || [];
+      const files: Array<{ id: string; name: string; webViewLink?: string }> = json.files || [];
       if (files.length > 0) {
+        let topFileContent = '';
+        try {
+          const preview = await fetchDriveFilePreview(token, files[0].id);
+          if (preview.content) {
+            topFileContent = `\n   Top File Content (${preview.name}):\n   ${preview.content.slice(0, 3000)}`;
+          }
+        } catch {
+          // Ignore preview failure
+        }
         sections.push(
           `Google Drive Files${keyword ? ` (matched/recent for "${keyword}")` : ''}:\n${files
             .map((f, i) => `${i + 1}. ${f.name}${f.webViewLink ? ` — Link: ${f.webViewLink}` : ''}`)
-            .join('\n')}`
+            .join('\n')}${topFileContent}`
         );
       }
     } catch {
@@ -477,10 +618,26 @@ export async function getGoogleContextForPrompt(prompt: string): Promise<string>
         messages = (await fetchRecentGmailMessages(token)).slice(0, 6);
       }
       if (messages.length > 0) {
+        const detailedBodies = await Promise.all(
+          messages.slice(0, 2).map(async (m) => {
+            try {
+              const fullRes = await fetch(
+                `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`,
+                { headers: { Authorization: `Bearer ${token}` } }
+              );
+              if (!fullRes.ok) return '';
+              const fullJson = await fullRes.json();
+              const body = extractGmailBody(fullJson.payload);
+              return body ? `\n   [Full Body - ${m.subject}]: ${body.slice(0, 1500)}` : '';
+            } catch {
+              return '';
+            }
+          })
+        );
         sections.push(
           `Gmail Messages${isImportant ? ' (Important)' : ''}:\n${messages
             .map((m, i) => `${i + 1}. From: ${m.from} | Subject: ${m.subject} | Snippet: ${m.snippet}`)
-            .join('\n')}`
+            .join('\n')}${detailedBodies.filter(Boolean).join('')}`
         );
       }
     } catch {

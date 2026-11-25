@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { HardDrive, Search, Lock, FileText, ExternalLink, RefreshCw, Unplug, Loader2, Mail } from 'lucide-react';
+import { HardDrive, Search, Lock, FileText, ExternalLink, RefreshCw, Unplug, Loader2, Mail, X } from 'lucide-react';
 import { api } from '../lib/api';
 
 interface DriveFile {
@@ -11,12 +11,22 @@ interface DriveFile {
   webViewLink?: string;
 }
 
+interface DrivePreview {
+  id: string;
+  name: string;
+  mimeType: string;
+  webViewLink?: string;
+  content?: string;
+  previewUnavailable?: boolean;
+}
+
 interface ImportantEmail {
   id: string;
   subject: string;
   from: string;
   date: string;
   snippet: string;
+  body?: string;
 }
 
 function formatSize(bytes?: string): string {
@@ -33,6 +43,8 @@ export const DrivePage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [importantEmails, setImportantEmails] = useState<ImportantEmail[]>([]);
+  const [selectedFile, setSelectedFile] = useState<DrivePreview | null>(null);
+  const [selectedEmail, setSelectedEmail] = useState<ImportantEmail | null>(null);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -101,11 +113,40 @@ export const DrivePage: React.FC = () => {
     await api.post('/drive/disconnect').catch(() => {});
     setConnected(false);
     setFiles([]);
+    setImportantEmails([]);
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (connected) loadFiles(search);
+  };
+
+  const handleOpenFile = async (file: DriveFile) => {
+    setError(null);
+    try {
+      const res = await api.get(`/drive/files/${file.id}/content`);
+      if (res.data?.data) {
+        setSelectedFile(res.data.data);
+      }
+    } catch (err: any) {
+      if (file.webViewLink) {
+        window.open(file.webViewLink, '_blank', 'noopener,noreferrer');
+      } else {
+        setError(err?.response?.data?.error || 'Could not open Drive file.');
+      }
+    }
+  };
+
+  const handleOpenEmail = async (email: ImportantEmail) => {
+    setError(null);
+    try {
+      const res = await api.get(`/gmail/messages/${email.id}`);
+      if (res.data?.data) {
+        setSelectedEmail(res.data.data);
+      }
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Could not open email.');
+    }
   };
 
   return (
@@ -118,7 +159,7 @@ export const DrivePage: React.FC = () => {
           </div>
           <h1 className="text-xl md:text-2xl font-black">Google Drive Personal Document Vault</h1>
           <p className="text-xs text-ink-muted mt-1 max-w-xl">
-            Connect your Google Drive to search personal files, project documents, notes, and invoices directly from Karen Ultra.
+            Click any Drive file or important email to open and read it. Karen AI Chat can also search, read, and email your Drive files.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -160,6 +201,69 @@ export const DrivePage: React.FC = () => {
         </div>
       )}
 
+      {selectedFile && (
+        <div className="fixed inset-0 bg-ink/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white border-3 border-ink shadow-brutal-xl max-w-2xl w-full max-h-[85vh] flex flex-col">
+            <div className="p-4 border-b-3 border-ink flex items-center justify-between gap-4 bg-cream-100">
+              <div className="min-w-0">
+                <h3 className="font-black text-sm truncate">{selectedFile.name}</h3>
+                <p className="text-[10px] font-mono text-ink-muted">{selectedFile.mimeType}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {selectedFile.webViewLink && (
+                  <a
+                    href={selectedFile.webViewLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-teal text-[11px] py-1 px-2.5 flex items-center gap-1"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Open in Drive
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedFile(null)}
+                  className="p-1 border-2 border-ink bg-white hover:bg-coral hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="p-4 overflow-y-auto text-xs whitespace-pre-wrap leading-relaxed">
+              {selectedFile.content
+                ? selectedFile.content
+                : 'Preview is not available for this binary/media file type. Click "Open in Drive" above to view it.'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedEmail && (
+        <div className="fixed inset-0 bg-ink/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white border-3 border-ink shadow-brutal-xl max-w-2xl w-full max-h-[85vh] flex flex-col">
+            <div className="p-4 border-b-3 border-ink flex items-start justify-between gap-4 bg-cream-100">
+              <div className="min-w-0">
+                <h3 className="font-black text-sm">{selectedEmail.subject}</h3>
+                <p className="text-[11px] font-mono text-ink-muted truncate mt-0.5">
+                  From: {selectedEmail.from} • {selectedEmail.date}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedEmail(null)}
+                className="p-1 border-2 border-ink bg-white hover:bg-coral hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto text-xs whitespace-pre-wrap leading-relaxed">
+              {selectedEmail.body || selectedEmail.snippet}
+            </div>
+          </div>
+        </div>
+      )}
+
       <form onSubmit={handleSearchSubmit} className="bg-cream-100 border-3 border-ink p-4 shadow-brutal flex items-center gap-2">
         <Search className="w-4 h-4 text-ink" />
         <input
@@ -188,16 +292,22 @@ export const DrivePage: React.FC = () => {
           ) : !connected ? (
             <p className="text-xs text-ink-muted">
               {configured
-                ? 'Click "Connect Google Drive" above to authorize read-only access to your Drive files.'
+                ? 'Click "Connect Google Drive" above to authorize access to your Drive files.'
                 : 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Vercel Environment Variables first, then click "Connect Google Drive".'}
             </p>
           ) : files.length === 0 ? (
             <p className="text-xs text-ink-muted">No matching files found in Google Drive.</p>
           ) : (
-            <div className="space-y-2 text-xs">
+            <div className="space-y-2 text-xs max-h-72 overflow-y-auto">
               {files.map((f) => (
-                <div key={f.id} className="flex items-center justify-between gap-2 p-2 border border-ink bg-cream-50 font-medium">
-                  <span className="truncate">{f.name}</span>
+                <div key={f.id} className="flex items-center justify-between gap-2 p-2 border border-ink bg-cream-50 hover:bg-yellow/20 font-medium">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenFile(f)}
+                    className="truncate text-left flex-1 cursor-pointer hover:underline"
+                  >
+                    {f.name}
+                  </button>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className="text-[10px] font-mono text-ink-muted">{formatSize(f.size)}</span>
                     {f.webViewLink && (
@@ -232,11 +342,16 @@ export const DrivePage: React.FC = () => {
           ) : (
             <div className="space-y-2 text-xs max-h-72 overflow-y-auto">
               {importantEmails.map((em) => (
-                <div key={em.id} className="p-2.5 border border-ink bg-cream-50 space-y-1">
+                <button
+                  key={em.id}
+                  type="button"
+                  onClick={() => handleOpenEmail(em)}
+                  className="w-full text-left p-2.5 border border-ink bg-cream-50 hover:bg-yellow/20 space-y-1 cursor-pointer"
+                >
                   <div className="font-bold text-coral truncate">{em.subject}</div>
                   <div className="text-[10px] font-mono text-ink-muted truncate">{em.from}</div>
                   <p className="text-[11px] text-ink/80 line-clamp-2">{em.snippet}</p>
-                </div>
+                </button>
               ))}
             </div>
           )}
