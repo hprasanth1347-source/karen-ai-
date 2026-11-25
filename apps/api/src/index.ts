@@ -1,7 +1,7 @@
 import 'dotenv/config';
+import { createRequire } from 'node:module';
 import express from 'express';
 import cors from 'cors';
-import * as helmet from 'helmet';
 import { config } from './config/env.js';
 import { logger } from './config/logger.js';
 import { globalLimit } from './middleware/rateLimit.js';
@@ -11,7 +11,8 @@ import router from './routes/index.js';
 
 const app = express();
 
-app.use(helmet.default());
+const helmet = createRequire(import.meta.url)('helmet') as () => express.RequestHandler;
+app.use(helmet());
 app.use(
   cors({
     origin: config.ALLOWED_ORIGINS.split(',').map((o) => o.trim()),
