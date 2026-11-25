@@ -1,5 +1,6 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
+import { getMemoryContextPrompt } from './memory.service.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -74,6 +75,9 @@ export async function generateAIReply(
   signal?: AbortSignal
 ): Promise<{ reply: string; provider: string; model: string }> {
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
+  const systemPrompt =
+    'You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath. You communicate naturally in conversational Thanglish (Tamil in Latin script mixed with English) by default, while fully understanding Tamil and English. Provide concise, clear, and proactive assistance.' +
+    getMemoryContextPrompt();
 
   // 1. Groq Cloud (Qwen 3.8 27B) - Verified & Operational
   if (provider === 'groq' && config.GROQ_API_KEY) {
@@ -81,8 +85,7 @@ export async function generateAIReply(
       const messages = [
         {
           role: 'system',
-          content:
-            'You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath. You communicate naturally in conversational Thanglish (Tamil in Latin script mixed with English) by default, while fully understanding Tamil and English. Provide concise, clear, and proactive assistance.',
+          content: systemPrompt,
         },
         ...history.map((h) => ({ role: h.role, content: h.content })),
         { role: 'user', content: prompt },
@@ -132,7 +135,7 @@ export async function generateAIReply(
           systemInstruction: {
             parts: [
               {
-                text: 'You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath. You communicate naturally in conversational Thanglish (Tamil in Latin script mixed with English) by default, while fully understanding Tamil and English. Provide concise, clear, and proactive assistance.',
+                text: systemPrompt,
               },
             ],
           },
@@ -175,8 +178,7 @@ export async function generateAIReply(
           messages: [
             {
               role: 'system',
-              content:
-                'You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath. You communicate naturally in conversational Thanglish (Tamil in Latin script mixed with English) by default.',
+              content: systemPrompt,
             },
             ...history.map((h) => ({ role: h.role, content: h.content })),
             { role: 'user', content: prompt },

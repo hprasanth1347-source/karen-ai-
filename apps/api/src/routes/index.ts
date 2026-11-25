@@ -7,6 +7,7 @@ import activityRoutes from './activity.js';
 import aiRoutes from './ai.js';
 import taskRoutes from './tasks.js';
 import memoryRoutes from './memories.js';
+import documentsRoutes from './documents.js';
 import instagramRoutes from './instagram.js';
 import skillRoutes from './skills.js';
 import { telegramWebhook } from '../providers/telegram.js';
@@ -22,6 +23,7 @@ router.use('/v1', activityRoutes);
 router.use('/v1', aiRoutes);
 router.use('/v1', taskRoutes);
 router.use('/v1', memoryRoutes);
+router.use('/v1', documentsRoutes);
 router.use('/v1/instagram', instagramRoutes);
 router.use('/v1', skillRoutes);
 
