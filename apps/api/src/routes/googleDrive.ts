@@ -1,9 +1,16 @@
-import crypto from 'node:crypto';
 import { Router, type Request } from 'express';
 import { config } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { aiLimit } from '../middleware/rateLimit.js';
 import { generateAIReply } from '../services/ai.service.js';
+import {
+  clearGoogleTokensFromDb,
+  decryptJson,
+  encryptJson,
+  loadGoogleTokensFromDb,
+  saveGoogleTokensToDb,
+} from '../services/persistence.service.js';
+import { extractTextFromBuffer } from '../utils/docParser.js';
 import { logger } from '../config/logger.js';
 import { success, error } from '../utils/response.js';
 
@@ -17,37 +24,6 @@ const GOOGLE_COOKIE_NAME = 'karen_google_oauth';
 let driveTokens: DriveTokenState | null = null;
 const router = Router();
 
-function getCookieCipherKey(): Buffer {
-  const secret = config.ENCRYPTION_KEY || config.APP_SECRET || 'karen-local-oauth-fallback-key';
-  return crypto.createHash('sha256').update(secret).digest();
-}
-
-function encryptTokenCookie(tokens: DriveTokenState): string {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', getCookieCipherKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(JSON.stringify(tokens), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]).toString('base64url');
-}
-
-function decryptTokenCookie(raw?: string): DriveTokenState | null {
-  if (!raw) return null;
-  try {
-    const buf = Buffer.from(raw, 'base64url');
-    if (buf.length < 29) return null;
-    const iv = buf.subarray(0, 12);
-    const tag = buf.subarray(12, 28);
-    const data = buf.subarray(28);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', getCookieCipherKey(), iv);
-    decipher.setAuthTag(tag);
-    const json = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
-    const parsed = JSON.parse(json) as DriveTokenState;
-    return parsed?.accessToken ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 function readCookieValue(req: Request, name: string): string | undefined {
   const header = req.headers.cookie;
   if (!header) return undefined;
@@ -58,10 +34,19 @@ function readCookieValue(req: Request, name: string): string | undefined {
   return undefined;
 }
 
-export function hydrateGoogleTokensFromRequest(req: Request): void {
-  const fromCookie = decryptTokenCookie(readCookieValue(req, GOOGLE_COOKIE_NAME));
-  if (fromCookie) {
-    driveTokens = fromCookie;
+export async function hydrateGoogleTokensFromRequest(req?: Request): Promise<void> {
+  if (req) {
+    const fromCookie = decryptJson<DriveTokenState>(readCookieValue(req, GOOGLE_COOKIE_NAME));
+    if (fromCookie) {
+      driveTokens = fromCookie;
+      return;
+    }
+  }
+  if (!driveTokens) {
+    const fromDb = await loadGoogleTokensFromDb();
+    if (fromDb) {
+      driveTokens = fromDb;
+    }
   }
 }
 
@@ -102,9 +87,7 @@ function buildGoogleAuthUrl(redirectUri: string, state: 'drive' | 'gmail' = 'dri
 }
 
 async function getValidAccessToken(req?: Request): Promise<string | null> {
-  if (req) {
-    hydrateGoogleTokensFromRequest(req);
-  }
+  await hydrateGoogleTokensFromRequest(req);
   if (!driveTokens) return null;
   if (Date.now() < driveTokens.expiresAt - 60_000) {
     return driveTokens.accessToken;
@@ -172,7 +155,8 @@ router.get('/auth/google/callback', async (req, res) => {
       refreshToken: json.refresh_token || driveTokens?.refreshToken || '',
       expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
     };
-    res.cookie(GOOGLE_COOKIE_NAME, encryptTokenCookie(driveTokens), {
+    await saveGoogleTokensToDb(driveTokens);
+    res.cookie(GOOGLE_COOKIE_NAME, encryptJson(driveTokens), {
       httpOnly: true,
       secure: config.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -193,8 +177,8 @@ router.use('/drive', (req, res, next) => {
   return requireAuth(req, res, next);
 });
 
-router.get('/drive/status', (req, res) => {
-  hydrateGoogleTokensFromRequest(req);
+router.get('/drive/status', async (req, res) => {
+  await hydrateGoogleTokensFromRequest(req);
   return success(res, {
     configured: isGoogleConfigured(),
     connected: Boolean(driveTokens?.accessToken),
@@ -213,8 +197,9 @@ router.get('/drive/auth-url', (req, res) => {
   });
 });
 
-router.post('/drive/disconnect', (_req, res) => {
+router.post('/drive/disconnect', async (_req, res) => {
   driveTokens = null;
+  await clearGoogleTokensFromDb();
   res.clearCookie(GOOGLE_COOKIE_NAME, { path: '/' });
   return success(res, { disconnected: true });
 });
@@ -334,7 +319,15 @@ function extractGmailBody(payload: any): string {
 async function fetchDriveFilePreview(
   token: string,
   fileId: string
-): Promise<{ id: string; name: string; mimeType: string; webViewLink?: string; content?: string; previewUnavailable?: boolean }> {
+): Promise<{
+  id: string;
+  name: string;
+  mimeType: string;
+  webViewLink?: string;
+  previewMode?: 'text' | 'pdf' | 'image' | 'binary';
+  content?: string;
+  previewUnavailable?: boolean;
+}> {
   const metaRes = await fetch(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,webViewLink`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -345,8 +338,9 @@ async function fetchDriveFilePreview(
   }
 
   const mime = String(meta.mimeType || '');
+  const name = String(meta.name || '');
   let content = '';
-  let previewUnavailable = false;
+  let previewMode: 'text' | 'pdf' | 'image' | 'binary' = 'text';
 
   if (mime === 'application/vnd.google-apps.document') {
     const r = await fetch(
@@ -360,10 +354,34 @@ async function fetchDriveFilePreview(
       { headers: { Authorization: `Bearer ${token}` } }
     );
     if (r.ok) content = await r.text();
+  } else if (mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
+    previewMode = 'pdf';
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      content = await extractTextFromBuffer(buf, name, mime).catch(() => '');
+    }
+  } else if (
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    name.toLowerCase().endsWith('.docx')
+  ) {
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      content = await extractTextFromBuffer(buf, name, mime).catch(() => '');
+    }
+  } else if (mime.startsWith('image/')) {
+    previewMode = 'image';
   } else if (
     mime.startsWith('text/') ||
     mime === 'application/json' ||
-    /\.(txt|md|csv|json|log|ts|js|py|html|xml)$/i.test(meta.name || '')
+    /\.(txt|md|csv|json|log|ts|js|py|html|xml)$/i.test(name)
   ) {
     const r = await fetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
@@ -371,18 +389,54 @@ async function fetchDriveFilePreview(
     );
     if (r.ok) content = await r.text();
   } else {
-    previewUnavailable = true;
+    previewMode = 'binary';
   }
 
   return {
     id: meta.id,
-    name: meta.name,
+    name,
     mimeType: mime,
     webViewLink: meta.webViewLink,
+    previewMode,
     content: content ? content.slice(0, 20000) : undefined,
-    previewUnavailable,
+    previewUnavailable: previewMode === 'binary' && !content,
   };
 }
+
+router.get('/drive/files/:id/raw', async (req, res) => {
+  const token = await getValidAccessToken(req);
+  if (!token) {
+    return error(res, 'Google Drive is not connected yet.', 401, 'DRIVE_NOT_CONNECTED');
+  }
+  try {
+    const fileId = encodeURIComponent(String(req.params.id));
+    const metaRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const meta = await metaRes.json();
+    if (!metaRes.ok) {
+      return error(res, meta.error?.message || 'File not found', metaRes.status);
+    }
+
+    const mime = String(meta.mimeType || 'application/octet-stream');
+    const isGoogleWorkspace = mime.startsWith('application/vnd.google-apps.');
+    const url = isGoogleWorkspace
+      ? `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`
+      : `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+
+    const fileRes = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!fileRes.ok) {
+      return error(res, 'Failed to stream Drive file', fileRes.status);
+    }
+    const buf = Buffer.from(await fileRes.arrayBuffer());
+    res.setHeader('Content-Type', isGoogleWorkspace ? 'application/pdf' : mime);
+    res.setHeader('Content-Disposition', `inline; filename="${String(meta.name || 'file').replace(/"/g, '')}"`);
+    return res.send(buf);
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Failed to load file stream', 502);
+  }
+});
 
 router.get('/drive/files/:id/content', async (req, res) => {
   const token = await getValidAccessToken(req);
@@ -565,7 +619,7 @@ router.get('/gmail/messages', async (req, res) => {
 });
 
 router.post('/gmail/send', async (req, res) => {
-  hydrateGoogleTokensFromRequest(req);
+  await hydrateGoogleTokensFromRequest(req);
   const { to, subject, body } = req.body || {};
   if (!to || !subject || !body) {
     return error(res, 'to, subject, and body are required', 400);

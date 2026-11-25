@@ -1,6 +1,7 @@
 import { logger } from '../config/logger.js';
 import { config } from '../config/env.js';
 import { generateAIReply, type AIProvider } from './ai.service.js';
+import { loadUserSetting, saveUserSetting } from './persistence.service.js';
 import {
   sendInstagramMessage,
   getInstagramConversations,
@@ -70,6 +71,7 @@ class InstagramAutoReplyService {
   private logs: AutoReplyLog[] = [];
   private pollIntervalTimer: NodeJS.Timeout | null = null;
   private scanInProgress = false;
+  private hydrated = false;
 
   constructor() {
     if (config.INSTAGRAM_AUTO_REPLY_POLLING_ENABLED) {
@@ -77,22 +79,40 @@ class InstagramAutoReplyService {
     }
   }
 
-  public getConfig(): AutoReplyConfig {
+  private async ensureHydrated(): Promise<void> {
+    if (this.hydrated) return;
+    this.hydrated = true;
+    const savedConfig = await loadUserSetting<Partial<AutoReplyConfig>>('instagram_auto_reply_config');
+    if (savedConfig && typeof savedConfig === 'object') {
+      this.config = { ...this.config, ...savedConfig };
+    }
+    const savedLogs = await loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs');
+    if (Array.isArray(savedLogs) && savedLogs.length > 0) {
+      this.logs = savedLogs.slice(0, 30);
+    }
+  }
+
+  public async getConfig(): Promise<AutoReplyConfig> {
+    await this.ensureHydrated();
     return { ...this.config };
   }
 
-  public updateConfig(newConfig: Partial<AutoReplyConfig>): AutoReplyConfig {
+  public async updateConfig(newConfig: Partial<AutoReplyConfig>): Promise<AutoReplyConfig> {
+    await this.ensureHydrated();
     this.config = { ...this.config, ...newConfig };
+    await saveUserSetting('instagram_auto_reply_config', this.config);
     logger.info('Updated Instagram Auto-Reply config:', this.config);
-    return this.getConfig();
+    return { ...this.config };
   }
 
-  public getLogs(): AutoReplyLog[] {
+  public async getLogs(): Promise<AutoReplyLog[]> {
+    await this.ensureHydrated();
     return [...this.logs].slice(0, 30);
   }
 
-  public clearLogs(): void {
+  public async clearLogs(): Promise<void> {
     this.logs = [];
+    await saveUserSetting('instagram_auto_reply_logs', []);
   }
 
   /**
@@ -120,6 +140,7 @@ class InstagramAutoReplyService {
     messageText: string,
     bypassRateLimit = false
   ): Promise<{ autoReplied: boolean; replyText?: string; error?: string }> {
+    await this.ensureHydrated();
     const ownerId = config.INSTAGRAM_ACCOUNT_ID;
     const ownerUsername = config.INSTAGRAM_USERNAME;
 
@@ -244,6 +265,8 @@ Thanglish Style Guide (CRITICAL):
     };
 
     this.logs.unshift(logEntry);
+    if (this.logs.length > 30) this.logs.length = 30;
+    void saveUserSetting('instagram_auto_reply_logs', this.logs);
 
     if (sendRes.success) {
       logger.info(`Auto-reply sent successfully to @${senderUsername}: "${replyText}"`);

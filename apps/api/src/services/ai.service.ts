@@ -11,6 +11,11 @@ import { getGoogleContextForPrompt, sendGmailMessage } from '../routes/googleDri
 import { getDocumentsContextPrompt } from '../routes/documents.js';
 import { addTask, getTasksContextPrompt, type TaskPriority } from './task.service.js';
 import { getInstagramConversations, sendInstagramMessage } from '../providers/instagram.js';
+import {
+  createApprovalRequest,
+  isSensitiveSend,
+  type ApprovalItem,
+} from './approval.service.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -81,8 +86,9 @@ async function finalizeAIReply(
   rawReply: string,
   provider: string,
   model: string
-): Promise<{ reply: string; provider: string; model: string }> {
+): Promise<{ reply: string; provider: string; model: string; pendingApproval?: ApprovalItem }> {
   let cleaned = rawReply;
+  let pendingApproval: ApprovalItem | undefined;
 
   const taskTagRegex = /\[\[TASK:\s*([^|\]]+?)(?:\s*\|\s*([^|\]]*?))?(?:\s*\|\s*(low|medium|high|urgent))?\s*\]\]/gi;
   for (const match of rawReply.matchAll(taskTagRegex)) {
@@ -110,13 +116,22 @@ async function finalizeAIReply(
     const to = match[1]?.trim();
     const subject = match[2]?.trim();
     const body = match[3]?.trim();
-    const attachmentQuery = match[4]?.trim() || undefined;
+    const attachmentQuery = match[4]?.trim() || '';
     if (to && subject && body) {
-      const res = await sendGmailMessage(to, subject, body, attachmentQuery);
-      if (res.success) {
-        cleaned += `\n\n✓ Email sent to ${to}${res.attachedFile ? ` (attached: ${res.attachedFile})` : ''}`;
+      if (isSensitiveSend(`${subject} ${body} ${attachmentQuery}`)) {
+        pendingApproval = await createApprovalRequest(
+          'send_email',
+          `Send sensitive email "${subject}"${attachmentQuery ? ` (file: ${attachmentQuery})` : ''} to ${to}`,
+          { to, subject, body, attachmentQuery }
+        );
+        cleaned += `\n\n⚠ Approval required before sending sensitive file/email to ${to}. Click "Approve & Send" below to confirm.`;
       } else {
-        cleaned += `\n\n(Note: Email to ${to} could not be sent: ${res.error})`;
+        const res = await sendGmailMessage(to, subject, body, attachmentQuery || undefined);
+        if (res.success) {
+          cleaned += `\n\n✓ Email sent to ${to}${res.attachedFile ? ` (attached: ${res.attachedFile})` : ''}`;
+        } else {
+          cleaned += `\n\n(Note: Email to ${to} could not be sent: ${res.error})`;
+        }
       }
     }
     cleaned = cleaned.replace(match[0], '').trim();
@@ -127,29 +142,38 @@ async function finalizeAIReply(
     const targetUser = match[1]?.trim().replace(/^@/, '').toLowerCase();
     const msg = match[2]?.trim();
     if (targetUser && msg) {
-      try {
-        const threads = await getInstagramConversations();
-        const found = threads.find(
-          (t) =>
-            t.participant?.username?.toLowerCase().includes(targetUser) ||
-            t.participant?.id === targetUser
+      if (isSensitiveSend(msg)) {
+        pendingApproval = await createApprovalRequest(
+          'send_insta',
+          `Send sensitive Instagram DM to @${targetUser}`,
+          { username: targetUser, message: msg }
         );
-        if (found?.participant?.id) {
-          const res = await sendInstagramMessage(found.participant.id, msg);
-          if (!res.success) {
-            cleaned += `\n\n(Note: Instagram DM to @${targetUser} failed: ${res.error})`;
+        cleaned += `\n\n⚠ Approval required before sending sensitive Instagram DM to @${targetUser}. Click "Approve & Send" below to confirm.`;
+      } else {
+        try {
+          const threads = await getInstagramConversations();
+          const found = threads.find(
+            (t) =>
+              t.participant?.username?.toLowerCase().includes(targetUser) ||
+              t.participant?.id === targetUser
+          );
+          if (found?.participant?.id) {
+            const res = await sendInstagramMessage(found.participant.id, msg);
+            if (!res.success) {
+              cleaned += `\n\n(Note: Instagram DM to @${targetUser} failed: ${res.error})`;
+            }
+          } else {
+            cleaned += `\n\n(Note: Could not find an active Instagram DM thread for @${targetUser}.)`;
           }
-        } else {
-          cleaned += `\n\n(Note: Could not find an active Instagram DM thread for @${targetUser}.)`;
+        } catch (err) {
+          logger.warn('AI chat Instagram send failed', { err });
         }
-      } catch (err) {
-        logger.warn('AI chat Instagram send failed', { err });
       }
     }
     cleaned = cleaned.replace(match[0], '').trim();
   }
 
-  return { reply: cleaned.trim(), provider, model };
+  return { reply: cleaned.trim(), provider, model, pendingApproval };
 }
 
 export async function generateAIReply(
@@ -158,7 +182,7 @@ export async function generateAIReply(
   preferredProvider?: AIProvider,
   preferredModel?: string,
   signal?: AbortSignal
-): Promise<{ reply: string; provider: string; model: string }> {
+): Promise<{ reply: string; provider: string; model: string; pendingApproval?: ApprovalItem }> {
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
   const needsSearch = shouldSearchWeb(prompt);
   const [searchResults, googleContext, memoryContext, tasksContext] = await Promise.all([

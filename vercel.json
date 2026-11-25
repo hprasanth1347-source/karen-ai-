@@ -4,6 +4,12 @@
   "installCommand": "npm install --include=dev --workspace=@karen/web --workspace=@karen/api",
   "buildCommand": "npm run build --workspace=@karen/web && rm -rf dist && cp -r apps/web/dist dist",
   "outputDirectory": "dist",
+  "crons": [
+    {
+      "path": "/api/v1/cron/morning-briefing",
+      "schedule": "30 2 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api",

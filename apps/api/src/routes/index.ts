@@ -9,6 +9,7 @@ import taskRoutes from './tasks.js';
 import memoryRoutes from './memories.js';
 import documentsRoutes from './documents.js';
 import googleDriveRoutes from './googleDrive.js';
+import cronRoutes from './cron.js';
 import instagramRoutes from './instagram.js';
 import skillRoutes from './skills.js';
 import { telegramWebhook } from '../providers/telegram.js';
@@ -26,6 +27,7 @@ router.use('/v1', taskRoutes);
 router.use('/v1', memoryRoutes);
 router.use('/v1', documentsRoutes);
 router.use('/v1', googleDriveRoutes);
+router.use('/v1', cronRoutes);
 router.use('/v1/instagram', instagramRoutes);
 router.use('/v1', skillRoutes);
 

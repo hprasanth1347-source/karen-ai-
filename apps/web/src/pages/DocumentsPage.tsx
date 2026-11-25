@@ -14,15 +14,30 @@ interface DocRecord {
 
 const STORAGE_KEY = 'karen_uploaded_docs_v1';
 
-async function extractReadableText(file: File): Promise<string> {
+async function fileToBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function readUploadPayload(
+  file: File
+): Promise<{ content?: string; contentBase64?: string }> {
   const textTypes = /\.(txt|md|csv|json|log|html|xml|ts|tsx|js|py)$/i;
   if (textTypes.test(file.name) || file.type.startsWith('text/')) {
-    return await file.text();
+    return { content: (await file.text()).slice(0, 100000) };
+  }
+  if (/\.(pdf|docx)$/i.test(file.name) || file.type === 'application/pdf') {
+    return { contentBase64: await fileToBase64(file) };
   }
   const buffer = await file.arrayBuffer();
   const decoded = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
   const runs = decoded.match(/[\x20-\x7E\r\n]{4,}/g) ?? [];
-  return runs.join(' ').replace(/\s+/g, ' ').trim();
+  return { content: runs.join(' ').replace(/\s+/g, ' ').trim() };
 }
 
 export const DocumentsPage: React.FC = () => {
@@ -79,17 +94,30 @@ export const DocumentsPage: React.FC = () => {
       });
   }, []);
 
-  const uploadTextDoc = async (name: string, content: string, mimeType: string, size: number, source: 'Upload' | 'Paste') => {
-    const res = await api.post('/documents', { name, content, mimeType, size, source });
+  const uploadTextDoc = async (
+    name: string,
+    payload: { content?: string; contentBase64?: string },
+    mimeType: string,
+    size: number,
+    source: 'Upload' | 'Paste'
+  ) => {
+    const res = await api.post('/documents', {
+      name,
+      ...payload,
+      mimeType,
+      size,
+      source,
+    });
     const created: DocRecord = res.data?.data ?? {
       id: `local_${Date.now()}`,
       name,
       size,
       status: 'READY',
       source,
-      charCount: content.length,
+      content: payload.content,
+      charCount: payload.content?.length || 0,
     };
-    setDocs((prev) => [{ ...created, content }, ...prev.filter((d) => d.id !== created.id)]);
+    setDocs((prev) => [created, ...prev.filter((d) => d.id !== created.id)]);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -99,12 +127,12 @@ export const DocumentsPage: React.FC = () => {
     setUploading(true);
     try {
       for (const file of Array.from(files)) {
-        const extracted = await extractReadableText(file);
-        if (!extracted || extracted.trim().length < 5) {
-          setError(`Could not extract readable text from "${file.name}". Use "Paste Text" for scanned PDFs or binary files.`);
+        const payload = await readUploadPayload(file);
+        if (!payload.content && !payload.contentBase64) {
+          setError(`Could not read "${file.name}".`);
           continue;
         }
-        await uploadTextDoc(file.name, extracted.slice(0, 100000), file.type || 'text/plain', file.size, 'Upload');
+        await uploadTextDoc(file.name, payload, file.type || 'text/plain', file.size, 'Upload');
       }
     } catch (err: any) {
       setError(err?.response?.data?.error || 'Upload failed. Make sure you are signed in at /auth.');
@@ -120,7 +148,13 @@ export const DocumentsPage: React.FC = () => {
     setError(null);
     setUploading(true);
     try {
-      await uploadTextDoc(pasteName.trim(), pasteContent.trim(), 'text/plain', pasteContent.length, 'Paste');
+      await uploadTextDoc(
+        pasteName.trim(),
+        { content: pasteContent.trim() },
+        'text/plain',
+        pasteContent.length,
+        'Paste'
+      );
       setPasteName('');
       setPasteContent('');
       setShowPaste(false);

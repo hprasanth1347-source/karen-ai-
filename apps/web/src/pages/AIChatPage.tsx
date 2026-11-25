@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Send, Bot, User, RefreshCw } from 'lucide-react';
+import { Send, Bot, User, RefreshCw, Mic, Volume2, ShieldAlert, Check, X } from 'lucide-react';
+import { api } from '../lib/api';
 
 type AIProvider = 'gemini' | 'groq' | 'copilot';
 
@@ -19,6 +20,12 @@ interface ChatMessage {
     username: string;
     message: string;
     status: 'pending' | 'sending' | 'sent' | 'failed';
+    error?: string;
+  };
+  pendingApproval?: {
+    id: string;
+    summary: string;
+    status: 'pending' | 'approved' | 'rejected' | 'submitting' | 'failed';
     error?: string;
   };
 }
@@ -155,6 +162,83 @@ export const AIChatPage: React.FC = () => {
 
     return () => controller.abort();
   }, [provider]);
+
+  const [listening, setListening] = useState(false);
+
+  const handleVoiceInput = () => {
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition || listening) return;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-IN';
+    recognition.interimResults = false;
+    recognition.onresult = (event: any) => {
+      const spoken = event.results?.[0]?.[0]?.transcript || '';
+      if (spoken) setInput((prev) => (prev ? `${prev} ${spoken}` : spoken));
+      setListening(false);
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    setListening(true);
+    recognition.start();
+  };
+
+  const handleSpeakReply = async (text: string) => {
+    try {
+      const res = await api.post('/voice/synthesize', { text }, { responseType: 'blob' });
+      const audioUrl = URL.createObjectURL(res.data);
+      const audio = new Audio(audioUrl);
+      audio.onended = () => URL.revokeObjectURL(audioUrl);
+      await audio.play();
+    } catch {
+      // ElevenLabs female voice unconfigured; remain in text mode per policy
+    }
+  };
+
+  const handleApprovalAction = async (
+    messageId: string,
+    approvalId: string,
+    action: 'approve' | 'reject'
+  ) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId && m.pendingApproval
+          ? { ...m, pendingApproval: { ...m.pendingApproval, status: 'submitting' } }
+          : m
+      )
+    );
+    try {
+      await api.post(`/approvals/${approvalId}/${action}`);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId && m.pendingApproval
+            ? {
+                ...m,
+                pendingApproval: {
+                  ...m.pendingApproval,
+                  status: action === 'approve' ? 'approved' : 'rejected',
+                },
+              }
+            : m
+        )
+      );
+    } catch (err: any) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId && m.pendingApproval
+            ? {
+                ...m,
+                pendingApproval: {
+                  ...m.pendingApproval,
+                  status: 'failed',
+                  error: err?.response?.data?.error || 'Action failed.',
+                },
+              }
+            : m
+        )
+      );
+    }
+  };
 
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -345,7 +429,12 @@ export const AIChatPage: React.FC = () => {
         }),
       });
 
-      const result = await readApiData<{ reply: string; provider: string; model: string }>(res);
+      const result = await readApiData<{
+        reply: string;
+        provider: string;
+        model: string;
+        pendingApproval?: { id: string; summary: string };
+      }>(res);
       if (!result.reply) throw new Error('AI returned an empty response.');
 
       const botMsg: ChatMessage = {
@@ -354,6 +443,13 @@ export const AIChatPage: React.FC = () => {
         content: result.reply,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         provider: `${result.provider.toUpperCase()}${result.model ? ` · ${result.model}` : ''}`,
+        pendingApproval: result.pendingApproval
+          ? {
+              id: result.pendingApproval.id,
+              summary: result.pendingApproval.summary,
+              status: 'pending',
+            }
+          : undefined,
       };
       setMessages((prev) => [...prev, botMsg]);
     } catch (err) {
@@ -441,7 +537,7 @@ export const AIChatPage: React.FC = () => {
           <div>
             <h2 className="font-extrabold text-sm leading-none">KAREN AI BRAIN</h2>
             <span className="text-[10px] font-mono text-ink-muted">
-              Primary Language: Thanglish / Tamil / English
+              Primary Language: English (Thanglish in Instagram DMs)
             </span>
           </div>
         </div>
@@ -551,6 +647,57 @@ export const AIChatPage: React.FC = () => {
                   )}
                 </div>
               )}
+              {m.pendingApproval && (
+                <div className="mt-3 p-2.5 border-2 border-ink bg-yellow/25 text-ink space-y-2">
+                  <div className="font-bold flex items-center gap-1.5 text-[11px]">
+                    <ShieldAlert className="w-3.5 h-3.5 text-coral" />
+                    <span>{m.pendingApproval.summary}</span>
+                  </div>
+                  {m.pendingApproval.status === 'pending' && (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleApprovalAction(m.id, m.pendingApproval!.id, 'approve')}
+                        className="btn-teal px-3 py-1 text-[11px] flex items-center gap-1"
+                      >
+                        <Check className="w-3 h-3" />
+                        Approve &amp; Send
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleApprovalAction(m.id, m.pendingApproval!.id, 'reject')}
+                        className="btn-ghost px-3 py-1 text-[11px] flex items-center gap-1"
+                      >
+                        <X className="w-3 h-3" />
+                        Reject
+                      </button>
+                    </div>
+                  )}
+                  {m.pendingApproval.status === 'submitting' && <p>Processing...</p>}
+                  {m.pendingApproval.status === 'approved' && (
+                    <p className="font-bold text-green-700">✓ Approved and sent!</p>
+                  )}
+                  {m.pendingApproval.status === 'rejected' && (
+                    <p className="font-bold text-ink-muted">Cancelled (not sent).</p>
+                  )}
+                  {m.pendingApproval.status === 'failed' && (
+                    <p className="text-red-700">{m.pendingApproval.error}</p>
+                  )}
+                </div>
+              )}
+              {m.role === 'assistant' && (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => handleSpeakReply(m.content)}
+                    className="px-2 py-0.5 border border-ink bg-cream-50 hover:bg-yellow text-[10px] font-mono font-bold flex items-center gap-1"
+                    title="Speak with Karen female voice (requires ElevenLabs)"
+                  >
+                    <Volume2 className="w-3 h-3" />
+                    Speak
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -558,7 +705,7 @@ export const AIChatPage: React.FC = () => {
         {loading && (
           <div className="flex items-center gap-2 p-3 bg-white border-2 border-ink shadow-brutal-sm w-fit text-xs font-mono">
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-coral" />
-            <span>Karen is thinking in Thanglish...</span>
+            <span>Karen is thinking...</span>
           </div>
         )}
       </div>
@@ -578,11 +725,21 @@ export const AIChatPage: React.FC = () => {
 
       {/* Input row */}
       <form onSubmit={handleSend} className="flex gap-2">
+        <button
+          type="button"
+          onClick={handleVoiceInput}
+          className={`btn-ghost px-3 flex items-center justify-center ${
+            listening ? 'bg-coral text-white' : ''
+          }`}
+          title="Voice input"
+        >
+          <Mic className={`w-4 h-4 ${listening ? 'animate-pulse' : ''}`} />
+        </button>
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Karen kitta edhavadhu kelunga... (e.g. Schedule a task, summarize emails)"
+          placeholder="Ask Karen anything... (e.g. 'Send aadhar to abc@gmail.com', 'Schedule task tomorrow')"
           className="flex-1 bg-white border-3 border-ink px-4 py-2.5 text-xs font-medium outline-none focus:border-coral shadow-brutal"
         />
         <button

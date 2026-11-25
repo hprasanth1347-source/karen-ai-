@@ -219,11 +219,12 @@ router.post('/webhook', async (req, res) => {
 });
 
 // 11. Auto-Reply Configuration & Audit Endpoints
-router.get('/auto-reply', (_req, res) => {
-  return success(res, {
-    config: instagramAutoReplyService.getConfig(),
-    logs: instagramAutoReplyService.getLogs(),
-  });
+router.get('/auto-reply', async (_req, res) => {
+  const [cfg, logs] = await Promise.all([
+    instagramAutoReplyService.getConfig(),
+    instagramAutoReplyService.getLogs(),
+  ]);
+  return success(res, { config: cfg, logs });
 });
 
 const autoReplyConfigSchema = z.object({
@@ -235,14 +236,14 @@ const autoReplyConfigSchema = z.object({
   aiModel: z.string().optional(),
 });
 
-router.post('/auto-reply/config', validate(autoReplyConfigSchema), (req, res) => {
-  const updated = instagramAutoReplyService.updateConfig(req.body);
+router.post('/auto-reply/config', validate(autoReplyConfigSchema), async (req, res) => {
+  const updated = await instagramAutoReplyService.updateConfig(req.body);
   return success(res, updated);
 });
 
-router.post('/auto-reply/toggle', (req, res) => {
-  const current = instagramAutoReplyService.getConfig();
-  const updated = instagramAutoReplyService.updateConfig({ enabled: !current.enabled });
+router.post('/auto-reply/toggle', async (_req, res) => {
+  const current = await instagramAutoReplyService.getConfig();
+  const updated = await instagramAutoReplyService.updateConfig({ enabled: !current.enabled });
   return success(res, updated);
 });
 
@@ -252,7 +253,7 @@ router.post('/auto-reply/poll', async (_req, res) => {
     return success(res, {
       message: `Scanned active Instagram conversations. ${repliesSent} auto-reply messages dispatched.`,
       repliesSent,
-      logs: instagramAutoReplyService.getLogs(),
+      logs: await instagramAutoReplyService.getLogs(),
     });
   } catch (err: any) {
     return error(res, err.message, 500);
@@ -287,7 +288,7 @@ router.post('/auto-reply/simulate', validate(simulateSchema), async (req, res) =
       incomingMessage: messageText,
       autoReplied: result.autoReplied,
       replyText: result.replyText,
-      logs: instagramAutoReplyService.getLogs(),
+      logs: await instagramAutoReplyService.getLogs(),
     });
   } catch (err: any) {
     return error(res, err.message, 500);

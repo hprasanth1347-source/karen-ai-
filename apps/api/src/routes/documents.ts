@@ -5,6 +5,7 @@ import { validate } from '../middleware/validate.js';
 import { aiLimit } from '../middleware/rateLimit.js';
 import { config } from '../config/env.js';
 import { generateAIReply } from '../services/ai.service.js';
+import { extractTextFromBuffer } from '../utils/docParser.js';
 import { success, error } from '../utils/response.js';
 
 interface StoredDocument {
@@ -39,26 +40,46 @@ router.get('/documents', (_req, res) => {
 
 const uploadDocumentSchema = z.object({
   name: z.string().trim().min(1).max(200),
-  content: z.string().trim().min(1).max(200000),
+  content: z.string().trim().max(200000).optional(),
+  contentBase64: z.string().max(6000000).optional(),
   mimeType: z.string().trim().max(120).optional().default('text/plain'),
   size: z.number().int().nonnegative().optional(),
   source: z.enum(['Upload', 'Paste']).optional().default('Upload'),
 });
 
-router.post('/documents', validate(uploadDocumentSchema), (req, res) => {
+router.post('/documents', validate(uploadDocumentSchema), async (req, res) => {
+  let extractedText = (req.body.content || '').trim();
+  if (!extractedText && req.body.contentBase64) {
+    try {
+      const buf = Buffer.from(req.body.contentBase64, 'base64');
+      extractedText = await extractTextFromBuffer(buf, req.body.name, req.body.mimeType);
+    } catch (err) {
+      return error(
+        res,
+        err instanceof Error ? err.message : 'Could not parse uploaded PDF/DOCX file',
+        400,
+        'DOCUMENT_PARSE_ERROR'
+      );
+    }
+  }
+
+  if (!extractedText) {
+    return error(res, 'Could not extract readable text from document.', 400, 'EMPTY_DOCUMENT');
+  }
+
   const doc: StoredDocument = {
     id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     name: req.body.name,
     mimeType: req.body.mimeType,
-    size: req.body.size ?? req.body.content.length,
-    content: req.body.content,
+    size: req.body.size ?? extractedText.length,
+    content: extractedText.slice(0, 200000),
     status: 'READY',
     source: req.body.source,
     created_at: new Date().toISOString(),
   };
   documentsStore.unshift(doc);
   const { content: _content, ...meta } = doc;
-  return success(res, { ...meta, charCount: doc.content.length }, 201);
+  return success(res, { ...meta, content: doc.content.slice(0, 50000), charCount: doc.content.length }, 201);
 });
 
 router.delete('/documents/:id', (req, res) => {

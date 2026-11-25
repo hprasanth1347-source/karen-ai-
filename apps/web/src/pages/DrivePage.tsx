@@ -16,6 +16,7 @@ interface DrivePreview {
   name: string;
   mimeType: string;
   webViewLink?: string;
+  previewMode?: 'text' | 'pdf' | 'image' | 'binary';
   content?: string;
   previewUnavailable?: boolean;
 }
@@ -44,9 +45,26 @@ export const DrivePage: React.FC = () => {
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [importantEmails, setImportantEmails] = useState<ImportantEmail[]>([]);
   const [selectedFile, setSelectedFile] = useState<DrivePreview | null>(null);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewTab, setPreviewTab] = useState<'visual' | 'text'>('visual');
   const [selectedEmail, setSelectedEmail] = useState<ImportantEmail | null>(null);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  const closeFileModal = useCallback(() => {
+    setSelectedFile(null);
+    setPreviewBlobUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+    };
+  }, [previewBlobUrl]);
 
   const loadFiles = useCallback(async (q = '') => {
     setLoading(true);
@@ -123,17 +141,33 @@ export const DrivePage: React.FC = () => {
 
   const handleOpenFile = async (file: DriveFile) => {
     setError(null);
+    setPreviewLoading(true);
+    setPreviewTab('visual');
+    setPreviewBlobUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
     try {
       const res = await api.get(`/drive/files/${file.id}/content`);
-      if (res.data?.data) {
-        setSelectedFile(res.data.data);
+      const preview: DrivePreview | undefined = res.data?.data;
+      if (preview) {
+        setSelectedFile(preview);
+        const needsBlob =
+          preview.previewMode === 'pdf' ||
+          preview.previewMode === 'image' ||
+          preview.mimeType.startsWith('application/vnd.google-apps.');
+        if (needsBlob) {
+          const rawRes = await api.get(`/drive/files/${file.id}/raw`, { responseType: 'blob' });
+          const url = URL.createObjectURL(rawRes.data);
+          setPreviewBlobUrl(url);
+        } else {
+          setPreviewTab('text');
+        }
       }
     } catch (err: any) {
-      if (file.webViewLink) {
-        window.open(file.webViewLink, '_blank', 'noopener,noreferrer');
-      } else {
-        setError(err?.response?.data?.error || 'Could not open Drive file.');
-      }
+      setError(err?.response?.data?.error || 'Could not preview Drive file.');
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -155,11 +189,11 @@ export const DrivePage: React.FC = () => {
         <div>
           <div className="inline-flex items-center gap-2 px-2 py-0.5 bg-teal text-white text-xs font-mono font-bold border-2 border-ink shadow-brutal-sm mb-2">
             <HardDrive className="w-3.5 h-3.5" />
-            <span>GOOGLE DRIVE REPOSITORY & INDEXER</span>
+            <span>GOOGLE DRIVE REPOSITORY &amp; IN-APP PREVIEW</span>
           </div>
           <h1 className="text-xl md:text-2xl font-black">Google Drive Personal Document Vault</h1>
           <p className="text-xs text-ink-muted mt-1 max-w-xl">
-            Click any Drive file or important email to open and read it. Karen AI Chat can also search, read, and email your Drive files.
+            Preview PDFs, images, Docs, Sheets, and text files directly inside Karen—no Google Drive redirect errors.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -201,15 +235,40 @@ export const DrivePage: React.FC = () => {
         </div>
       )}
 
+      {previewLoading && !selectedFile && (
+        <div className="p-3 border-2 border-ink bg-yellow/20 text-xs font-mono flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading Drive file preview inside Karen...
+        </div>
+      )}
+
       {selectedFile && (
         <div className="fixed inset-0 bg-ink/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white border-3 border-ink shadow-brutal-xl max-w-2xl w-full max-h-[85vh] flex flex-col">
+          <div className="bg-white border-3 border-ink shadow-brutal-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
             <div className="p-4 border-b-3 border-ink flex items-center justify-between gap-4 bg-cream-100">
               <div className="min-w-0">
                 <h3 className="font-black text-sm truncate">{selectedFile.name}</h3>
                 <p className="text-[10px] font-mono text-ink-muted">{selectedFile.mimeType}</p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {previewBlobUrl && selectedFile.content && (
+                  <div className="flex border-2 border-ink text-[11px] font-mono font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewTab('visual')}
+                      className={`px-2 py-1 ${previewTab === 'visual' ? 'bg-yellow' : 'bg-white'}`}
+                    >
+                      Preview
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewTab('text')}
+                      className={`px-2 py-1 border-l-2 border-ink ${previewTab === 'text' ? 'bg-yellow' : 'bg-white'}`}
+                    >
+                      Extracted Text
+                    </button>
+                  </div>
+                )}
                 {selectedFile.webViewLink && (
                   <a
                     href={selectedFile.webViewLink}
@@ -218,22 +277,40 @@ export const DrivePage: React.FC = () => {
                     className="btn-teal text-[11px] py-1 px-2.5 flex items-center gap-1"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
-                    Open in Drive
+                    External
                   </a>
                 )}
                 <button
                   type="button"
-                  onClick={() => setSelectedFile(null)}
+                  onClick={closeFileModal}
                   className="p-1 border-2 border-ink bg-white hover:bg-coral hover:text-white"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
-            <div className="p-4 overflow-y-auto text-xs whitespace-pre-wrap leading-relaxed">
-              {selectedFile.content
-                ? selectedFile.content
-                : 'Preview is not available for this binary/media file type. Click "Open in Drive" above to view it.'}
+            <div className="p-4 overflow-y-auto text-xs flex-1">
+              {previewTab === 'visual' && previewBlobUrl ? (
+                selectedFile.previewMode === 'image' ? (
+                  <img
+                    src={previewBlobUrl}
+                    alt={selectedFile.name}
+                    className="max-h-[70vh] mx-auto border-2 border-ink"
+                  />
+                ) : (
+                  <iframe
+                    src={previewBlobUrl}
+                    title={selectedFile.name}
+                    className="w-full h-[70vh] border-2 border-ink bg-cream-50"
+                  />
+                )
+              ) : selectedFile.content ? (
+                <pre className="whitespace-pre-wrap font-sans leading-relaxed">{selectedFile.content}</pre>
+              ) : (
+                <p className="text-ink-muted">
+                  In-app preview is unavailable for this binary file format. Use the External button above to download or open it.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -310,17 +387,13 @@ export const DrivePage: React.FC = () => {
                   </button>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className="text-[10px] font-mono text-ink-muted">{formatSize(f.size)}</span>
-                    {f.webViewLink && (
-                      <a
-                        href={f.webViewLink}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="p-1 hover:text-teal"
-                        title="Open in Google Drive"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleOpenFile(f)}
+                      className="px-1.5 py-0.5 border border-ink bg-white text-[10px] font-mono font-bold hover:bg-teal hover:text-white"
+                    >
+                      Preview
+                    </button>
                   </div>
                 </div>
               ))}
@@ -365,7 +438,7 @@ export const DrivePage: React.FC = () => {
         </h3>
         <div className="p-3 border-2 border-ink bg-yellow/20 text-xs font-mono space-y-1">
           <div>GOOGLE OAUTH ENV: {configured ? 'CONFIGURED' : 'MISSING CLIENT ID / SECRET'}</div>
-          <div>DRIVE &amp; GMAIL SESSION: {connected ? 'CONNECTED (DRIVE + GMAIL)' : 'NOT CONNECTED'}</div>
+          <div>DRIVE &amp; GMAIL SESSION: {connected ? 'CONNECTED (PERSISTED IN SUPABASE)' : 'NOT CONNECTED'}</div>
         </div>
       </div>
     </div>

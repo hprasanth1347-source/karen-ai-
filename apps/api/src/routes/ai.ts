@@ -53,7 +53,7 @@ router.get('/ai/models', aiLimit, async (req, res) => {
 });
 
 router.post('/ai/chat', aiLimit, validate(chatSchema), async (req, res) => {
-  hydrateGoogleTokensFromRequest(req);
+  await hydrateGoogleTokensFromRequest(req);
   try {
     const result = await generateAIReply(
       req.body.message,
@@ -67,6 +67,10 @@ router.post('/ai/chat', aiLimit, validate(chatSchema), async (req, res) => {
     const status = err instanceof AIProviderError ? err.statusCode : 502;
     return error(res, message, status, 'AI_PROVIDER_ERROR');
   }
+});
+
+router.get('/voice/status', (_req, res) => {
+  return success(res, voiceStatus());
 });
 
 router.post('/voice/synthesize', async (req, res) => {
