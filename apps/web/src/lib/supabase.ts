@@ -1,18 +1,39 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const rawUrl = import.meta.env.VITE_SUPABASE_URL?.trim() ?? '';
+const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() ?? '';
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 export const isSupabaseConfigured = Boolean(
-  import.meta.env.VITE_SUPABASE_URL &&
-    key &&
-    !import.meta.env.VITE_SUPABASE_URL.includes('placeholder') &&
-    !key.includes('placeholder')
+  rawUrl &&
+    rawKey &&
+    isValidHttpUrl(rawUrl) &&
+    !rawUrl.includes('placeholder') &&
+    !rawKey.includes('placeholder')
 );
 
-export const supabase = url && key ? createClient(url, key, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-  },
-}) : null;
+let client: SupabaseClient | null = null;
+if (isSupabaseConfigured) {
+  try {
+    client = createClient(rawUrl, rawKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+      },
+    });
+  } catch (err) {
+    console.warn('Failed to initialize Supabase client:', err);
+  }
+} else if (rawUrl || rawKey) {
+  console.warn('Supabase env vars are invalid or placeholder; running without client auth.');
+}
+
+export const supabase = client;
