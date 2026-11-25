@@ -5,6 +5,43 @@ import { queryClient } from './lib/queryClient';
 import { AuthProvider } from './contexts/AuthContext';
 import AppLayout from './components/layout/AppLayout';
 
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; message: string }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, message: error?.message || 'Unexpected application error' };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-cream flex items-center justify-center p-6 font-sans text-ink">
+          <div className="max-w-lg w-full bg-white border-3 border-ink p-6 shadow-brutal space-y-4">
+            <h1 className="text-xl font-black text-coral">KAREN ULTRA — RECOVERY MODE</h1>
+            <p className="text-xs font-mono bg-cream-100 border-2 border-ink p-3 break-words">
+              {this.state.message}
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="btn-coral text-xs"
+            >
+              Reload Application
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 import OverviewPage from './pages/OverviewPage';
 import AIChatPage from './pages/AIChatPage';
 import WhatsAppPage from './pages/WhatsAppPage';
@@ -31,7 +68,8 @@ import NotFoundPage from './pages/NotFoundPage';
 
 export function App() {
   return (
-    <QueryClientProvider client={queryClient}>
+    <AppErrorBoundary>
+      <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <BrowserRouter>
           <Routes>
@@ -71,6 +109,7 @@ export function App() {
         </BrowserRouter>
       </AuthProvider>
     </QueryClientProvider>
+    </AppErrorBoundary>
   );
 }
 
