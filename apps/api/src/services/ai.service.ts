@@ -3,10 +3,12 @@ import { logger } from '../config/logger.js';
 import { getMemoryContextPrompt } from './memory.service.js';
 import {
   formatSearchContext,
+  isWebSearchConfigured,
   searchWebWithGoogle,
   shouldSearchWeb,
 } from './search.service.js';
 import { getGoogleContextForPrompt } from '../routes/googleDrive.js';
+import { addTask, getTasksContextPrompt, type TaskPriority } from './task.service.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -73,6 +75,26 @@ interface Message {
   content: string;
 }
 
+async function finalizeAIReply(
+  rawReply: string,
+  provider: string,
+  model: string
+): Promise<{ reply: string; provider: string; model: string }> {
+  const taskTagRegex = /\[\[TASK:\s*([^|\]]+?)(?:\s*\|\s*([^|\]]*?))?(?:\s*\|\s*(low|medium|high|urgent))?\s*\]\]/gi;
+  let cleaned = rawReply;
+  const matches = [...rawReply.matchAll(taskTagRegex)];
+  for (const match of matches) {
+    const title = match[1]?.trim();
+    const due = match[2]?.trim() || undefined;
+    const priority = (match[3]?.toLowerCase() as TaskPriority | undefined) || 'medium';
+    if (title) {
+      await addTask(title, due, priority, 'ai_scheduled');
+    }
+    cleaned = cleaned.replace(match[0], '').trim();
+  }
+  return { reply: cleaned.trim(), provider, model };
+}
+
 export async function generateAIReply(
   prompt: string,
   history: Message[] = [],
@@ -81,13 +103,30 @@ export async function generateAIReply(
   signal?: AbortSignal
 ): Promise<{ reply: string; provider: string; model: string }> {
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
-  const [searchResults, googleContext] = await Promise.all([
-    shouldSearchWeb(prompt) ? searchWebWithGoogle(prompt, 5, signal) : Promise.resolve([]),
+  const needsSearch = shouldSearchWeb(prompt);
+  const [searchResults, googleContext, memoryContext, tasksContext] = await Promise.all([
+    needsSearch && isWebSearchConfigured()
+      ? searchWebWithGoogle(prompt, 5, signal)
+      : Promise.resolve([]),
     getGoogleContextForPrompt(prompt),
+    getMemoryContextPrompt(),
+    getTasksContextPrompt(),
   ]);
+
+  const nowIst = new Date().toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'full',
+    timeStyle: 'medium',
+  });
+  const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
   const systemPrompt =
-    'You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath. Communicate in natural, everyday conversational Thanglish (spoken Tamil in Latin script mixed smoothly with English, e.g. "sollunga", "panniduren", "irukku", "venumna", "check panni solren") by default, while fully understanding Tamil and English. Be concise, warm, and never robotic.' +
-    getMemoryContextPrompt() +
+    `You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath.
+Current Live Date & Time (Asia/Kolkata IST): ${nowIst} (ISO date: ${todayIso}). Always use this exact live date and time when asked for the current date, time, day, or relative dates like today/tomorrow.
+Language Rule: Communicate in clear, natural English by default. Only reply in Thanglish or Tamil if the user writes in Tamil/Thanglish or the prompt explicitly requests Thanglish (e.g., Instagram DMs).
+Task Scheduling Rule: If the user asks you to schedule, add, or create a task or reminder, confirm it concisely and append [[TASK: <short task title> | <YYYY-MM-DD> | <low|medium|high|urgent>]] at the very end of your response so it is saved live.` +
+    memoryContext +
+    tasksContext +
     googleContext +
     formatSearchContext(searchResults);
 
@@ -124,7 +163,7 @@ export async function generateAIReply(
         const json = await res.json();
         const reply = json.choices?.[0]?.message?.content;
         if (reply) {
-          return { reply: reply.trim(), provider: 'groq', model: modelId };
+          return await finalizeAIReply(reply, 'groq', modelId);
         }
       } else {
         const errJson = await res.json().catch(() => ({}));
@@ -140,33 +179,42 @@ export async function generateAIReply(
     try {
       const modelName = preferredModel || getDefaultAIModel('gemini');
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${config.GEMINI_API_KEY}`;
-      const res = await fetch(url, {
+      const basePayload = {
+        systemInstruction: {
+          parts: [{ text: systemPrompt }],
+        },
+        contents: [
+          ...history.map((h) => ({
+            role: h.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: h.content }],
+          })),
+          { role: 'user', parts: [{ text: prompt }] },
+        ],
+      };
+
+      let res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [
-              {
-                text: systemPrompt,
-              },
-            ],
-          },
-          contents: [
-            ...history.map((h) => ({
-              role: h.role === 'assistant' ? 'model' : 'user',
-              parts: [{ text: h.content }],
-            })),
-            { role: 'user', parts: [{ text: prompt }] },
-          ],
-        }),
+        body: JSON.stringify(
+          needsSearch ? { ...basePayload, tools: [{ google_search: {} }] } : basePayload
+        ),
         signal,
       });
+
+      if (!res.ok && needsSearch) {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(basePayload),
+          signal,
+        });
+      }
 
       if (res.ok) {
         const json = await res.json();
         const reply = json.candidates?.[0]?.content?.parts?.[0]?.text;
         if (reply) {
-          return { reply: reply.trim(), provider: 'gemini', model: modelName };
+          return await finalizeAIReply(reply, 'gemini', modelName);
         }
       }
     } catch (err) {
@@ -203,7 +251,7 @@ export async function generateAIReply(
         const json = await res.json();
         const reply = json.choices?.[0]?.message?.content;
         if (reply) {
-          return { reply: reply.trim(), provider: 'copilot', model };
+          return await finalizeAIReply(reply, 'copilot', model);
         }
       } else {
         const errJson = await res.json().catch(() => ({}));
@@ -214,9 +262,9 @@ export async function generateAIReply(
     }
   }
 
-  // 4. Default graceful Thanglish fallback
+  // 4. Default graceful fallback
   return {
-    reply: `Vanakkam Hari! Naan unga message-a accept panniten: "${prompt}". Ungaluku help panna naan ready!`,
+    reply: `Hi Hari! I received your message: "${prompt}". I am ready to help whenever you need.`,
     provider: 'local-karen',
     model: 'karen-core-v1',
   };

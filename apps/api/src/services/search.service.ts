@@ -12,10 +12,9 @@ export function isWebSearchConfigured(): boolean {
 }
 
 export function shouldSearchWeb(prompt: string): boolean {
-  if (!isWebSearchConfigured()) return false;
   const text = prompt.trim();
   if (text.length < 8) return false;
-  return /\b(search|google|look up|find online|latest|news|today|current|price|weather|score|who is|what is|when is|release|version|2026|2025)\b/i.test(
+  return /\b(search|google|look up|find online|latest|news|today|current|recent|update|live|happening|price|weather|score|who is|what is|when is|how many|release|version|2026|2025)\b/i.test(
     text
   );
 }

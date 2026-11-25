@@ -127,9 +127,31 @@ export async function deleteMemory(id: string, userId?: string): Promise<boolean
   return true;
 }
 
-export function getMemoryContextPrompt(): string {
-  if (memoryStore.length === 0) return '';
-  const lines = memoryStore
+export async function getMemoryContextPrompt(userId?: string): Promise<string> {
+  let items: MemoryItem[] = [...memoryStore];
+  try {
+    const query = supabaseAdmin
+      .from('memories')
+      .select('id, content, category, importance, source, created_at')
+      .eq('is_archived', false)
+      .order('importance', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(25);
+
+    const { data, error } = userId ? await query.eq('user_id', userId) : await query;
+    if (!error && data && data.length > 0) {
+      const seen = new Set(data.map((m: any) => m.content));
+      items = [
+        ...(data as MemoryItem[]),
+        ...memoryStore.filter((m) => !seen.has(m.content)),
+      ];
+    }
+  } catch (err) {
+    logger.debug('Supabase memory context fetch fallback to in-memory store', { err });
+  }
+
+  if (items.length === 0) return '';
+  const lines = items
     .slice(0, 25)
     .map((m) => `- [${m.category}] ${m.content}`);
   return `\n\nOwner's Verified Personal Details & Instructions:\n${lines.join('\n')}`;
