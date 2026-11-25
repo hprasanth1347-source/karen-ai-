@@ -4,7 +4,6 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/queryClient';
 import { AuthProvider } from './contexts/AuthContext';
 import { useAuthContext } from './contexts/AuthContext';
-import { isSupabaseConfigured } from './lib/supabase';
 import AppLayout from './components/layout/AppLayout';
 
 class AppErrorBoundary extends React.Component<
@@ -84,7 +83,6 @@ function LoadingScreen() {
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuthContext();
-  if (!isSupabaseConfigured) return <>{children}</>;
   if (loading) return <LoadingScreen />;
   if (!user) return <Navigate to="/auth" replace />;
   return <>{children}</>;

@@ -28,7 +28,7 @@ export default function LoveModePage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await api.get<{ data: LoveModeState }>('/v1/love-mode/status');
+      const res = await api.get<{ data: LoveModeState }>('/love-mode/status');
       setState(res.data.data);
       setError(null);
     } catch {
@@ -43,11 +43,11 @@ export default function LoveModePage() {
   }, [fetchStatus]);
 
   const toggle = async () => {
-    if (!state) return;
+    const currentlyActive = state?.active ?? false;
     setToggling(true);
     setError(null);
     try {
-      const endpoint = state.active ? '/v1/love-mode/deactivate' : '/v1/love-mode/activate';
+      const endpoint = currentlyActive ? '/love-mode/deactivate' : '/love-mode/activate';
       const res = await api.post<{ data: LoveModeState }>(endpoint);
       setState(res.data.data);
     } catch {
@@ -88,17 +88,15 @@ export default function LoveModePage() {
 
       {/* Status card */}
       <div
-        className={`border-3 border-ink p-5 shadow-brutal space-y-4 transition-colors ${
-          isActive ? 'bg-pink-50' : 'bg-white'
-        }`}
+        className={`border-3 border-ink p-5 shadow-brutal space-y-4 transition-colors ${isActive ? 'bg-pink-50' : 'bg-white'
+          }`}
       >
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <div
-                className={`w-3 h-3 rounded-full border-2 border-ink ${
-                  isActive ? 'bg-coral animate-pulse' : 'bg-ink/20'
-                }`}
+                className={`w-3 h-3 rounded-full border-2 border-ink ${isActive ? 'bg-coral animate-pulse' : 'bg-ink/20'
+                  }`}
               />
               <span className="text-sm font-black">
                 {isActive ? 'Love Mode Active ❤️' : 'Normal Mode'}
@@ -115,11 +113,10 @@ export default function LoveModePage() {
             type="button"
             onClick={toggle}
             disabled={toggling}
-            className={`flex items-center gap-2 px-4 py-2.5 border-2 border-ink font-black text-xs shadow-brutal transition-all disabled:opacity-60 ${
-              isActive
+            className={`flex items-center gap-2 px-4 py-2.5 border-2 border-ink font-black text-xs shadow-brutal transition-all disabled:opacity-60 ${isActive
                 ? 'bg-ink text-cream hover:bg-ink/80'
                 : 'bg-coral text-white hover:bg-coral/80'
-            }`}
+              }`}
           >
             {toggling ? (
               <span className="animate-pulse">...</span>

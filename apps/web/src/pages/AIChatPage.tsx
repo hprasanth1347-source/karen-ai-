@@ -547,7 +547,27 @@ export const AIChatPage: React.FC = () => {
       const result = payload.data;
       if (!result.reply) throw new Error('AI returned an empty response.');
       if (result.conversationId) {
-        persistActiveId(result.conversationId);
+        const cid = result.conversationId;
+        persistActiveId(cid);
+        setConversations((prev) => {
+          const exists = prev.some((c) => c.id === cid);
+          const nowIso = new Date().toISOString();
+          if (exists) {
+            return prev.map((c) =>
+              c.id === cid ? { ...c, message_count: (c.message_count || 0) + 2, last_message_at: nowIso } : c
+            );
+          }
+          return [
+            {
+              id: cid,
+              title: currentInput.trim().slice(0, 60) || 'New Chat',
+              channel: 'web',
+              message_count: 2,
+              last_message_at: nowIso,
+            },
+            ...prev,
+          ];
+        });
         void loadConversations(false);
       }
 

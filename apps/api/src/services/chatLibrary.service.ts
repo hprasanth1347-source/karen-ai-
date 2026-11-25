@@ -91,7 +91,7 @@ export async function listConversations(
       if (channel) query = query.eq('channel', channel);
 
       const { data, error } = await query;
-      if (!error && data) {
+      if (!error && data && data.length > 0) {
         return data.map((row: Record<string, unknown>) => ({
           id: String(row.id),
           title: String(row.title || 'New Chat'),
@@ -101,15 +101,24 @@ export async function listConversations(
           created_at: String(row.created_at || new Date().toISOString()),
         }));
       }
+
+      const backup = await readSettingsLibrary();
+      const backupList = channel
+        ? backup.conversations.filter((c) => c.channel === channel)
+        : backup.conversations;
+      if (backupList.length > 0) {
+        return backupList;
+      }
       if (error) {
-        logger.warn('Supabase conversations read failed, using user_settings backup', { error });
-        const backup = await readSettingsLibrary();
-        return channel
-          ? backup.conversations.filter((c) => c.channel === channel)
-          : backup.conversations;
+        logger.warn('Supabase conversations read failed, using user_settings/memory backup', { error });
       }
     } catch (err) {
       logger.warn('Supabase conversations read error', { err });
+      const backup = await readSettingsLibrary().catch(() => ({ conversations: [], messages: {} }));
+      const backupList = channel
+        ? backup.conversations.filter((c) => c.channel === channel)
+        : backup.conversations;
+      if (backupList.length > 0) return backupList;
     }
   }
 
@@ -200,16 +209,22 @@ export async function getConversationMessages(
         .eq('user_id', uid)
         .order('created_at', { ascending: true });
 
-      if (!error && data) {
+      if (!error && data && data.length > 0) {
         return data as StoredChatMessage[];
+      }
+      const backup = await readSettingsLibrary();
+      if (backup.messages[conversationId]?.length) {
+        return backup.messages[conversationId];
       }
       if (error) {
         logger.warn('Supabase messages read failed, checking user_settings backup', { error });
-        const backup = await readSettingsLibrary();
-        return backup.messages[conversationId] || [];
       }
     } catch (err) {
       logger.warn('Supabase messages read error', { err });
+      const backup = await readSettingsLibrary().catch(
+        (): SettingsLibraryStore => ({ conversations: [], messages: {} })
+      );
+      if (backup.messages[conversationId]?.length) return backup.messages[conversationId];
     }
   }
 

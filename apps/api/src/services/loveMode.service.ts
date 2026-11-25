@@ -4,7 +4,7 @@
  */
 
 import { logger } from '../config/logger.js';
-import { supabaseAdmin } from '../config/supabase.js';
+import { loadUserSetting, saveUserSetting } from './persistence.service.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -35,14 +35,8 @@ function cacheKey(chatId: string | number): string {
 async function loadFromDb(chatId: string | number): Promise<LoveModeState | null> {
   try {
     const key = cacheKey(chatId);
-    const { data, error } = await supabaseAdmin
-      .from('user_settings')
-      .select('value')
-      .eq('key', key)
-      .maybeSingle();
-    if (error || !data) return null;
-    const v = data.value as LoveModeState;
-    if (typeof v?.active === 'boolean') return v;
+    const data = await loadUserSetting<LoveModeState>(key);
+    if (data && typeof data.active === 'boolean') return data;
     return null;
   } catch (err) {
     logger.warn('LoveMode: DB load failed', { err });
@@ -53,9 +47,7 @@ async function loadFromDb(chatId: string | number): Promise<LoveModeState | null
 async function saveToDb(chatId: string | number, state: LoveModeState): Promise<void> {
   try {
     const key = cacheKey(chatId);
-    await supabaseAdmin
-      .from('user_settings')
-      .upsert({ key, value: state as unknown as Record<string, unknown> }, { onConflict: 'key' });
+    await saveUserSetting(key, state);
   } catch (err) {
     logger.warn('LoveMode: DB save failed', { err });
   }
