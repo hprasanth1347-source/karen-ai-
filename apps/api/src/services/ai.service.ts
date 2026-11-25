@@ -1,6 +1,11 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { getMemoryContextPrompt } from './memory.service.js';
+import {
+  formatSearchContext,
+  searchWebWithGoogle,
+  shouldSearchWeb,
+} from './search.service.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -75,9 +80,13 @@ export async function generateAIReply(
   signal?: AbortSignal
 ): Promise<{ reply: string; provider: string; model: string }> {
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
+  const searchResults = shouldSearchWeb(prompt)
+    ? await searchWebWithGoogle(prompt, 5, signal)
+    : [];
   const systemPrompt =
     'You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath. You communicate naturally in conversational Thanglish (Tamil in Latin script mixed with English) by default, while fully understanding Tamil and English. Provide concise, clear, and proactive assistance.' +
-    getMemoryContextPrompt();
+    getMemoryContextPrompt() +
+    formatSearchContext(searchResults);
 
   // 1. Groq Cloud (Qwen 3.8 27B) - Verified & Operational
   if (provider === 'groq' && config.GROQ_API_KEY) {

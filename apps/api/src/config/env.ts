@@ -72,6 +72,8 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional().default(''),
   GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
   GOOGLE_REDIRECT_URI: z.string().default('http://localhost:8080/api/v1/auth/google/callback'),
+  GOOGLE_SEARCH_API_KEY: z.string().optional().default(''),
+  GOOGLE_SEARCH_ENGINE_ID: z.string().optional().default(''),
 
   // Security
   JWT_SECRET: z.string().optional(),
