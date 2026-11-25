@@ -8,6 +8,21 @@ import {
   type InstagramThread,
 } from '../providers/instagram.js';
 
+function getThanglishFallback(
+  senderUsername: string,
+  intent: NonNullable<AutoReplyLog['intent']>
+): string {
+  const fallbacks: Record<NonNullable<AutoReplyLog['intent']>, string> = {
+    greeting: `Hey @${senderUsername}! Naan Karen, Hari oda AI assistant. Sollunga, enna help venum?`,
+    availability: `Hey @${senderUsername}! Hari ippo konjam busy-a irukaaru. Ungalukku entha date and time convenient-a irukum nu sollunga, naan pass panniduren.`,
+    project: `Hey @${senderUsername}! Project details & deadline enna nu share pannunga, naan Hari kitta immediate-a forward panniduren.`,
+    help: `Hey @${senderUsername}! Naan Karen. Enna help venum nu konjam clear-a sollunga, udane assist pannuren.`,
+    thanks: `No worries @${senderUsername}! Vera ethavathu help venumna eppo venumnalum message pannunga.`,
+    general: `Hey @${senderUsername}! Unga message-a Hari kitta pass panniten. Vera ethavathu detail share pannanum na sollunga.`,
+  };
+  return fallbacks[intent];
+}
+
 export interface AutoReplyLog {
   id: string;
   senderId: string;
@@ -36,6 +51,7 @@ export interface AutoReplyConfig {
   enabled: boolean;
   triggerMode: 'all' | 'contains_hi';
   customTemplate?: string; // Optional static greeting
+  customInstructions?: string; // Custom AI training / business rules for DM replies
   aiProvider: AIProvider;
   aiModel?: string;
 }
@@ -159,13 +175,23 @@ class InstagramAutoReplyService {
         general:
           'Understand the sender’s actual need from the message, answer only what can be answered safely, and ask one concise follow-up question if more context is required.',
       };
-      const prompt = `User @${senderUsername} sent this message to Hari on Instagram: "${messageText}".
+      const customTraining = this.config.customInstructions?.trim()
+        ? `\nOwner's Custom DM Training Rules (follow strictly):\n${this.config.customInstructions.trim()}\n`
+        : '';
+
+      const prompt = `User @${senderUsername} sent this Instagram DM to Hari: "${messageText}".
 Hari is currently away. You are Karen Ultra, Hari's personal female AI assistant.
 Detected intent: ${intent}.
-${intentInstructions[intent]}
-Draft a warm, polite, and helpful answer in conversational Thanglish (Tamil in Latin script mixed with English).
-Base the reply on the sender’s need instead of repeating a generic greeting.
-Keep it under 2 sentences, sound natural and loyal, and do not claim that Hari has already confirmed a meeting or task.`;
+Goal: ${intentInstructions[intent]}
+${customTraining}
+Thanglish Style Guide (CRITICAL):
+- Reply in natural, everyday Chennai/Tamil conversational Thanglish (Tamil written in Latin script mixed naturally with English).
+- Use natural spoken connectors like: "sollunga", "irukaaru", "panniduren", "venumna", "konjam", "kitta", "eppo", "udane", "check panni solren".
+- Do NOT use stiff/bookish Tamil or robotic phrasing like "Unga request-a alert panniten".
+- Examples of good natural Thanglish:
+  * "Hey @${senderUsername}! Hari ippo konjam busy-a irukaaru, enna vishayam nu sollunga naan kitta pass panniduren."
+  * "Sure! Ungalukku entha time convenient-a irukum nu sollunga, naan Hari kitta check panni solren."
+- Keep it warm, friendly, and under 2 sentences. Do not invent facts or claim Hari already confirmed anything.`;
 
       try {
         const controller = new AbortController();
@@ -177,29 +203,13 @@ Keep it under 2 sentences, sound natural and loyal, and do not claim that Hari h
           clearTimeout(timeout);
         }
         if (aiRes.provider === 'local-karen') {
-          const localFallbacks: Record<NonNullable<AutoReplyLog['intent']>, string> = {
-            greeting: `Vanakkam @${senderUsername}! Naan Karen, Hari oda AI assistant. Unga need enna nu sollunga, naan help panna try pannuren.`,
-            availability: `Vanakkam @${senderUsername}! Hari enna time free-nu naan confirm pannala. Preferred date and time enna, please share pannunga.`,
-            project: `Vanakkam @${senderUsername}! Project or deadline details share pannunga. Naan correct task and timing-a track panna help pannuren.`,
-            help: `Vanakkam @${senderUsername}! Naan Karen. Enna help venum nu konjam detail-a solunga, ready-a assist pannuren.`,
-            thanks: `Romba nandri @${senderUsername}! Vera enna help venumna comfortable-a sollunga.`,
-            general: `Vanakkam @${senderUsername}! Unga request-a Hari-ku alert panniten. Enna exact help venumnu oru line-la sollunga.`,
-          };
-          replyText = localFallbacks[intent];
+          replyText = getThanglishFallback(senderUsername, intent);
         } else {
           replyText = aiRes.reply;
         }
       } catch (err: any) {
         logger.warn('AI reply generation failed, using default Thanglish template:', err);
-        const fallbacks: Record<NonNullable<AutoReplyLog['intent']>, string> = {
-          greeting: `Vanakkam @${senderUsername}! Naan Karen, Hari oda AI assistant. Unga need enna nu sollunga, naan help panna try pannuren.`,
-          availability: `Vanakkam @${senderUsername}! Hari enna time free-nu naan confirm pannala. Preferred date and time enna, please share pannunga.`,
-          project: `Vanakkam @${senderUsername}! Project or deadline details share pannunga. Naan correct task and timing-a track panna help pannuren.`,
-          help: `Vanakkam @${senderUsername}! Naan Karen. Enna help venum nu konjam detail-a solunga, ready-a assist pannuren.`,
-          thanks: `Romba nandri @${senderUsername}! Vera enna help venumna comfortable-a sollunga.`,
-          general: `Vanakkam @${senderUsername}! Unga request-a Hari-ku alert panniten. Enna exact help venumnu oru line-la sollunga.`,
-        };
-        replyText = fallbacks[intent];
+        replyText = getThanglishFallback(senderUsername, intent);
       }
     }
 

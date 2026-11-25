@@ -229,7 +229,8 @@ router.get('/auto-reply', (_req, res) => {
 const autoReplyConfigSchema = z.object({
   enabled: z.boolean().optional(),
   triggerMode: z.enum(['all', 'contains_hi']).optional(),
-  customTemplate: z.string().optional(),
+  customTemplate: z.string().max(500).optional(),
+  customInstructions: z.string().max(1500).optional(),
   aiProvider: z.enum(['groq', 'gemini', 'copilot']).optional(),
   aiModel: z.string().optional(),
 });

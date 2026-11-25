@@ -91,6 +91,7 @@ interface AutoReplyConfig {
   enabled: boolean;
   triggerMode: 'all' | 'contains_hi';
   customTemplate?: string;
+  customInstructions?: string;
   aiProvider: 'groq' | 'gemini' | 'copilot';
   aiModel?: string;
 }
@@ -943,6 +944,35 @@ export const InstagramPage: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+
+        {/* Custom DM Training Instructions */}
+        <div className="p-3.5 bg-cream-50 border-2 border-ink space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-mono font-black text-ink">
+              CUSTOM DM TRAINING &amp; THANGLISH PERSONA
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                handleUpdateAutoReplyConfig({
+                  customInstructions: autoReplyConfig.customInstructions || '',
+                })
+              }
+              className="btn-brutal bg-ink text-white text-[11px] font-bold px-3 py-1 shadow-brutal-sm"
+            >
+              Save Training
+            </button>
+          </div>
+          <textarea
+            rows={2}
+            value={autoReplyConfig.customInstructions || ''}
+            onChange={(e) =>
+              setAutoReplyConfig((prev) => ({ ...prev, customInstructions: e.target.value }))
+            }
+            placeholder="e.g. 'Reply casually in Chennai Thanglish. Mention HL Clothing orders ship in 2-3 days. Never share personal phone numbers.'"
+            className="w-full p-2 bg-white border-2 border-ink text-xs font-mono outline-none focus:border-coral"
+          />
         </div>
 
         {/* Live Simulator & Testing Bar */}
