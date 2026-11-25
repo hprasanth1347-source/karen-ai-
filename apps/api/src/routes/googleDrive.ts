@@ -235,22 +235,110 @@ async function fetchRecentGmailMessages(token: string, query = '') {
   return details;
 }
 
+async function findDriveFileWithContent(
+  token: string,
+  nameQuery: string
+): Promise<{ name: string; mimeType: string; data: Buffer; webViewLink?: string } | null> {
+  const clean = nameQuery.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  if (!clean) return null;
+
+  const params = new URLSearchParams({
+    q: `trashed = false and name contains '${clean}'`,
+    pageSize: '3',
+    orderBy: 'modifiedTime desc',
+    fields: 'files(id,name,mimeType,size,webViewLink)',
+  });
+  const listRes = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!listRes.ok) return null;
+  const listJson = await listRes.json();
+  const file = listJson.files?.[0];
+  if (!file?.id) return null;
+
+  const sizeNum = Number(file.size || 0);
+  if (sizeNum > 10 * 1024 * 1024) {
+    return null;
+  }
+
+  let downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+  let outMime = file.mimeType || 'application/octet-stream';
+  let outName = file.name || 'attachment';
+
+  if (String(file.mimeType).startsWith('application/vnd.google-apps.')) {
+    downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf`;
+    outMime = 'application/pdf';
+    if (!outName.toLowerCase().endsWith('.pdf')) outName += '.pdf';
+  }
+
+  const fileRes = await fetch(downloadUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!fileRes.ok) return null;
+  const arrayBuf = await fileRes.arrayBuffer();
+  return {
+    name: outName,
+    mimeType: outMime,
+    data: Buffer.from(arrayBuf),
+    webViewLink: file.webViewLink,
+  };
+}
+
 export async function sendGmailMessage(
   to: string,
   subject: string,
-  body: string
-): Promise<{ success: boolean; error?: string }> {
+  body: string,
+  attachmentQuery?: string
+): Promise<{ success: boolean; attachedFile?: string; error?: string }> {
   const token = await getValidAccessToken();
   if (!token) {
-    return { success: false, error: 'Gmail is not connected.' };
+    return { success: false, error: 'Gmail is not connected. Please connect Google on /drive or /gmail first.' };
   }
-  const rawEmail = [
-    `To: ${to}`,
-    `Subject: ${subject}`,
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    body,
-  ].join('\r\n');
+
+  let attachment: { name: string; mimeType: string; data: Buffer; webViewLink?: string } | null = null;
+  if (attachmentQuery?.trim()) {
+    try {
+      attachment = await findDriveFileWithContent(token, attachmentQuery.trim());
+    } catch (err) {
+      logger.warn('Could not fetch Drive attachment, sending email without attachment', { err });
+    }
+  }
+
+  let rawEmail: string;
+  if (attachment) {
+    const boundary = `karen_boundary_${Date.now()}`;
+    const bodyWithLink = attachment.webViewLink
+      ? `${body}\n\nGoogle Drive Link: ${attachment.webViewLink}`
+      : body;
+    rawEmail = [
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      bodyWithLink,
+      '',
+      `--${boundary}`,
+      `Content-Type: ${attachment.mimeType}; name="${attachment.name}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${attachment.name}"`,
+      '',
+      attachment.data.toString('base64'),
+      `--${boundary}--`,
+    ].join('\r\n');
+  } else {
+    rawEmail = [
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      body,
+    ].join('\r\n');
+  }
+
   const encoded = Buffer.from(rawEmail).toString('base64url');
   const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
@@ -264,7 +352,7 @@ export async function sendGmailMessage(
     const json = await res.json().catch(() => ({}));
     return { success: false, error: json.error?.message || 'Failed to send email' };
   }
-  return { success: true };
+  return { success: true, attachedFile: attachment?.name };
 }
 
 router.get('/gmail/messages', async (req, res) => {

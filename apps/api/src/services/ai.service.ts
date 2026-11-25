@@ -105,14 +105,17 @@ async function finalizeAIReply(
     cleaned = cleaned.replace(match[0], '').trim();
   }
 
-  const emailTagRegex = /\[\[SEND_EMAIL:\s*([^|\]]+?)\s*\|\s*([^|\]]+?)\s*\|\s*([^\]]+?)\s*\]\]/gi;
+  const emailTagRegex = /\[\[SEND_EMAIL:\s*([^|\]]+?)\s*\|\s*([^|\]]+?)\s*\|\s*([^|\]]+?)(?:\s*\|\s*([^\]]*?))?\s*\]\]/gi;
   for (const match of rawReply.matchAll(emailTagRegex)) {
     const to = match[1]?.trim();
     const subject = match[2]?.trim();
     const body = match[3]?.trim();
+    const attachmentQuery = match[4]?.trim() || undefined;
     if (to && subject && body) {
-      const res = await sendGmailMessage(to, subject, body);
-      if (!res.success) {
+      const res = await sendGmailMessage(to, subject, body, attachmentQuery);
+      if (res.success) {
+        cleaned += `\n\n✓ Email sent to ${to}${res.attachedFile ? ` (attached: ${res.attachedFile})` : ''}`;
+      } else {
         cleaned += `\n\n(Note: Email to ${to} could not be sent: ${res.error})`;
       }
     }
@@ -182,7 +185,7 @@ Language Rule: Communicate in clear, natural English by default. Only reply in T
 Live Actions & Auto-Learning (append tags silently at the very end when applicable):
 - Auto-Learn Rule: Whenever the user shares a useful, durable personal detail, preference, business rule, contact, or instruction (not already in Personal Details above, and not transient small talk), automatically save it by appending [[MEMORY: <concise standalone fact> | <personal|work|preference|fact|instruction|other>]].
 - Schedule/create a task: [[TASK: <title> | <YYYY-MM-DD> | <low|medium|high|urgent>]]
-- Send an email (or share a Drive file link by email): [[SEND_EMAIL: <recipient_email> | <subject> | <body with Drive link if applicable>]]
+- Send an email (or share/attach a Google Drive file like "aadhar" by email): [[SEND_EMAIL: <recipient_email(s)> | <subject> | <body with Drive link if found> | <optional_drive_filename_to_attach>]]
 - Send an Instagram DM (or share a Drive file link via Instagram): [[SEND_INSTA: <instagram_username> | <message with Drive link if applicable>]]` +
     memoryContext +
     tasksContext +
