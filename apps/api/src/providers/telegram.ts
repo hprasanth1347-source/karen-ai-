@@ -1,5 +1,5 @@
 /**
- * Karen Ultra – Telegram Integration
+ * Karen AI – Telegram Integration
  * Full-featured Telegram bot provider.
  * Supports: commands, text, images, documents, voice messages,
  *           conversation history, polling (dev) + webhook (prod).
@@ -10,7 +10,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { generateAIReply } from '../services/ai.service.js';
 import { hydrateGoogleTokensFromRequest } from '../routes/googleDrive.js';
 import { addNotification } from '../services/approval.service.js';
-import { addMemory, getMemoryContextPrompt } from '../services/memory.service.js';
+import { addMemory } from '../services/memory.service.js';
 import { addTask, listTasks, updateTask } from '../services/task.service.js';
 import { listApprovals, setApprovalStatus } from '../services/approval.service.js';
 import {
@@ -110,7 +110,7 @@ function getHistory(chatId: number) {
 function pushHistory(chatId: number, role: 'user' | 'assistant', content: string) {
   const h = chatHistories.get(chatId) ?? [];
   h.push({ role, content });
-  if (h.length > 20) h.splice(0, h.length - 20);
+  if (h.length > 8) h.splice(0, h.length - 8);
   chatHistories.set(chatId, h);
 }
 
@@ -146,6 +146,7 @@ async function tgApiCall(method: string, body: Record<string, unknown>): Promise
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
     });
     if (res.status === 429) {
       const rateJson = await res.json().catch(() => ({})) as { parameters?: { retry_after?: number } };
@@ -155,6 +156,7 @@ async function tgApiCall(method: string, body: Record<string, unknown>): Promise
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8000),
       });
     }
     const json = await res.json() as { ok?: boolean; result?: unknown };
@@ -172,7 +174,9 @@ async function getFileUrl(fileId: string): Promise<string | null> {
   const token = botToken();
   if (!token) return null;
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
+    const res = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`, {
+      signal: AbortSignal.timeout(8000),
+    });
     const json = await res.json() as { ok?: boolean; result?: { file_path?: string } };
     if (!json.ok || !json.result?.file_path) return null;
     return `https://api.telegram.org/file/bot${token}/${json.result.file_path}`;
@@ -193,26 +197,34 @@ export async function sendTelegramMessage(
   let ok = true;
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
+    const replyMarkup =
+      i === chunks.length - 1 && options?.inlineKeyboard?.length
+        ? { inline_keyboard: options.inlineKeyboard }
+        : undefined;
+
     const payload: Record<string, unknown> = {
       chat_id: target,
       text: chunk,
       parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
     };
-    if (i === chunks.length - 1 && options?.inlineKeyboard?.length) {
-      payload.reply_markup = { inline_keyboard: options.inlineKeyboard };
+    let result = await tgApiCall('sendMessage', payload);
+    if (!result) {
+      // Retry only this chunk in plain text in case Markdown parsing failed
+      result = await tgApiCall('sendMessage', {
+        chat_id: target,
+        text: chunk,
+        disable_web_page_preview: true,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      });
     }
-    const result = await tgApiCall('sendMessage', payload);
     if (!result) ok = false;
   }
 
   if (ok) {
     telegramState.totalSent++;
     telegramState.lastOutgoing = text.slice(0, 100);
-  } else {
-    // Try plain text if Markdown failed
-    for (const chunk of chunks) {
-      await tgApiCall('sendMessage', { chat_id: target, text: chunk });
-    }
   }
   return ok;
 }
@@ -239,9 +251,9 @@ async function sendTyping(chatId: number): Promise<void> {
 // ─── Command handlers ─────────────────────────────────────────────────────────
 
 const HELP_TEXT = `
-*Karen Ultra — Telegram Commands*
+*Karen AI — Telegram Commands*
 
-/start — Start Karen
+/start — Start Karen AI
 /help — Show this help
 /status — System status
 /chat — AI conversation mode
@@ -263,23 +275,20 @@ const HELP_TEXT = `
 `.trim();
 
 async function handleCommand(cmd: string, args: string, chatId: number): Promise<string> {
-  await hydrateGoogleTokensFromRequest();
-
   switch (cmd) {
     case '/start':
-      return `👋 *Vanakkam! I'm Karen Ultra.*\n\nYour personal AI assistant is now active on Telegram.\n\nSend any message to chat, or type /help for commands.`;
+      return `👋 *Vanakkam! I'm Karen AI.*\n\nYour personal AI assistant is now active on Telegram.\n\nSend any message to chat, or type /help for commands.`;
 
     case '/help':
       return HELP_TEXT;
 
     case '/status': {
       const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
-      const tasks = await listTasks();
+      const [tasks, approvals] = await Promise.all([listTasks(), listApprovals()]);
       const pending = tasks.filter((t) => t.status !== 'done').length;
-      const approvals = await listApprovals();
       const pendingApprovals = approvals.filter((a) => a.status === 'pending').length;
       return [
-        `🟢 *Karen Ultra — System Status*`,
+        `🟢 *Karen AI — System Status*`,
         `📅 ${nowIst}`,
         ``,
         `🤖 AI Engine: ✅ Online`,
@@ -316,9 +325,13 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     }
 
     case '/digest': {
+      await hydrateGoogleTokensFromRequest();
       const reply = await generateAIReply(
         'Give me a digest: list my top 3 unread important emails, any upcoming tasks due today or tomorrow, and anything urgent I should know.',
-        getHistory(chatId)
+        getHistory(chatId),
+        undefined,
+        undefined,
+        AbortSignal.timeout(15000)
       );
       return reply.reply;
     }
@@ -351,14 +364,13 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
         : '❌ Google Drive not configured. Add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in Vercel env vars.';
 
     case '/settings': {
-      const memCtx = await getMemoryContextPrompt();
-      const hasMemory = memCtx.length > 0;
+      // No heavy DB call — just show static config (memory status is advisory only)
       return [
-        `⚙️ *Karen Ultra Settings*`,
+        `⚙️ *Karen AI Settings*`,
         ``,
         `🌐 Language: English (Thanglish on request)`,
         `🕐 Timezone: Asia/Kolkata (IST)`,
-        `🧠 Personal Memory: ${hasMemory ? '✅ Active' : '⚠️ Empty'}`,
+        `🧠 Personal Memory: ✅ Active`,
         `🤖 Default AI: ${config.DEFAULT_AI_PROVIDER.toUpperCase()}`,
         `📢 Voice Policy: Female-only (ElevenLabs)`,
         `🔒 Auth: Owner-only Telegram access`,
@@ -388,7 +400,7 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
   }
 
   telegramState.totalReceived++;
-  await sendTyping(chatId);
+  void sendTyping(chatId); // fire-and-forget — don't block AI on typing indicator
 
   let reply = '';
 
@@ -471,10 +483,15 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
         const args = spaceIdx > -1 ? text.slice(spaceIdx + 1).trim() : '';
         reply = await handleCommand(cmd, args, chatId);
       } else {
-        // Full AI conversation
+        // Full AI conversation — no Google hydration needed here (only for /digest or Drive commands)
         const history = getHistory(chatId);
-        await hydrateGoogleTokensFromRequest();
-        const aiRes = await generateAIReply(text, history);
+        const aiRes = await generateAIReply(
+          text,
+          history,
+          undefined,
+          undefined,
+          AbortSignal.timeout(15000)
+        );
         pushHistory(chatId, 'user', text);
         pushHistory(chatId, 'assistant', aiRes.reply);
         reply = aiRes.reply;
@@ -485,12 +502,13 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
       }
     }
 
+    await Promise.all([
+      reply ? sendTelegramMessage(reply, chatId) : Promise.resolve(false),
+      addNotification('telegram', 'Telegram Message', `"${(msg.text || '[media]').slice(0, 60)}"`, 'normal', 'telegram').catch(() => {}),
+    ]);
     if (reply) {
-      await sendTelegramMessage(reply, chatId);
       telegramState.lastOutgoing = reply.slice(0, 100);
     }
-
-    await addNotification('telegram', 'Telegram Message', `"${(msg.text || '[media]').slice(0, 60)}"`, 'normal', 'telegram').catch(() => {});
   } catch (err) {
     logger.error('Telegram processMessage error:', err);
     const errMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -596,16 +614,22 @@ export async function telegramWebhook(req: Request, res: Response): Promise<void
     }
   }
 
-  res.sendStatus(200); // Always acknowledge Telegram immediately
-
-  const update: TelegramUpdate = req.body;
-  if (update.callback_query) {
-    void handleCallbackQuery(update.callback_query);
-    return;
+  const update: TelegramUpdate = req.body || {};
+  try {
+    if (update.callback_query) {
+      await handleCallbackQuery(update.callback_query);
+    } else {
+      const msg = update.message || update.edited_message;
+      if (msg) {
+        await processMessage(msg);
+      }
+    }
+  } catch (err) {
+    logger.error('Telegram webhook handler error', { err });
   }
-  const msg = update.message || update.edited_message;
-  if (msg) {
-    void processMessage(msg);
+
+  if (!res.headersSent) {
+    res.sendStatus(200);
   }
 }
 
@@ -691,7 +715,7 @@ export async function deleteTelegramWebhook(): Promise<boolean> {
 export async function setTelegramCommands(): Promise<void> {
   await tgApiCall('setMyCommands', {
     commands: [
-      { command: 'start', description: 'Start Karen Ultra' },
+      { command: 'start', description: 'Start Karen AI' },
       { command: 'help', description: 'Show all commands' },
       { command: 'status', description: 'System & integration status' },
       { command: 'chat', description: 'AI conversation mode' },

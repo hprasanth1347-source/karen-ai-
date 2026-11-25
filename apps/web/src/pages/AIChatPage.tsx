@@ -121,8 +121,16 @@ export const AIChatPage: React.FC = () => {
   };
   const [messages, setMessages] = useState<ChatMessage[]>([initialGreeting]);
   const [conversations, setConversations] = useState<SavedConversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem('karen_active_conversation_id');
+    } catch {
+      return null;
+    }
+  });
   const [libraryOpen, setLibraryOpen] = useState<boolean>(true);
+  const [libraryLoading, setLibraryLoading] = useState<boolean>(false);
+  const [libraryError, setLibraryError] = useState<string>('');
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [provider, setProvider] = useState<AIProvider>('groq');
@@ -132,24 +140,14 @@ export const AIChatPage: React.FC = () => {
   const [modelError, setModelError] = useState('');
   const sendingInstagramMessages = useRef(new Set<string>());
 
-  const loadConversations = async () => {
+  const persistActiveId = (id: string | null) => {
+    setActiveConversationId(id);
     try {
-      const res = await api.get<{ ok: boolean; data: SavedConversation[] }>('/ai/conversations');
-      if (Array.isArray(res.data?.data)) {
-        setConversations(res.data.data);
-      }
+      if (id) sessionStorage.setItem('karen_active_conversation_id', id);
+      else sessionStorage.removeItem('karen_active_conversation_id');
     } catch {
-      // Ignore if backend is starting up
+      // Ignore storage errors
     }
-  };
-
-  useEffect(() => {
-    void loadConversations();
-  }, []);
-
-  const handleNewChat = () => {
-    setActiveConversationId(null);
-    setMessages([initialGreeting]);
   };
 
   const handleSelectConversation = async (id: string) => {
@@ -159,23 +157,62 @@ export const AIChatPage: React.FC = () => {
         data: Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; created_at: string; ai_provider?: string; ai_model?: string }>;
       }>(`/ai/conversations/${id}/messages`);
       const rows = res.data?.data || [];
-      setActiveConversationId(id);
+      persistActiveId(id);
       setMessages(
         rows.length > 0
           ? rows
-              .filter((r) => r.role === 'user' || r.role === 'assistant')
-              .map((r) => ({
-                id: r.id,
-                role: r.role as 'user' | 'assistant',
-                content: r.content,
-                timestamp: new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                provider: r.ai_provider ? `${r.ai_provider.toUpperCase()}${r.ai_model ? ` · ${r.ai_model}` : ''}` : undefined,
-              }))
+            .filter((r) => r.role === 'user' || r.role === 'assistant')
+            .map((r) => ({
+              id: r.id,
+              role: r.role as 'user' | 'assistant',
+              content: r.content,
+              timestamp: new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              provider: r.ai_provider ? `${r.ai_provider.toUpperCase()}${r.ai_model ? ` · ${r.ai_model}` : ''}` : undefined,
+            }))
           : [initialGreeting]
       );
     } catch {
       // Keep current messages if fetch fails
     }
+  };
+
+  const loadConversations = async (restoreActive = false) => {
+    setLibraryLoading(true);
+    setLibraryError('');
+    try {
+      const res = await api.get<{ ok: boolean; data: SavedConversation[] }>('/ai/conversations');
+      if (Array.isArray(res.data?.data)) {
+        const list = res.data.data;
+        setConversations(list);
+        if (restoreActive) {
+          const savedId = (() => {
+            try {
+              return sessionStorage.getItem('karen_active_conversation_id');
+            } catch {
+              return null;
+            }
+          })();
+          if (savedId && list.some((c) => c.id === savedId)) {
+            await handleSelectConversation(savedId);
+          } else if (savedId && list.length > 0) {
+            persistActiveId(null);
+          }
+        }
+      }
+    } catch (err: any) {
+      setLibraryError(err?.response?.data?.error || 'Could not load saved chats.');
+    } finally {
+      setLibraryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadConversations(true);
+  }, []);
+
+  const handleNewChat = () => {
+    persistActiveId(null);
+    setMessages([initialGreeting]);
   };
 
   const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
@@ -282,12 +319,12 @@ export const AIChatPage: React.FC = () => {
         prev.map((m) =>
           m.id === messageId && m.pendingApproval
             ? {
-                ...m,
-                pendingApproval: {
-                  ...m.pendingApproval,
-                  status: action === 'approve' ? 'approved' : 'rejected',
-                },
-              }
+              ...m,
+              pendingApproval: {
+                ...m.pendingApproval,
+                status: action === 'approve' ? 'approved' : 'rejected',
+              },
+            }
             : m
         )
       );
@@ -296,13 +333,13 @@ export const AIChatPage: React.FC = () => {
         prev.map((m) =>
           m.id === messageId && m.pendingApproval
             ? {
-                ...m,
-                pendingApproval: {
-                  ...m.pendingApproval,
-                  status: 'failed',
-                  error: err?.response?.data?.error || 'Action failed.',
-                },
-              }
+              ...m,
+              pendingApproval: {
+                ...m.pendingApproval,
+                status: 'failed',
+                error: err?.response?.data?.error || 'Action failed.',
+              },
+            }
             : m
         )
       );
@@ -330,11 +367,11 @@ export const AIChatPage: React.FC = () => {
       const retryingSend = isSendFailureFeedback(currentInput);
       const previousInstagramRequest = retryingSend
         ? messages
-            .slice()
-            .reverse()
-            .find(
-              (message) => message.role === 'user' && parseInstagramSendCommand(message.content)
-            )
+          .slice()
+          .reverse()
+          .find(
+            (message) => message.role === 'user' && parseInstagramSendCommand(message.content)
+          )
         : undefined;
       const previousCommand = previousInstagramRequest
         ? parseInstagramSendCommand(previousInstagramRequest.content)
@@ -345,15 +382,15 @@ export const AIChatPage: React.FC = () => {
       if (retryingSend) {
         const existingAction = previousCommand
           ? messages
-              .slice()
-              .reverse()
-              .find(
-                (message) =>
-                  message.instagramSend?.message === previousCommand.message &&
-                  message.instagramSend.username
-                    .toLowerCase()
-                    .includes(previousCommand.recipient.toLowerCase())
-              )
+            .slice()
+            .reverse()
+            .find(
+              (message) =>
+                message.instagramSend?.message === previousCommand.message &&
+                message.instagramSend.username
+                  .toLowerCase()
+                  .includes(previousCommand.recipient.toLowerCase())
+            )
           : undefined;
         if (existingAction?.instagramSend) {
           const action = existingAction.instagramSend;
@@ -400,8 +437,8 @@ export const AIChatPage: React.FC = () => {
         const matchingRecipients = exactMatches.length
           ? exactMatches
           : matches.filter(({ recipient }) =>
-              recipient.username.toLowerCase().includes(instagramCommand.recipient.toLowerCase())
-            );
+            recipient.username.toLowerCase().includes(instagramCommand.recipient.toLowerCase())
+          );
         const uniqueRecipients = Array.from(
           new Map(matchingRecipients.map(({ recipient }) => [recipient.id, recipient])).values()
         );
@@ -487,29 +524,31 @@ export const AIChatPage: React.FC = () => {
         return;
       }
 
-      const res = await fetch('/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: currentInput,
-          history: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
-          provider,
-          model: model || undefined,
-          conversationId: activeConversationId || undefined,
-        }),
+      const axiosRes = await api.post<
+        ApiEnvelope<{
+          reply: string;
+          provider: string;
+          model: string;
+          conversationId?: string;
+          pendingApproval?: { id: string; summary: string };
+        }>
+      >('/ai/chat', {
+        message: currentInput,
+        history: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+        provider,
+        model: model || undefined,
+        conversationId: activeConversationId || undefined,
       });
 
-      const result = await readApiData<{
-        reply: string;
-        provider: string;
-        model: string;
-        conversationId?: string;
-        pendingApproval?: { id: string; summary: string };
-      }>(res);
+      const payload = axiosRes.data;
+      if (!payload?.ok || !payload.data) {
+        throw new Error(payload?.error || 'AI request failed.');
+      }
+      const result = payload.data;
       if (!result.reply) throw new Error('AI returned an empty response.');
       if (result.conversationId) {
-        setActiveConversationId(result.conversationId);
-        void loadConversations();
+        persistActiveId(result.conversationId);
+        void loadConversations(false);
       }
 
       const botMsg: ChatMessage = {
@@ -520,18 +559,19 @@ export const AIChatPage: React.FC = () => {
         provider: `${result.provider.toUpperCase()}${result.model ? ` · ${result.model}` : ''}`,
         pendingApproval: result.pendingApproval
           ? {
-              id: result.pendingApproval.id,
-              summary: result.pendingApproval.summary,
-              status: 'pending',
-            }
+            id: result.pendingApproval.id,
+            summary: result.pendingApproval.summary,
+            status: 'pending',
+          }
           : undefined,
       };
       setMessages((prev) => [...prev, botMsg]);
-    } catch (err) {
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || (err instanceof Error ? err.message : 'AI request failed.');
       const errorMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: err instanceof Error ? err.message : 'AI request failed.',
+        content: msg,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         provider: 'System Notice',
       };
@@ -579,13 +619,13 @@ export const AIChatPage: React.FC = () => {
         prev.map((message) =>
           message.id === messageId && message.instagramSend
             ? {
-                ...message,
-                instagramSend: {
-                  ...message.instagramSend,
-                  status: 'failed',
-                  error: err instanceof Error ? err.message : 'Instagram send failed.',
-                },
-              }
+              ...message,
+              instagramSend: {
+                ...message.instagramSend,
+                status: 'failed',
+                error: err instanceof Error ? err.message : 'Instagram send failed.',
+              },
+            }
             : message
         )
       );
@@ -610,15 +650,33 @@ export const AIChatPage: React.FC = () => {
             <History className="w-4 h-4 text-teal" />
             CHAT LIBRARY
           </span>
-          <button
-            onClick={handleNewChat}
-            className="px-2 py-1 bg-teal text-white border border-ink font-mono text-[10px] font-bold flex items-center gap-1"
-          >
-            <Plus className="w-3 h-3" /> NEW
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => void loadConversations(false)}
+              title="Refresh saved chats"
+              className="p-1 bg-white border border-ink hover:bg-cream-100"
+            >
+              <RefreshCw className={`w-3 h-3 ${libraryLoading ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={handleNewChat}
+              className="px-2 py-1 bg-teal text-white border border-ink font-mono text-[10px] font-bold flex items-center gap-1"
+            >
+              <Plus className="w-3 h-3" /> NEW
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-          {conversations.length === 0 ? (
+          {libraryError && (
+            <div className="text-[10px] font-mono text-red-700 p-1.5 border border-red-300 bg-red-50">
+              {libraryError}
+            </div>
+          )}
+          {libraryLoading && conversations.length === 0 ? (
+            <div className="text-[11px] font-mono text-ink-muted p-2">
+              Loading saved chats...
+            </div>
+          ) : conversations.length === 0 ? (
             <div className="text-[11px] font-mono text-ink-muted p-2">
               No saved chats yet. Start chatting to save automatically.
             </div>
@@ -627,9 +685,8 @@ export const AIChatPage: React.FC = () => {
               <div
                 key={conv.id}
                 onClick={() => void handleSelectConversation(conv.id)}
-                className={`p-2 border-2 border-ink cursor-pointer flex items-center justify-between gap-2 text-xs ${
-                  activeConversationId === conv.id ? 'bg-yellow' : 'bg-cream-50 hover:bg-cream-100'
-                }`}
+                className={`p-2 border-2 border-ink cursor-pointer flex items-center justify-between gap-2 text-xs ${activeConversationId === conv.id ? 'bg-yellow' : 'bg-cream-50 hover:bg-cream-100'
+                  }`}
               >
                 <div className="min-w-0">
                   <div className="font-bold truncate">{conv.title || 'Untitled Chat'}</div>
@@ -651,236 +708,232 @@ export const AIChatPage: React.FC = () => {
       </div>
 
       <div className="flex-1 flex flex-col space-y-4 min-w-0">
-      {/* Header controls */}
-      <div className="bg-white border-3 border-ink p-3 shadow-brutal flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setLibraryOpen((v) => !v)}
-            className="p-1.5 bg-cream-100 hover:bg-cream-200 border-2 border-ink shadow-brutal-sm"
-            title="Toggle Chat Library"
-          >
-            <History className="w-4 h-4" />
-          </button>
-          <span className="p-1.5 bg-coral text-white border-2 border-ink shadow-brutal-sm">
-            <Bot className="w-5 h-5" />
-          </span>
-          <div>
-            <h2 className="font-extrabold text-sm leading-none">KAREN AI BRAIN</h2>
-            <span className="text-[10px] font-mono text-ink-muted">
-              Primary Language: English (Thanglish in Instagram DMs)
+        {/* Header controls */}
+        <div className="bg-white border-3 border-ink p-3 shadow-brutal flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setLibraryOpen((v) => !v)}
+              className="p-1.5 bg-cream-100 hover:bg-cream-200 border-2 border-ink shadow-brutal-sm"
+              title="Toggle Chat Library"
+            >
+              <History className="w-4 h-4" />
+            </button>
+            <span className="p-1.5 bg-coral text-white border-2 border-ink shadow-brutal-sm">
+              <Bot className="w-5 h-5" />
             </span>
-          </div>
-        </div>
-
-        <div className="flex flex-col items-end gap-1">
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className="flex border-2 border-ink text-xs font-mono font-bold">
-              <button
-                onClick={() => setProvider('groq')}
-                className={`px-2 py-1 ${provider === 'groq' ? 'bg-yellow text-ink' : 'bg-cream'}`}
-              >
-                GROQ
-              </button>
-              <button
-                onClick={() => setProvider('gemini')}
-                className={`px-2 py-1 border-l-2 border-ink ${provider === 'gemini' ? 'bg-teal text-white' : 'bg-cream'}`}
-              >
-                GEMINI
-              </button>
-              <button
-                onClick={() => setProvider('copilot')}
-                className={`px-2 py-1 border-l-2 border-ink ${provider === 'copilot' ? 'bg-blue-700 text-white' : 'bg-cream'}`}
-                title="Uses Copilot CLI sign-in or a supported COPILOT_GITHUB_TOKEN; classic PATs are unsupported."
-              >
-                COPILOT
-              </button>
+            <div>
+              <h2 className="font-extrabold text-sm leading-none">KAREN AI BRAIN</h2>
+              <span className="text-[10px] font-mono text-ink-muted">
+                Primary Language: English (Thanglish in Instagram DMs)
+              </span>
             </div>
-            <label className="flex items-center gap-1.5 text-[10px] font-mono font-bold">
-              MODEL
-              <select
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
-                disabled={modelsLoading || models.length === 0}
-                className="max-w-52 border-2 border-ink bg-white px-2 py-1 text-[11px] disabled:opacity-60"
-              >
-                {modelsLoading && <option value="">Loading…</option>}
-                {!modelsLoading && models.length === 0 && <option value="">Unavailable</option>}
-                {models.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
-          {modelError && (
-            <p className="text-right text-[10px] font-mono text-red-700">{modelError}</p>
-          )}
-        </div>
-      </div>
 
-      {/* Messages area */}
-      <div className="flex-1 bg-cream-50 border-3 border-ink p-4 shadow-brutal overflow-y-auto space-y-4">
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={`flex items-start gap-2.5 max-w-2xl ${
-              m.role === 'user' ? 'ml-auto flex-row-reverse' : 'mr-auto'
-            }`}
-          >
-            <div
-              className={`p-2 border-2 border-ink shrink-0 shadow-brutal-sm ${
-                m.role === 'user' ? 'bg-teal text-white' : 'bg-coral text-white'
-              }`}
-            >
-              {m.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
-            </div>
-
-            <div
-              className={`p-3.5 border-2 border-ink shadow-brutal-sm text-xs leading-relaxed ${
-                m.role === 'user'
-                  ? 'bg-white text-ink'
-                  : 'bg-white border-ink text-ink'
-              }`}
-            >
-              <div className="flex items-center justify-between gap-4 mb-1 text-[10px] font-mono text-ink-muted border-b border-ink/20 pb-1">
-                <span className="font-bold">
-                  {m.role === 'user' ? 'OWNER' : m.provider || 'KAREN'}
-                </span>
-                <span>{m.timestamp}</span>
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex border-2 border-ink text-xs font-mono font-bold">
+                <button
+                  onClick={() => setProvider('groq')}
+                  className={`px-2 py-1 ${provider === 'groq' ? 'bg-yellow text-ink' : 'bg-cream'}`}
+                >
+                  GROQ
+                </button>
+                <button
+                  onClick={() => setProvider('gemini')}
+                  className={`px-2 py-1 border-l-2 border-ink ${provider === 'gemini' ? 'bg-teal text-white' : 'bg-cream'}`}
+                >
+                  GEMINI
+                </button>
+                <button
+                  onClick={() => setProvider('copilot')}
+                  className={`px-2 py-1 border-l-2 border-ink ${provider === 'copilot' ? 'bg-blue-700 text-white' : 'bg-cream'}`}
+                  title="Uses Copilot CLI sign-in or a supported COPILOT_GITHUB_TOKEN; classic PATs are unsupported."
+                >
+                  COPILOT
+                </button>
               </div>
-              <p className="whitespace-pre-wrap">{m.content}</p>
-              {m.instagramSend && (
-                <div className="mt-3 border-2 border-ink bg-cream-50 p-3 space-y-2">
-                  <p className="font-bold">To: @{m.instagramSend.username}</p>
-                  <p className="whitespace-pre-wrap border border-ink/30 bg-white p-2">
-                    {m.instagramSend.message}
-                  </p>
-                  {m.instagramSend.status === 'pending' && (
+              <label className="flex items-center gap-1.5 text-[10px] font-mono font-bold">
+                MODEL
+                <select
+                  value={model}
+                  onChange={(event) => setModel(event.target.value)}
+                  disabled={modelsLoading || models.length === 0}
+                  className="max-w-52 border-2 border-ink bg-white px-2 py-1 text-[11px] disabled:opacity-60"
+                >
+                  {modelsLoading && <option value="">Loading…</option>}
+                  {!modelsLoading && models.length === 0 && <option value="">Unavailable</option>}
+                  {models.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {modelError && (
+              <p className="text-right text-[10px] font-mono text-red-700">{modelError}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Messages area */}
+        <div className="flex-1 bg-cream-50 border-3 border-ink p-4 shadow-brutal overflow-y-auto space-y-4">
+          {messages.map((m) => (
+            <div
+              key={m.id}
+              className={`flex items-start gap-2.5 max-w-2xl ${m.role === 'user' ? 'ml-auto flex-row-reverse' : 'mr-auto'
+                }`}
+            >
+              <div
+                className={`p-2 border-2 border-ink shrink-0 shadow-brutal-sm ${m.role === 'user' ? 'bg-teal text-white' : 'bg-coral text-white'
+                  }`}
+              >
+                {m.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+              </div>
+
+              <div
+                className={`p-3.5 border-2 border-ink shadow-brutal-sm text-xs leading-relaxed ${m.role === 'user'
+                    ? 'bg-white text-ink'
+                    : 'bg-white border-ink text-ink'
+                  }`}
+              >
+                <div className="flex items-center justify-between gap-4 mb-1 text-[10px] font-mono text-ink-muted border-b border-ink/20 pb-1">
+                  <span className="font-bold">
+                    {m.role === 'user' ? 'OWNER' : m.provider || 'KAREN'}
+                  </span>
+                  <span>{m.timestamp}</span>
+                </div>
+                <p className="whitespace-pre-wrap">{m.content}</p>
+                {m.instagramSend && (
+                  <div className="mt-3 border-2 border-ink bg-cream-50 p-3 space-y-2">
+                    <p className="font-bold">To: @{m.instagramSend.username}</p>
+                    <p className="whitespace-pre-wrap border border-ink/30 bg-white p-2">
+                      {m.instagramSend.message}
+                    </p>
+                    {m.instagramSend.status === 'pending' && (
+                      <button
+                        type="button"
+                        onClick={() => void confirmInstagramSend(m.id)}
+                        className="btn-coral text-xs flex items-center gap-1.5"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        Confirm & Send
+                      </button>
+                    )}
+                    {m.instagramSend.status === 'sending' && <p>Sending to Instagram…</p>}
+                    {m.instagramSend.status === 'sent' && (
+                      <p className="font-bold text-green-700">Sent to @{m.instagramSend.username}.</p>
+                    )}
+                    {m.instagramSend.status === 'failed' && (
+                      <p className="text-red-700">
+                        Not sent: {m.instagramSend.error || 'Instagram send failed.'}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {m.pendingApproval && (
+                  <div className="mt-3 p-2.5 border-2 border-ink bg-yellow/25 text-ink space-y-2">
+                    <div className="font-bold flex items-center gap-1.5 text-[11px]">
+                      <ShieldAlert className="w-3.5 h-3.5 text-coral" />
+                      <span>{m.pendingApproval.summary}</span>
+                    </div>
+                    {m.pendingApproval.status === 'pending' && (
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleApprovalAction(m.id, m.pendingApproval!.id, 'approve')}
+                          className="btn-teal px-3 py-1 text-[11px] flex items-center gap-1"
+                        >
+                          <Check className="w-3 h-3" />
+                          Approve &amp; Send
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApprovalAction(m.id, m.pendingApproval!.id, 'reject')}
+                          className="btn-ghost px-3 py-1 text-[11px] flex items-center gap-1"
+                        >
+                          <X className="w-3 h-3" />
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                    {m.pendingApproval.status === 'submitting' && <p>Processing...</p>}
+                    {m.pendingApproval.status === 'approved' && (
+                      <p className="font-bold text-green-700">✓ Approved and sent!</p>
+                    )}
+                    {m.pendingApproval.status === 'rejected' && (
+                      <p className="font-bold text-ink-muted">Cancelled (not sent).</p>
+                    )}
+                    {m.pendingApproval.status === 'failed' && (
+                      <p className="text-red-700">{m.pendingApproval.error}</p>
+                    )}
+                  </div>
+                )}
+                {m.role === 'assistant' && (
+                  <div className="mt-2 flex justify-end">
                     <button
                       type="button"
-                      onClick={() => void confirmInstagramSend(m.id)}
-                      className="btn-coral text-xs flex items-center gap-1.5"
+                      onClick={() => handleSpeakReply(m.content)}
+                      className="px-2 py-0.5 border border-ink bg-cream-50 hover:bg-yellow text-[10px] font-mono font-bold flex items-center gap-1"
+                      title="Speak with Karen female voice (requires ElevenLabs)"
                     >
-                      <Send className="w-3.5 h-3.5" />
-                      Confirm & Send
+                      <Volume2 className="w-3 h-3" />
+                      Speak
                     </button>
-                  )}
-                  {m.instagramSend.status === 'sending' && <p>Sending to Instagram…</p>}
-                  {m.instagramSend.status === 'sent' && (
-                    <p className="font-bold text-green-700">Sent to @{m.instagramSend.username}.</p>
-                  )}
-                  {m.instagramSend.status === 'failed' && (
-                    <p className="text-red-700">
-                      Not sent: {m.instagramSend.error || 'Instagram send failed.'}
-                    </p>
-                  )}
-                </div>
-              )}
-              {m.pendingApproval && (
-                <div className="mt-3 p-2.5 border-2 border-ink bg-yellow/25 text-ink space-y-2">
-                  <div className="font-bold flex items-center gap-1.5 text-[11px]">
-                    <ShieldAlert className="w-3.5 h-3.5 text-coral" />
-                    <span>{m.pendingApproval.summary}</span>
                   </div>
-                  {m.pendingApproval.status === 'pending' && (
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleApprovalAction(m.id, m.pendingApproval!.id, 'approve')}
-                        className="btn-teal px-3 py-1 text-[11px] flex items-center gap-1"
-                      >
-                        <Check className="w-3 h-3" />
-                        Approve &amp; Send
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleApprovalAction(m.id, m.pendingApproval!.id, 'reject')}
-                        className="btn-ghost px-3 py-1 text-[11px] flex items-center gap-1"
-                      >
-                        <X className="w-3 h-3" />
-                        Reject
-                      </button>
-                    </div>
-                  )}
-                  {m.pendingApproval.status === 'submitting' && <p>Processing...</p>}
-                  {m.pendingApproval.status === 'approved' && (
-                    <p className="font-bold text-green-700">✓ Approved and sent!</p>
-                  )}
-                  {m.pendingApproval.status === 'rejected' && (
-                    <p className="font-bold text-ink-muted">Cancelled (not sent).</p>
-                  )}
-                  {m.pendingApproval.status === 'failed' && (
-                    <p className="text-red-700">{m.pendingApproval.error}</p>
-                  )}
-                </div>
-              )}
-              {m.role === 'assistant' && (
-                <div className="mt-2 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => handleSpeakReply(m.content)}
-                    className="px-2 py-0.5 border border-ink bg-cream-50 hover:bg-yellow text-[10px] font-mono font-bold flex items-center gap-1"
-                    title="Speak with Karen female voice (requires ElevenLabs)"
-                  >
-                    <Volume2 className="w-3 h-3" />
-                    Speak
-                  </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
 
-        {loading && (
-          <div className="flex items-center gap-2 p-3 bg-white border-2 border-ink shadow-brutal-sm w-fit text-xs font-mono">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin text-coral" />
-            <span>Karen is thinking...</span>
-          </div>
-        )}
-      </div>
+          {loading && (
+            <div className="flex items-center gap-2 p-3 bg-white border-2 border-ink shadow-brutal-sm w-fit text-xs font-mono">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-coral" />
+              <span>Karen is thinking...</span>
+            </div>
+          )}
+        </div>
 
-      {/* Quick Prompts */}
-      <div className="hidden sm:flex items-center gap-2 overflow-x-auto pb-1">
-        {samplePrompts.map((p, i) => (
+        {/* Quick Prompts */}
+        <div className="hidden sm:flex items-center gap-2 overflow-x-auto pb-1">
+          {samplePrompts.map((p, i) => (
+            <button
+              key={i}
+              onClick={() => setInput(p)}
+              className="px-2.5 py-1 bg-white border-2 border-ink hover:bg-cream-200 text-[11px] font-semibold whitespace-nowrap shadow-brutal-sm transition-all"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+
+        {/* Input row */}
+        <form onSubmit={handleSend} className="flex gap-2">
           <button
-            key={i}
-            onClick={() => setInput(p)}
-            className="px-2.5 py-1 bg-white border-2 border-ink hover:bg-cream-200 text-[11px] font-semibold whitespace-nowrap shadow-brutal-sm transition-all"
+            type="button"
+            onClick={handleVoiceInput}
+            className={`btn-ghost px-3 flex items-center justify-center ${listening ? 'bg-coral text-white' : ''
+              }`}
+            title="Voice input"
           >
-            {p}
+            <Mic className={`w-4 h-4 ${listening ? 'animate-pulse' : ''}`} />
           </button>
-        ))}
-      </div>
-
-      {/* Input row */}
-      <form onSubmit={handleSend} className="flex gap-2">
-        <button
-          type="button"
-          onClick={handleVoiceInput}
-          className={`btn-ghost px-3 flex items-center justify-center ${
-            listening ? 'bg-coral text-white' : ''
-          }`}
-          title="Voice input"
-        >
-          <Mic className={`w-4 h-4 ${listening ? 'animate-pulse' : ''}`} />
-        </button>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask Karen anything... (e.g. 'Send aadhar to abc@gmail.com', 'Schedule task tomorrow')"
-          className="flex-1 bg-white border-3 border-ink px-4 py-2.5 text-xs font-medium outline-none focus:border-coral shadow-brutal"
-        />
-        <button
-          type="submit"
-          disabled={loading || !input.trim()}
-          className="btn-coral px-5 flex items-center gap-2 text-xs"
-        >
-          <Send className="w-4 h-4" />
-          <span className="hidden sm:inline">Send</span>
-        </button>
-      </form>
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask Karen anything... (e.g. 'Send aadhar to abc@gmail.com', 'Schedule task tomorrow')"
+            className="flex-1 bg-white border-3 border-ink px-4 py-2.5 text-xs font-medium outline-none focus:border-coral shadow-brutal"
+          />
+          <button
+            type="submit"
+            disabled={loading || !input.trim()}
+            className="btn-coral px-5 flex items-center gap-2 text-xs"
+          >
+            <Send className="w-4 h-4" />
+            <span className="hidden sm:inline">Send</span>
+          </button>
+        </form>
       </div>
     </div>
   );

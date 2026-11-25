@@ -184,10 +184,11 @@ export async function generateAIReply(
   signal?: AbortSignal
 ): Promise<{ reply: string; provider: string; model: string; pendingApproval?: ApprovalItem }> {
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
+  const reqSignal = signal ?? AbortSignal.timeout(15000);
   const needsSearch = shouldSearchWeb(prompt);
   const [searchResults, googleContext, memoryContext, tasksContext] = await Promise.all([
     needsSearch && isWebSearchConfigured()
-      ? searchWebWithGoogle(prompt, 5, signal)
+      ? searchWebWithGoogle(prompt, 5, reqSignal)
       : Promise.resolve([]),
     getGoogleContextForPrompt(prompt),
     getMemoryContextPrompt(),
@@ -203,7 +204,7 @@ export async function generateAIReply(
   const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
   const systemPrompt =
-    `You are Karen Ultra, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath with full access across Personal Memory, Tasks, Document Vault, Google Drive, Gmail, Instagram, and Live Web Search.
+    `You are Karen AI, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath with full access across Personal Memory, Tasks, Document Vault, Google Drive, Gmail, Instagram, and Live Web Search.
 
 ⚠️ CRITICAL DATE OVERRIDE — IGNORE YOUR TRAINING CUTOFF DATE COMPLETELY:
 The REAL current date and time right now is: ${nowIst} (ISO: ${todayIso}).
@@ -247,7 +248,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
           temperature: 0.6,
           max_tokens: 1024,
         }),
-        signal,
+        signal: reqSignal,
       });
 
       if (res.ok) {
@@ -289,7 +290,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
         body: JSON.stringify(
           needsSearch ? { ...basePayload, tools: [{ google_search: {} }] } : basePayload
         ),
-        signal,
+        signal: reqSignal,
       });
 
       if (!res.ok && needsSearch) {
@@ -297,7 +298,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(basePayload),
-          signal,
+          signal: reqSignal,
         });
       }
 
@@ -335,7 +336,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
             { role: 'user', content: prompt },
           ],
         }),
-        signal,
+        signal: reqSignal,
       });
 
       if (res.ok) {

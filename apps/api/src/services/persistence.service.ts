@@ -4,6 +4,57 @@ import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 
 let cachedOwnerId: string | null = null;
+const ensuredProfiles = new Set<string>();
+
+export async function ensureProfileRow(userId: string, email?: string): Promise<boolean> {
+  if (!userId || userId === 'owner-default-id') return false;
+  if (ensuredProfiles.has(userId)) return true;
+
+  try {
+    const { data: existing, error: selErr } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (!selErr && existing?.id) {
+      ensuredProfiles.add(userId);
+      return true;
+    }
+
+    const safeEmail = email || 'owner@karen.ai';
+    const { error: upsertErr } = await supabaseAdmin
+      .from('profiles')
+      .upsert(
+        {
+          id: userId,
+          email: safeEmail,
+          display_name: 'Hari Prasath',
+          role: 'owner',
+        },
+        { onConflict: 'id' }
+      );
+
+    if (!upsertErr) {
+      ensuredProfiles.add(userId);
+      return true;
+    }
+
+    // Fallback for minimal 0001_karen_core schema (without email/role columns)
+    const { error: fallbackErr } = await supabaseAdmin
+      .from('profiles')
+      .upsert({ id: userId, display_name: 'Hari Prasath' }, { onConflict: 'id' });
+
+    if (!fallbackErr) {
+      ensuredProfiles.add(userId);
+      return true;
+    }
+    logger.warn('Failed to ensure profile row in Supabase', { userId, upsertErr, fallbackErr });
+  } catch (err) {
+    logger.warn('ensureProfileRow error', { userId, err });
+  }
+  return false;
+}
 
 function getCipherKey(): Buffer {
   const secret = config.ENCRYPTION_KEY || config.APP_SECRET || 'karen-local-oauth-fallback-key';
@@ -41,16 +92,31 @@ export async function getOwnerUserId(): Promise<string | null> {
     const { data } = await supabaseAdmin.from('profiles').select('id').limit(1).maybeSingle();
     if (data?.id) {
       cachedOwnerId = data.id;
+      ensuredProfiles.add(data.id);
       return cachedOwnerId;
     }
     const { data: usersData } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
     const firstUser = usersData?.users?.[0];
     if (firstUser?.id) {
+      await ensureProfileRow(firstUser.id, firstUser.email);
       cachedOwnerId = firstUser.id;
       return cachedOwnerId;
     }
+
+    // Bootstrap a permanent default owner record in Supabase Auth + profiles
+    // so relational persistence works even before explicit email sign-up.
+    const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+      email: 'owner@karen.ai',
+      email_confirm: true,
+      user_metadata: { role: 'owner', display_name: 'Hari Prasath' },
+    });
+    if (!createErr && created?.user?.id) {
+      await ensureProfileRow(created.user.id, created.user.email);
+      cachedOwnerId = created.user.id;
+      return cachedOwnerId;
+    }
   } catch (err) {
-    logger.debug('Could not resolve owner user id from Supabase', { err });
+    logger.warn('Could not resolve owner user id from Supabase', { err });
   }
   return null;
 }

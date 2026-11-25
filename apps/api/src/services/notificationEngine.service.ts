@@ -1,5 +1,5 @@
 /**
- * Karen Ultra – Event-Driven Proactive Notification Engine
+ * Karen AI – Event-Driven Proactive Notification Engine
  * Pipeline: Integration Event -> Event Bus -> Duplicate Check -> AI Classification
  *           -> Preference & Quiet-Hours Filter -> Persistent Queue -> Telegram Bot
  */

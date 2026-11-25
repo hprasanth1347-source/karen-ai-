@@ -1,5 +1,5 @@
 /**
- * Karen Ultra — /telegram API route
+ * Karen AI — /telegram API route
  * Dashboard status, webhook registration, polling control, test send,
  * Proactive Notification Centre, and Daily Companion configuration.
  */

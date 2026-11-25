@@ -1,12 +1,12 @@
 /**
- * Karen Ultra – Chat Library Service
+ * Karen AI – Chat Library Service
  * Persists all conversations and messages to Supabase (`conversations` & `messages` tables)
  * with graceful in-memory fallback when database is unavailable.
  */
 
 import { randomUUID } from 'node:crypto';
 import { supabaseAdmin } from '../config/supabase.js';
-import { getOwnerUserId } from './persistence.service.js';
+import { ensureProfileRow, getOwnerUserId, loadUserSetting, saveUserSetting } from './persistence.service.js';
 import { logger } from '../config/logger.js';
 
 export interface ChatConversation {
@@ -29,12 +29,48 @@ export interface StoredChatMessage {
   created_at: string;
 }
 
+interface SettingsLibraryStore {
+  conversations: ChatConversation[];
+  messages: Record<string, StoredChatMessage[]>;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SETTINGS_KEY = 'chat_library_v1';
+
 const memoryConversations: ChatConversation[] = [];
 const memoryMessages = new Map<string, StoredChatMessage[]>();
 
 async function resolveUserId(userId?: string): Promise<string | null> {
-  if (userId) return userId;
-  return await getOwnerUserId().catch(() => null);
+  if (userId && UUID_REGEX.test(userId)) {
+    await ensureProfileRow(userId);
+    return userId;
+  }
+  const ownerId = await getOwnerUserId().catch(() => null);
+  if (ownerId && UUID_REGEX.test(ownerId)) {
+    await ensureProfileRow(ownerId);
+    return ownerId;
+  }
+  return null;
+}
+
+async function readSettingsLibrary(): Promise<SettingsLibraryStore> {
+  const saved = await loadUserSetting<SettingsLibraryStore>(SETTINGS_KEY);
+  return {
+    conversations: Array.isArray(saved?.conversations) ? saved.conversations : [],
+    messages: saved?.messages && typeof saved.messages === 'object' ? saved.messages : {},
+  };
+}
+
+async function writeSettingsLibrary(store: SettingsLibraryStore): Promise<void> {
+  // Keep up to 100 latest conversations in fallback store
+  const trimmed: SettingsLibraryStore = {
+    conversations: store.conversations.slice(0, 100),
+    messages: {},
+  };
+  for (const conv of trimmed.conversations) {
+    trimmed.messages[conv.id] = (store.messages[conv.id] || []).slice(-200);
+  }
+  await saveUserSetting(SETTINGS_KEY, trimmed);
 }
 
 export async function listConversations(
@@ -65,8 +101,15 @@ export async function listConversations(
           created_at: String(row.created_at || new Date().toISOString()),
         }));
       }
+      if (error) {
+        logger.warn('Supabase conversations read failed, using user_settings backup', { error });
+        const backup = await readSettingsLibrary();
+        return channel
+          ? backup.conversations.filter((c) => c.channel === channel)
+          : backup.conversations;
+      }
     } catch (err) {
-      logger.debug('Supabase conversations read fallback', { err });
+      logger.warn('Supabase conversations read error', { err });
     }
   }
 
@@ -108,8 +151,25 @@ export async function createConversation(
           created_at: String(data.created_at || now),
         };
       }
+
+      if (error) {
+        logger.warn('Supabase conversation insert failed, persisting to user_settings backup', { error });
+        const store = await readSettingsLibrary();
+        const conv: ChatConversation = {
+          id: randomUUID(),
+          title: cleanTitle,
+          channel,
+          message_count: 0,
+          last_message_at: now,
+          created_at: now,
+        };
+        store.conversations.unshift(conv);
+        store.messages[conv.id] = [];
+        await writeSettingsLibrary(store);
+        return conv;
+      }
     } catch (err) {
-      logger.debug('Supabase conversation insert fallback', { err });
+      logger.warn('Supabase conversation insert exception', { err });
     }
   }
 
@@ -143,8 +203,13 @@ export async function getConversationMessages(
       if (!error && data) {
         return data as StoredChatMessage[];
       }
+      if (error) {
+        logger.warn('Supabase messages read failed, checking user_settings backup', { error });
+        const backup = await readSettingsLibrary();
+        return backup.messages[conversationId] || [];
+      }
     } catch (err) {
-      logger.debug('Supabase messages read fallback', { err });
+      logger.warn('Supabase messages read error', { err });
     }
   }
 
@@ -164,6 +229,24 @@ export async function appendChatMessage(
 
   if (uid) {
     try {
+      // Ensure parent conversation exists in case client holds a stale ID
+      const { data: convExists } = await supabaseAdmin
+        .from('conversations')
+        .select('id')
+        .eq('id', conversationId)
+        .maybeSingle();
+
+      if (!convExists) {
+        await supabaseAdmin.from('conversations').insert({
+          id: conversationId,
+          user_id: uid,
+          title: content.trim().slice(0, 60) || 'New Chat',
+          channel,
+          last_message_at: now,
+          message_count: 0,
+        });
+      }
+
       const { data, error } = await supabaseAdmin
         .from('messages')
         .insert({
@@ -195,8 +278,43 @@ export async function appendChatMessage(
 
         return data as StoredChatMessage;
       }
+
+      if (error) {
+        logger.warn('Supabase message insert failed, saving to user_settings backup', { error });
+        const store = await readSettingsLibrary();
+        const msg: StoredChatMessage = {
+          id: randomUUID(),
+          conversation_id: conversationId,
+          role,
+          content,
+          channel,
+          ai_provider: meta?.provider || null,
+          ai_model: meta?.model || null,
+          created_at: now,
+        };
+        if (!store.conversations.some((c) => c.id === conversationId)) {
+          store.conversations.unshift({
+            id: conversationId,
+            title: content.trim().slice(0, 60) || 'New Chat',
+            channel: (channel as ChatConversation['channel']) || 'web',
+            message_count: 0,
+            last_message_at: now,
+            created_at: now,
+          });
+        }
+        const list = store.messages[conversationId] || [];
+        list.push(msg);
+        store.messages[conversationId] = list;
+        const conv = store.conversations.find((c) => c.id === conversationId);
+        if (conv) {
+          conv.last_message_at = now;
+          conv.message_count = list.length;
+        }
+        await writeSettingsLibrary(store);
+        return msg;
+      }
     } catch (err) {
-      logger.debug('Supabase message insert fallback', { err });
+      logger.warn('Supabase message insert exception', { err });
     }
   }
 
@@ -239,8 +357,18 @@ export async function deleteConversation(
         .eq('id', conversationId)
         .eq('user_id', uid);
       if (!error) return true;
+
+      logger.warn('Supabase conversation delete failed, cleaning user_settings backup', { error });
+      const store = await readSettingsLibrary();
+      const prevLen = store.conversations.length;
+      store.conversations = store.conversations.filter((c) => c.id !== conversationId);
+      delete store.messages[conversationId];
+      if (store.conversations.length !== prevLen) {
+        await writeSettingsLibrary(store);
+        return true;
+      }
     } catch (err) {
-      logger.debug('Supabase conversation delete fallback', { err });
+      logger.warn('Supabase conversation delete exception', { err });
     }
   }
   return idx !== -1;

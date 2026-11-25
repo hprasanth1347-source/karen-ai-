@@ -201,7 +201,7 @@ class InstagramAutoReplyService {
         : '';
 
       const prompt = `User @${senderUsername} sent this Instagram DM to Hari: "${messageText}".
-Hari is currently away. You are Karen Ultra, Hari's personal female AI assistant.
+Hari is currently away. You are Karen AI, Hari's personal female AI assistant.
 Detected intent: ${intent}.
 Goal: ${intentInstructions[intent]}
 ${customTraining}

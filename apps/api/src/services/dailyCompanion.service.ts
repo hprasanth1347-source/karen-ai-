@@ -1,5 +1,5 @@
 /**
- * Karen Ultra – Personal Daily Companion & Smart Greeting System
+ * Karen AI – Personal Daily Companion & Smart Greeting System
  * Sends proactive AI-personalized greetings in Asia/Kolkata timezone:
  *   Morning   (07:00 IST) -> "Good morning! ☀️"
  *   Afternoon (13:00 IST) -> "Good afternoon! 🌤️"

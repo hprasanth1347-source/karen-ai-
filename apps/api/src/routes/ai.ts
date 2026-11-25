@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { aiLimit } from '../middleware/rateLimit.js';
+import { requireAuth } from '../middleware/auth.js';
 import {
   AIProviderError,
   getDefaultAIModel,
@@ -61,7 +62,7 @@ router.get('/ai/models', aiLimit, async (req, res) => {
   }
 });
 
-router.post('/ai/chat', aiLimit, validate(chatSchema), async (req, res) => {
+router.post('/ai/chat', requireAuth, aiLimit, validate(chatSchema), async (req, res) => {
   await hydrateGoogleTokensFromRequest(req);
   try {
     const result = await generateAIReply(
@@ -97,23 +98,23 @@ router.post('/ai/chat', aiLimit, validate(chatSchema), async (req, res) => {
 
 // ─── Chat Library (Database-persisted conversations) ──────────────────────────
 
-router.get('/ai/conversations', async (req, res) => {
+router.get('/ai/conversations', requireAuth, async (req, res) => {
   const conversations = await listConversations(req.user?.id);
   return success(res, conversations);
 });
 
-router.post('/ai/conversations', async (req, res) => {
+router.post('/ai/conversations', requireAuth, async (req, res) => {
   const title = typeof req.body?.title === 'string' ? req.body.title : 'New Chat';
   const created = await createConversation(title, 'web', req.user?.id);
   return success(res, created, 201);
 });
 
-router.get('/ai/conversations/:id/messages', async (req, res) => {
+router.get('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
   const messages = await getConversationMessages(String(req.params.id), req.user?.id);
   return success(res, messages);
 });
 
-router.delete('/ai/conversations/:id', async (req, res) => {
+router.delete('/ai/conversations/:id', requireAuth, async (req, res) => {
   const deleted = await deleteConversation(String(req.params.id), req.user?.id);
   if (!deleted) {
     return error(res, 'Conversation not found', 404);

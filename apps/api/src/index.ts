@@ -5,7 +5,7 @@ import { startCompanionScheduler } from './services/dailyCompanion.service.js';
 
 const port = Number(config.PORT || config.API_PORT || 8080);
 app.listen(port, () => {
-  logger.info(`Karen Ultra API listening on port ${port} [${config.NODE_ENV}]`);
+  logger.info(`Karen AI API listening on port ${port} [${config.NODE_ENV}]`);
   startCompanionScheduler();
 });
 

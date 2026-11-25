@@ -17,7 +17,7 @@ export interface TaskItem {
 const tasksStore: TaskItem[] = [
   {
     id: '1',
-    title: 'Complete Karen Ultra Master Build Documentation',
+    title: 'Complete Karen AI Master Build Documentation',
     due: '2026-11-23',
     priority: 'urgent',
     status: 'in_progress',
