@@ -1,44 +1,56 @@
-import React, { useState } from 'react';
-import { History, Download, Filter, Search } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { History } from 'lucide-react';
+import { api } from '../lib/api';
+
+interface ActivityRow {
+  id: string;
+  title?: string;
+  body?: string;
+  source?: string;
+  action?: string;
+  createdAt?: string;
+  created_at?: string;
+}
 
 export const ActivityPage: React.FC = () => {
-  const activities = [
-    { id: '1', action: 'DATABASE_MIGRATION', actor: 'system', details: 'Applied 0002_karen_ultra_complete.sql with 22 tables & RLS', time: '2026-11-23 21:46 IST' },
-    { id: '2', action: 'VOICE_POLICY_CHECK', actor: 'system', details: 'Confirmed female voice ID; male fallback blocked', time: '2026-11-23 21:30 IST' },
-    { id: '3', action: 'CORE_INIT', actor: 'owner', details: 'Karen AI Personal AI OS started in development mode', time: '2026-11-23 21:15 IST' },
-  ];
+  const [items, setItems] = useState<ActivityRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .get('/activity')
+      .then((res) => setItems(res.data?.data ?? []))
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white border-3 border-ink p-5 shadow-brutal flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="inline-flex items-center gap-2 px-2 py-0.5 bg-yellow text-ink text-xs font-mono font-bold border-2 border-ink shadow-brutal-sm mb-2">
-            <History className="w-3.5 h-3.5" />
-            <span>TAMPER-RESISTANT ACTIVITY & AUDIT LOG</span>
-          </div>
-          <h1 className="text-xl md:text-2xl font-black">Activity History</h1>
-          <p className="text-xs text-ink-muted mt-1 max-w-xl">
-            Complete trace of all system logins, AI tool invocations, external message actions, document queries, and configuration modifications.
-          </p>
+    <div className="space-y-6 max-w-4xl">
+      <div className="bg-white border-3 border-ink p-5 shadow-brutal">
+        <div className="inline-flex items-center gap-2 px-2 py-0.5 bg-yellow text-[#0A0A0A] text-xs font-mono font-bold border-2 border-ink shadow-brutal-sm mb-2">
+          <History className="w-3.5 h-3.5" />
+          <span>AUDIT &amp; ACTIVITY FEED</span>
         </div>
+        <h1 className="text-xl md:text-2xl font-black">Activity Timeline</h1>
+        <p className="text-xs text-ink-muted mt-1">Live actions, tool calls, and system notifications.</p>
       </div>
 
-      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
-        <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2">EVENT LOG</h3>
-        <div className="space-y-2 text-xs font-mono">
-          {activities.map((act) => (
-            <div key={act.id} className="p-3 border-2 border-ink bg-cream-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <div className="flex items-center gap-2 font-bold">
-                  <span className="text-coral">{act.action}</span>
-                  <span className="text-ink-muted text-[10px]">by {act.actor}</span>
-                </div>
-                <p className="text-ink font-sans text-xs mt-0.5">{act.details}</p>
+      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-2">
+        {loading ? (
+          <p className="text-xs font-mono text-ink-muted">Loading activity...</p>
+        ) : items.length === 0 ? (
+          <p className="text-xs text-ink-muted">No activity recorded yet.</p>
+        ) : (
+          items.map((item, idx) => (
+            <div key={item.id || idx} className="border border-ink p-3 bg-cream-50 text-xs space-y-1">
+              <div className="flex justify-between font-bold">
+                <span>{item.title || item.action || 'Activity'}</span>
+                <span className="font-mono text-[10px] text-ink-muted">{item.source || ''}</span>
               </div>
-              <span className="text-[10px] text-ink-muted shrink-0">{act.time}</span>
+              {item.body && <p className="text-ink-muted">{item.body}</p>}
             </div>
-          ))}
-        </div>
+          ))
+        )}
       </div>
     </div>
   );

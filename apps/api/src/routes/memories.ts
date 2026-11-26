@@ -1,19 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { config } from '../config/env.js';
 import { addMemory, deleteMemory, listMemories } from '../services/memory.service.js';
 import { success } from '../utils/response.js';
 
 const router = Router();
 
-router.use('/memories', (req, res, next) => {
-  if (config.NODE_ENV !== 'production') {
-    return next();
-  }
-  return requireAuth(req, res, next);
-});
+router.use('/memories', requireAuth, requireOwner);
 
 router.get('/memories', async (req, res) => {
   const items = await listMemories(req.user?.id);

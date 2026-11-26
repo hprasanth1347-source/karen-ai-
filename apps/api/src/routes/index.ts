@@ -9,9 +9,9 @@ import taskRoutes from './tasks.js';
 import memoryRoutes from './memories.js';
 import documentsRoutes from './documents.js';
 import googleDriveRoutes from './googleDrive.js';
+import googleWorkspaceRoutes from './googleWorkspace.js';
 import cronRoutes from './cron.js';
 import instagramRoutes from './instagram.js';
-import skillRoutes from './skills.js';
 import telegramRoutes from './telegram.js';
 import loveModeRoutes from './loveMode.js';
 import classroomRoutes from './classroom.js';
@@ -29,17 +29,14 @@ router.use('/v1', taskRoutes);
 router.use('/v1', memoryRoutes);
 router.use('/v1', documentsRoutes);
 router.use('/v1', googleDriveRoutes);
+router.use('/v1', googleWorkspaceRoutes);
 router.use('/v1', cronRoutes);
 router.use('/v1/instagram', instagramRoutes);
-router.use('/v1', skillRoutes);
 router.use('/v1', telegramRoutes);
 router.use('/v1', loveModeRoutes);
 router.use('/v1', classroomRoutes);
 
-// Top-level aliases
+// Keep public health check at /health and /api/v1/health; all other routes strictly under /api/v1
 router.use('/', healthRoutes);
-router.use('/', integrationRoutes);
-router.use('/', aiRoutes);
-router.use('/instagram', instagramRoutes);
 
 export default router;

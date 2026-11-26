@@ -37,9 +37,17 @@ import {
   type GreetingSlot,
 } from '../services/dailyCompanion.service.js';
 import { config } from '../config/env.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { success, error } from '../utils/response.js';
 
 const router = Router();
+
+router.use('/telegram', (req, res, next) => {
+  if (req.path === '/webhook') {
+    return next();
+  }
+  return requireAuth(req, res, () => requireOwner(req, res, next));
+});
 
 /** GET /telegram/status — bot info + live metrics */
 router.get('/telegram/status', async (_req, res) => {

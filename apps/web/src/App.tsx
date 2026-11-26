@@ -68,6 +68,7 @@ const AuthPage = lazy(() => import('./pages/AuthPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const LoveModePage = lazy(() => import('./pages/LoveModePage'));
 const ClassroomPage = lazy(() => import('./pages/ClassroomPage'));
+const DesignSystemPage = lazy(() => import('./pages/DesignSystemPage'));
 
 // ─── Auth Guard ──────────────────────────────────────────────────────────────
 
@@ -129,6 +130,7 @@ export function App() {
                       <Route path="/settings" element={<SettingsPage />} />
                       <Route path="/love-mode" element={<LoveModePage />} />
                       <Route path="/classroom" element={<ClassroomPage />} />
+                      <Route path="/design-system" element={<DesignSystemPage />} />
                       <Route path="*" element={<NotFoundPage />} />
                     </Routes>
                   </AppLayout>

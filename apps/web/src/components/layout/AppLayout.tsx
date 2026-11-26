@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
+import { BottomNav } from './BottomNav';
 import { CommandPalette } from './CommandPalette';
 import { NotificationPanel } from './NotificationPanel';
 
@@ -14,7 +15,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-cream flex flex-col font-sans text-ink">
+    <div className="min-h-dvh bg-cream flex flex-col font-sans text-ink">
+      <a href="#main-content" className="skip-to-content">
+        Skip to main content
+      </a>
+
       <Sidebar
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -28,10 +33,16 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           unreadCount={2}
         />
 
-        <main className="flex-1 p-4 md:p-6 lg:p-8 max-w-7xl w-full mx-auto overflow-x-hidden">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="flex-1 p-4 pb-20 md:p-6 lg:p-8 lg:pb-8 max-w-7xl w-full mx-auto overflow-x-hidden"
+        >
           {children}
         </main>
       </div>
+
+      <BottomNav onOpenMore={() => setSidebarOpen(true)} />
 
       <CommandPalette
         isOpen={commandPaletteOpen}

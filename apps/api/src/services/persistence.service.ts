@@ -1,13 +1,15 @@
-import crypto from 'node:crypto';
 import { supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
+import { encryptJson, decryptJson } from '../utils/crypto.js';
+
+export { encryptJson, decryptJson };
 
 let cachedOwnerId: string | null = null;
 const ensuredProfiles = new Set<string>();
 
 export async function ensureProfileRow(userId: string, email?: string): Promise<boolean> {
-  if (!userId || userId === 'owner-default-id') return false;
+  if (!userId) return false;
   if (ensuredProfiles.has(userId)) return true;
 
   try {
@@ -56,34 +58,19 @@ export async function ensureProfileRow(userId: string, email?: string): Promise<
   return false;
 }
 
-function getCipherKey(): Buffer {
-  const secret = config.ENCRYPTION_KEY || config.APP_SECRET || 'karen-local-oauth-fallback-key';
-  return crypto.createHash('sha256').update(secret).digest();
+export type ConnectionStatus = 'connected' | 'needs_reauth' | 'disconnected';
+
+export interface StoredGoogleTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
 }
 
-export function encryptJson(value: unknown): string {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', getCipherKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]).toString('base64url');
-}
-
-export function decryptJson<T>(raw?: string | null): T | null {
-  if (!raw) return null;
-  try {
-    const buf = Buffer.from(raw, 'base64url');
-    if (buf.length < 29) return null;
-    const iv = buf.subarray(0, 12);
-    const tag = buf.subarray(12, 28);
-    const data = buf.subarray(28);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', getCipherKey(), iv);
-    decipher.setAuthTag(tag);
-    const json = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
-    return JSON.parse(json) as T;
-  } catch {
-    return null;
-  }
+export interface StoredInstagramTokens {
+  accessToken: string;
+  accountId: string;
+  pageId: string;
+  expiresAt?: number;
 }
 
 export async function getOwnerUserId(): Promise<string | null> {
@@ -154,66 +141,96 @@ export async function loadUserSetting<T>(key: string): Promise<T | null> {
   }
 }
 
-export interface StoredGoogleTokens {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;
-}
+export async function saveGoogleTokensToDb(
+  tokens: StoredGoogleTokens,
+  explicitUserId?: string
+): Promise<void> {
+  const userId = explicitUserId || (await getOwnerUserId());
+  if (!userId) return;
+  await ensureProfileRow(userId);
 
-export async function saveGoogleTokensToDb(tokens: StoredGoogleTokens): Promise<void> {
-  const encrypted = encryptJson(tokens);
-  await saveUserSetting('google_oauth_tokens', { payload: encrypted });
-  try {
-    const userId = await getOwnerUserId();
-    if (!userId) return;
-    await supabaseAdmin.from('provider_connections').upsert(
-      {
-        user_id: userId,
-        provider: 'google',
-        status: 'active',
-        config: { payload: encrypted },
-        scopes: [
-          'https://www.googleapis.com/auth/drive.readonly',
-          'https://www.googleapis.com/auth/gmail.readonly',
-          'https://www.googleapis.com/auth/gmail.send',
-        ],
-        expires_at: new Date(tokens.expiresAt).toISOString(),
-        last_sync_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id,provider' }
-    );
-  } catch (err) {
-    logger.debug('Could not upsert provider_connections for google', { err });
-  }
-}
-
-export async function loadGoogleTokensFromDb(): Promise<StoredGoogleTokens | null> {
-  try {
-    const userId = await getOwnerUserId();
-    if (userId) {
-      const { data } = await supabaseAdmin
-        .from('provider_connections')
-        .select('config, status')
-        .eq('user_id', userId)
-        .eq('provider', 'google')
-        .maybeSingle();
-      if (data?.status === 'active' && (data.config as any)?.payload) {
-        const parsed = decryptJson<StoredGoogleTokens>((data.config as any).payload);
-        if (parsed?.accessToken) return parsed;
-      }
+  // Never overwrite an existing refreshToken with an empty one
+  let finalTokens = tokens;
+  if (!tokens.refreshToken) {
+    const existing = await loadGoogleTokensWithStatus(userId);
+    if (existing.tokens?.refreshToken) {
+      finalTokens = { ...tokens, refreshToken: existing.tokens.refreshToken };
     }
-  } catch {
-    // Fall back to user_settings
   }
-  const setting = await loadUserSetting<{ payload?: string }>('google_oauth_tokens');
-  return decryptJson<StoredGoogleTokens>(setting?.payload);
+
+  const encrypted = encryptJson(finalTokens);
+  await supabaseAdmin.from('provider_connections').upsert(
+    {
+      user_id: userId,
+      provider: 'google',
+      status: 'active',
+      config: { payload: encrypted },
+      scopes: [
+        'https://www.googleapis.com/auth/drive.readonly',
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.send',
+        ...config.GOOGLE_CLASSROOM_SCOPES.split(/[\s,]+/).filter(Boolean),
+      ],
+      expires_at: new Date(finalTokens.expiresAt).toISOString(),
+      last_sync_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'user_id,provider' }
+  );
 }
 
-export async function clearGoogleTokensFromDb(): Promise<void> {
-  await saveUserSetting('google_oauth_tokens', {});
+export async function loadGoogleTokensWithStatus(
+  explicitUserId?: string
+): Promise<{ tokens: StoredGoogleTokens | null; status: ConnectionStatus }> {
   try {
-    const userId = await getOwnerUserId();
+    const userId = explicitUserId || (await getOwnerUserId());
+    if (!userId) return { tokens: null, status: 'disconnected' };
+    const { data } = await supabaseAdmin
+      .from('provider_connections')
+      .select('config, status')
+      .eq('user_id', userId)
+      .eq('provider', 'google')
+      .maybeSingle();
+
+    if (!data || data.status === 'inactive') {
+      return { tokens: null, status: 'disconnected' };
+    }
+    const payload = (data.config as { payload?: string } | null)?.payload;
+    const parsed = decryptJson<StoredGoogleTokens>(payload);
+    if (data.status === 'expired' || data.status === 'error') {
+      return { tokens: parsed, status: 'needs_reauth' };
+    }
+    if (parsed?.accessToken) {
+      return { tokens: parsed, status: 'connected' };
+    }
+  } catch (err) {
+    logger.warn('loadGoogleTokensWithStatus failed', { err });
+  }
+  return { tokens: null, status: 'disconnected' };
+}
+
+export async function loadGoogleTokensFromDb(explicitUserId?: string): Promise<StoredGoogleTokens | null> {
+  const res = await loadGoogleTokensWithStatus(explicitUserId);
+  return res.status === 'connected' ? res.tokens : null;
+}
+
+export async function markGoogleNeedsReauth(explicitUserId?: string): Promise<void> {
+  try {
+    const userId = explicitUserId || (await getOwnerUserId());
+    if (!userId) return;
+    await supabaseAdmin
+      .from('provider_connections')
+      .update({ status: 'expired', updated_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .eq('provider', 'google');
+  } catch (err) {
+    logger.warn('markGoogleNeedsReauth failed', { err });
+  }
+}
+
+export async function clearGoogleTokensFromDb(explicitUserId?: string): Promise<void> {
+  try {
+    const userId = explicitUserId || (await getOwnerUserId());
     if (!userId) return;
     await supabaseAdmin
       .from('provider_connections')
@@ -222,5 +239,97 @@ export async function clearGoogleTokensFromDb(): Promise<void> {
       .eq('provider', 'google');
   } catch {
     // Ignore cleanup failures
+  }
+}
+
+export async function saveInstagramTokensToDb(
+  tokens: StoredInstagramTokens,
+  explicitUserId?: string
+): Promise<void> {
+  const userId = explicitUserId || (await getOwnerUserId());
+  if (!userId) return;
+  await ensureProfileRow(userId);
+  const encrypted = encryptJson(tokens);
+  await supabaseAdmin.from('provider_connections').upsert(
+    {
+      user_id: userId,
+      provider: 'instagram',
+      status: 'active',
+      config: { payload: encrypted },
+      expires_at: tokens.expiresAt ? new Date(tokens.expiresAt).toISOString() : null,
+      last_sync_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'user_id,provider' }
+  );
+}
+
+export async function loadInstagramTokensWithStatus(
+  explicitUserId?: string
+): Promise<{ tokens: StoredInstagramTokens | null; status: ConnectionStatus }> {
+  try {
+    const userId = explicitUserId || (await getOwnerUserId());
+    if (userId) {
+      const { data } = await supabaseAdmin
+        .from('provider_connections')
+        .select('config, status')
+        .eq('user_id', userId)
+        .eq('provider', 'instagram')
+        .maybeSingle();
+
+      if (data) {
+        if (data.status === 'inactive') return { tokens: null, status: 'disconnected' };
+        const payload = (data.config as { payload?: string } | null)?.payload;
+        const parsed = decryptJson<StoredInstagramTokens>(payload);
+        if (data.status === 'expired' || data.status === 'error') {
+          return { tokens: parsed, status: 'needs_reauth' };
+        }
+        if (parsed?.accessToken) {
+          return { tokens: parsed, status: 'connected' };
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn('loadInstagramTokensWithStatus failed', { err });
+  }
+
+  if (config.INSTAGRAM_ACCESS_TOKEN) {
+    return {
+      tokens: {
+        accessToken: config.INSTAGRAM_ACCESS_TOKEN,
+        accountId: config.INSTAGRAM_ACCOUNT_ID || '',
+        pageId: config.INSTAGRAM_PAGE_ID || '',
+      },
+      status: 'connected',
+    };
+  }
+  return { tokens: null, status: 'disconnected' };
+}
+
+export async function markInstagramNeedsReauth(explicitUserId?: string): Promise<void> {
+  try {
+    const userId = explicitUserId || (await getOwnerUserId());
+    if (!userId) return;
+    await supabaseAdmin
+      .from('provider_connections')
+      .update({ status: 'expired', updated_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .eq('provider', 'instagram');
+  } catch {
+    // Ignore
+  }
+}
+
+export async function clearInstagramTokensFromDb(explicitUserId?: string): Promise<void> {
+  try {
+    const userId = explicitUserId || (await getOwnerUserId());
+    if (!userId) return;
+    await supabaseAdmin
+      .from('provider_connections')
+      .update({ status: 'inactive', config: {}, updated_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .eq('provider', 'instagram');
+  } catch {
+    // Ignore
   }
 }

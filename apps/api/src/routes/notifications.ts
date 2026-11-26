@@ -1,6 +1,5 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
-import { config } from '../config/env.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import {
   addNotification,
   getApprovalById,
@@ -16,8 +15,7 @@ import { success, error } from '../utils/response.js';
 const router = Router();
 
 function authGuard(req: Parameters<typeof requireAuth>[0], res: Parameters<typeof requireAuth>[1], next: Parameters<typeof requireAuth>[2]) {
-  if (config.NODE_ENV !== 'production') return next();
-  return requireAuth(req, res, next);
+  return requireAuth(req, res, () => requireOwner(req, res, next));
 }
 
 router.get('/notifications', authGuard, async (_req, res) => {

@@ -1,10 +1,23 @@
 {
-  "name": "Karen Ultra",
-  "short_name": "Karen",
+  "name": "Karen AI",
+  "short_name": "Karen AI",
+  "description": "Personal AI Operating System",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f7f3e9",
-  "theme_color": "#f15b50",
-  "description": "Your private personal AI command centre.",
-  "icons": []
+  "background_color": "#FAF7F0",
+  "theme_color": "#FAF7F0",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
 }

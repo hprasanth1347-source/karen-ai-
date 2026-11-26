@@ -6,7 +6,7 @@
  */
 
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { success, error } from '../utils/response.js';
 import { config } from '../config/env.js';
 import {
@@ -16,6 +16,8 @@ import {
 } from '../services/loveMode.service.js';
 
 const router = Router();
+
+router.use('/love-mode', requireAuth, requireOwner);
 
 function getOwnerChatId(): string {
   return config.TELEGRAM_OWNER_CHAT_ID || process.env.TELEGRAM_OWNER_CHAT_ID || 'owner';

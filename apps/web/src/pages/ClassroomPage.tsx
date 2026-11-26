@@ -188,11 +188,69 @@ export default function ClassroomPage() {
   const [prepMode, setPrepMode] = useState<'plan' | 'notes' | 'quiz' | 'mock'>('plan');
   const [prepResult, setPrepResult] = useState<string | null>(null);
 
-  // Join Class by code / invite link
-  const [joinCodeOrLink, setJoinCodeOrLink] = useState('');
-  const [joinCourseId, setJoinCourseId] = useState('');
+  // Join Class: 3 segmented modes ("link" | "id_code" | "invitation")
+  const [joinMode, setJoinMode] = useState<'link' | 'id_code' | 'invitation'>('link');
+  const [inviteLinkInput, setInviteLinkInput] = useState('');
+  const [classIdInput, setClassIdInput] = useState('');
+  const [classCodeInput, setClassCodeInput] = useState('');
+  const [showIdHelp, setShowIdHelp] = useState(false);
+  const [invitations, setInvitations] = useState<Array<{ id: string; courseId: string; role?: string }>>([]);
+  const [loadingInvitations, setLoadingInvitations] = useState(false);
   const [joining, setJoining] = useState(false);
-  const [joinMessage, setJoinMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [joinResult, setJoinResult] = useState<{
+    joined: boolean;
+    alreadyEnrolled?: boolean;
+    courseId?: string;
+    courseName?: string;
+    errorCode?: string;
+    message: string;
+  } | null>(null);
+  const [recentJoins, setRecentJoins] = useState<Array<{ courseId: string; courseName: string; at: string }>>([]);
+
+  const detectCourseIdFromInput = (raw: string): { id: string; cjc?: string } => {
+    const trimmed = raw.trim();
+    if (!trimmed) return { id: '' };
+    if (/^\d+$/.test(trimmed)) return { id: trimmed };
+    let slug = trimmed;
+    let cjc: string | undefined;
+    if (/classroom\.google\.com/i.test(trimmed)) {
+      try {
+        const u = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+        cjc = u.searchParams.get('cjc')?.trim() || undefined;
+        const m = u.pathname.match(/\/c\/([^/]+)/i);
+        slug = m?.[1] || '';
+      } catch {
+        return { id: '' };
+      }
+    }
+    if (/^\d+$/.test(slug)) return { id: slug, cjc };
+    try {
+      let b64 = slug.replace(/-/g, '+').replace(/_/g, '/');
+      if (b64.length % 4 > 0) b64 += '='.repeat(4 - (b64.length % 4));
+      const decoded = atob(b64).trim();
+      if (/^\d+$/.test(decoded)) return { id: decoded, cjc };
+    } catch {
+      // ignore
+    }
+    return { id: '', cjc };
+  };
+
+  const detectedFromIdField = detectCourseIdFromInput(classIdInput);
+  const effectiveCode = classCodeInput.trim() || detectedFromIdField.cjc || '';
+  const isLinkValid = /classroom\.google\.com\/c\//i.test(inviteLinkInput.trim());
+  const isIdCodeValid = /^\d+$/.test(detectedFromIdField.id) && /^[A-Za-z0-9]{5,12}$/.test(effectiveCode);
+
+  const loadInvitations = async () => {
+    setLoadingInvitations(true);
+    try {
+      const res = await api.get<{ data: Array<{ id: string; courseId: string; role?: string }> }>('/classroom/invitations');
+      setInvitations(res.data?.data || []);
+    } catch {
+      setInvitations([]);
+    } finally {
+      setLoadingInvitations(false);
+    }
+  };
 
   const loadAll = useCallback(async () => {
     try {
@@ -271,27 +329,54 @@ export default function ClassroomPage() {
     }
   };
 
-  const handleJoinClass = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!joinCodeOrLink.trim()) return;
+  const handleJoinClass = async (e?: React.FormEvent, invitationId?: string) => {
+    if (e) e.preventDefault();
     setJoining(true);
-    setJoinMessage(null);
+    setJoinResult(null);
     try {
-      const res = await api.post<{ data: { joined: boolean; message: string } }>('/classroom/join', {
-        codeOrLink: joinCodeOrLink.trim(),
-        courseId: joinCourseId.trim() || undefined,
-      });
+      const payload = invitationId
+        ? { mode: 'invitation', invitationId }
+        : joinMode === 'link'
+          ? { mode: 'link', inviteLink: inviteLinkInput.trim() }
+          : {
+              mode: 'id_code',
+              courseId: detectedFromIdField.id || classIdInput.trim(),
+              classCode: effectiveCode,
+              classUrl: /classroom\.google\.com/i.test(classIdInput) ? classIdInput.trim() : undefined,
+            };
+
+      const res = await api.post<{
+        data: {
+          joined: boolean;
+          alreadyEnrolled?: boolean;
+          courseId?: string;
+          courseName?: string;
+          errorCode?: string;
+          message: string;
+        };
+      }>('/classroom/join', payload);
       const data = res.data.data;
-      setJoinMessage({ ok: data.joined, text: data.message });
+      setJoinResult(data);
       if (data.joined) {
-        setJoinCodeOrLink('');
-        setJoinCourseId('');
+        setInviteLinkInput('');
+        setClassIdInput('');
+        setClassCodeInput('');
+        if (data.courseId) {
+          setRecentJoins((prev) => [
+            {
+              courseId: data.courseId!,
+              courseName: data.courseName || data.courseId!,
+              at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+            ...prev.slice(0, 4),
+          ]);
+        }
         await loadAll();
       }
     } catch (err: any) {
-      setJoinMessage({
-        ok: false,
-        text: err?.response?.data?.error || 'Could not join class.',
+      setJoinResult({
+        joined: false,
+        message: err?.response?.data?.error || 'Could not join class.',
       });
     } finally {
       setJoining(false);
@@ -655,43 +740,218 @@ export default function ClassroomPage() {
       {/* TAB B: MY CLASSES */}
       {tab === 'classes' && (
         <div className="space-y-6">
-          <form onSubmit={handleJoinClass} className="border-2 border-ink bg-white p-4 shadow-brutal-sm space-y-3">
-            <h2 className="text-sm font-black">Join a Class (Class Code or Invite Link)</h2>
-            <p className="text-xs text-ink/60">
-              Paste the Google Classroom invite link (e.g. <code>classroom.google.com/c/...?cjc=abc1234</code>), or enter Class Code + Course ID.
-            </p>
-            <div className="grid sm:grid-cols-3 gap-2">
-              <input
-                type="text"
-                required
-                value={joinCodeOrLink}
-                onChange={(e) => setJoinCodeOrLink(e.target.value)}
-                placeholder="Invite Link or Class Code"
-                className="sm:col-span-2 border-2 border-ink p-2 text-xs"
-              />
-              <input
-                type="text"
-                value={joinCourseId}
-                onChange={(e) => setJoinCourseId(e.target.value)}
-                placeholder="Course ID (if code only)"
-                className="border-2 border-ink p-2 text-xs"
-              />
+          <div className="border-2 border-ink bg-white p-4 shadow-brutal-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <h2 className="text-sm font-black">Join a Class</h2>
+              <div className="inline-flex border-2 border-ink bg-cream-50" role="tablist" aria-label="Join class method">
+                {[
+                  { id: 'link', label: 'Invite link' },
+                  { id: 'id_code', label: 'Class ID + code' },
+                  { id: 'invitation', label: 'Pending invitations' },
+                ].map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={joinMode === opt.id}
+                    onClick={() => {
+                      setJoinMode(opt.id as 'link' | 'id_code' | 'invitation');
+                      setJoinResult(null);
+                      if (opt.id === 'invitation') void loadInvitations();
+                    }}
+                    className={`px-3 py-1.5 text-xs font-bold border-r border-ink last:border-r-0 ${
+                      joinMode === opt.id ? 'bg-coral text-white' : 'bg-white text-ink hover:bg-yellow/40'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <button
-                type="submit"
-                disabled={joining}
-                className="btn-coral text-xs px-3 py-1.5 font-black"
-              >
-                {joining ? 'Joining...' : 'Join Class'}
-              </button>
-              {joinMessage && (
-                <span className={`text-xs font-bold ${joinMessage.ok ? 'text-green-700' : 'text-coral'}`}>
-                  {joinMessage.text}
-                </span>
+
+            {joinMode === 'link' && (
+              <form onSubmit={handleJoinClass} className="space-y-3">
+                <div>
+                  <label htmlFor="classroom-invite-link" className="block text-xs font-bold mb-1">
+                    Google Classroom Invite Link
+                  </label>
+                  <input
+                    id="classroom-invite-link"
+                    type="url"
+                    value={inviteLinkInput}
+                    onChange={(e) => setInviteLinkInput(e.target.value)}
+                    placeholder="https://classroom.google.com/c/...?cjc=abc1234"
+                    className="w-full border-2 border-ink p-2.5 text-base sm:text-xs"
+                  />
+                  {inviteLinkInput.trim() && !isLinkValid && (
+                    <p className="mt-1 text-xs font-semibold text-coral">
+                      Paste a full classroom.google.com/c/... invite link.
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="submit"
+                  disabled={joining || !isLinkValid}
+                  className="btn-coral text-xs px-4 py-2 font-black disabled:opacity-50"
+                >
+                  {joining ? 'Joining...' : 'Join Class'}
+                </button>
+              </form>
+            )}
+
+            {joinMode === 'id_code' && (
+              <form onSubmit={handleJoinClass} className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-ink/70">
+                    Google Classroom cannot join by class code alone — enter both the Class ID (or course URL) and the 5–12 character Class Code.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowIdHelp((v) => !v)}
+                    className="text-xs font-bold underline shrink-0"
+                    aria-expanded={showIdHelp}
+                  >
+                    Where do I find the Class ID?
+                  </button>
+                </div>
+
+                {showIdHelp && (
+                  <div className="border-2 border-ink bg-cream-50 p-3 text-xs space-y-1">
+                    <p className="font-bold">How to find the Class ID:</p>
+                    <p>
+                      Open the class in Google Classroom or copy the teacher&apos;s invite URL (`classroom.google.com/c/...`). Paste the full URL or the numeric ID directly into the Class ID field below — Karen decodes it automatically.
+                    </p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="classroom-class-id" className="block text-xs font-bold mb-1">
+                      Class ID (number or class URL)
+                    </label>
+                    <input
+                      id="classroom-class-id"
+                      type="text"
+                      value={classIdInput}
+                      onChange={(e) => setClassIdInput(e.target.value)}
+                      placeholder="123456789 or classroom.google.com/c/..."
+                      className="w-full border-2 border-ink p-2.5 text-base sm:text-xs"
+                    />
+                    {detectedFromIdField.id && (
+                      <p className="mt-1 text-[11px] font-mono font-bold text-green-700">
+                        Detected ID: {detectedFromIdField.id}
+                      </p>
+                    )}
+                    {classIdInput.trim() && !detectedFromIdField.id && (
+                      <p className="mt-1 text-xs font-semibold text-coral">
+                        Enter a numeric Class ID or a valid Classroom URL/slug.
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label htmlFor="classroom-class-code" className="block text-xs font-bold mb-1">
+                      Class code
+                    </label>
+                    <input
+                      id="classroom-class-code"
+                      type="text"
+                      value={classCodeInput}
+                      onChange={(e) => setClassCodeInput(e.target.value)}
+                      placeholder={detectedFromIdField.cjc ? `Auto-detected: ${detectedFromIdField.cjc}` : 'e.g. abc1234'}
+                      className="w-full border-2 border-ink p-2.5 text-base sm:text-xs"
+                    />
+                    {effectiveCode && !/^[A-Za-z0-9]{5,12}$/.test(effectiveCode) && (
+                      <p className="mt-1 text-xs font-semibold text-coral">
+                        Class code must be 5–12 alphanumeric characters.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={joining || !isIdCodeValid}
+                  className="btn-coral text-xs px-4 py-2 font-black disabled:opacity-50"
+                >
+                  {joining ? 'Joining...' : 'Join Class'}
+                </button>
+              </form>
+            )}
+
+            {joinMode === 'invitation' && (
+              <div className="space-y-2">
+                {loadingInvitations ? (
+                  <p className="text-xs font-mono text-ink/60">Loading pending invitations...</p>
+                ) : invitations.length === 0 ? (
+                  <p className="text-xs text-ink/70">No pending Classroom invitations found.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {invitations.map((inv) => (
+                      <div key={inv.id} className="flex items-center justify-between border-2 border-ink p-2.5 bg-cream-50 text-xs">
+                        <span className="font-bold">Course ID: {inv.courseId} ({inv.role || 'STUDENT'})</span>
+                        <button
+                          type="button"
+                          disabled={joining}
+                          onClick={() => void handleJoinClass(undefined, inv.id)}
+                          className="btn-teal px-3 py-1 text-xs font-black"
+                        >
+                          Accept
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div aria-live="polite">
+              {joinResult && (
+                <div
+                  className={`border-2 border-ink p-3 text-xs space-y-2 ${
+                    joinResult.joined ? 'bg-mint/40' : 'bg-coral/15'
+                  }`}
+                >
+                  <p className="font-bold">{joinResult.message}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {joinResult.joined && joinResult.courseId && (
+                      <a
+                        href={`https://classroom.google.com/c/${joinResult.courseId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-teal px-3 py-1 text-xs font-black inline-block"
+                      >
+                        Open class
+                      </a>
+                    )}
+                    {joinResult.errorCode === 'MISSING_ROSTER_SCOPE' && (
+                      <button
+                        type="button"
+                        onClick={handleConnect}
+                        className="btn-coral px-3 py-1 text-xs font-black"
+                      >
+                        Reconnect Google
+                      </button>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
-          </form>
+
+            {recentJoins.length > 0 && (
+              <div className="border-t border-ink/20 pt-3 space-y-1">
+                <p className="text-[11px] font-mono font-bold text-ink/60 uppercase">Recent Joins</p>
+                <ul className="space-y-1 text-xs">
+                  {recentJoins.map((rj, i) => (
+                    <li key={`${rj.courseId}-${i}`} className="flex items-center justify-between">
+                      <span className="font-bold">{rj.courseName}</span>
+                      <span className="font-mono text-ink/60">{rj.at}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
           {(overview?.courses || []).length === 0 ? (
             <div className="border-2 border-ink bg-white p-6 text-center space-y-3">
               <p className="text-xs font-bold text-ink/70">

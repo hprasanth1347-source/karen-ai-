@@ -22,13 +22,30 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+function isJwtExpired(token: string): boolean {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: number };
+    if (typeof payload.exp === 'number') {
+      return payload.exp * 1000 <= Date.now() + 5000;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function readStoredSession(): StoredSession | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredSession;
-    if (parsed?.user && parsed?.accessToken) return parsed;
+    if (parsed?.user && parsed?.accessToken && !isJwtExpired(parsed.accessToken)) {
+      return parsed;
+    }
+    window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
     return null;
   } catch {
     return null;
@@ -68,15 +85,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let mounted = true;
 
     async function initAuth() {
-      // 1. Check backend session stored in sessionStorage (lasts until browser/tab session ends)
+      // 1. Check backend session stored in sessionStorage and verify with GET /auth/me
       const stored = readStoredSession();
       if (stored) {
-        if (mounted) {
-          setUser(stored.user);
-          setSession({ access_token: stored.accessToken, user: stored.user } as Session);
-          setLoading(false);
+        try {
+          await api.get('/auth/me');
+          if (mounted) {
+            setUser(stored.user);
+            setSession({ access_token: stored.accessToken, user: stored.user } as Session);
+            setLoading(false);
+          }
+          return;
+        } catch {
+          clearStoredSession();
+          if (mounted) {
+            setUser(null);
+            setSession(null);
+            setLoading(false);
+          }
+          return;
         }
-        return;
       }
 
       // 2. Check Supabase client session (also scoped to sessionStorage)

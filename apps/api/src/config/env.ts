@@ -74,6 +74,7 @@ const envSchema = z.object({
   GOOGLE_REDIRECT_URI: z.string().default('http://localhost:8080/api/v1/auth/google/callback'),
   GOOGLE_SEARCH_API_KEY: z.string().optional().default(''),
   GOOGLE_SEARCH_ENGINE_ID: z.string().optional().default(''),
+  SEARCH_DAILY_LIMIT: z.coerce.number().int().positive().max(10000).default(90),
 
   // Google Classroom
   GOOGLE_CLASSROOM_ENABLED: z
@@ -98,11 +99,24 @@ const envSchema = z.object({
   GOOGLE_CLASSROOM_SYNC_INTERVAL: z.coerce.number().int().positive().default(900000),
   GOOGLE_CLASSROOM_TIMEZONE: z.string().default('Asia/Kolkata'),
 
-  // Security
+  // Skills & Runner
+  SKILL_RUNNER_URL: z.string().optional().default(''),
+  SKILL_RUNNER_SECRET: z.string().optional().default(''),
+  SKILLS_STORAGE_BUCKET: z.string().default('karen-skill-outputs'),
+  E2B_API_KEY: z.string().optional().default(''),
+
+  // Security & Owner
   JWT_SECRET: z.string().optional(),
   ENCRYPTION_KEY: z.string().optional(),
   APP_SECRET: z.string().optional(),
   BOOTSTRAP_SECRET: z.string().optional(),
+  CRON_SECRET: z.string().optional(),
+  OWNER_USER_ID: z.string().optional().default(''),
+  OWNER_EMAIL: z.string().optional().default(''),
+  DEV_AUTH_BYPASS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -113,6 +127,11 @@ if (!parsed.success) {
 }
 
 if (process.env.NODE_ENV === 'production') {
+  if (parsed.data.DEV_AUTH_BYPASS) {
+    console.error('Production startup blocked. DEV_AUTH_BYPASS cannot be enabled in production.');
+    process.exit(1);
+  }
+
   const productionRequired = [
     'SUPABASE_URL',
     'SUPABASE_ANON_KEY',
@@ -121,11 +140,13 @@ if (process.env.NODE_ENV === 'production') {
     'ENCRYPTION_KEY',
     'APP_SECRET',
     'BOOTSTRAP_SECRET',
+    'CRON_SECRET',
+    'TELEGRAM_WEBHOOK_SECRET',
   ] as const;
 
   const missing = productionRequired.filter((key) => {
     const value = process.env[key];
-    return !value || value.includes('placeholder') || value.includes('replace-with') || value.includes('karen-');
+    return !value || value.includes('placeholder') || value.includes('replace-with');
   });
 
   if (missing.length > 0) {

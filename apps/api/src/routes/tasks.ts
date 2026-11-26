@@ -1,19 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { config } from '../config/env.js';
 import { addTask, listTasks, updateTask } from '../services/task.service.js';
 import { success, error } from '../utils/response.js';
 
 const router = Router();
 
-router.use('/tasks', (req, res, next) => {
-  if (config.NODE_ENV !== 'production') {
-    return next();
-  }
-  return requireAuth(req, res, next);
-});
+router.use('/tasks', requireAuth, requireOwner);
 
 router.get('/tasks', async (req, res) => {
   const items = await listTasks(req.user?.id);

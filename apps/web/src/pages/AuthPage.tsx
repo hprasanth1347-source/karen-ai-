@@ -9,7 +9,12 @@ export const AuthPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [secret, setSecret] = useState('');
   const [hasOwner, setHasOwner] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('expired') === '1') {
+      return 'Your session has expired. Please sign in again.';
+    }
+    return null;
+  });
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
   const { login, bootstrap, user, loading } = useAuthContext();

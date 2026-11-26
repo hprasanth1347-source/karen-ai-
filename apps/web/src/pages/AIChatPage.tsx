@@ -28,6 +28,8 @@ interface ChatMessage {
     status: 'pending' | 'approved' | 'rejected' | 'submitting' | 'failed';
     error?: string;
   };
+  generatedFiles?: Array<{ name: string; url: string; mimeType?: string }>;
+  sources?: Array<{ title: string; url: string; displayLink: string }>;
 }
 
 interface InstagramConversation {
@@ -381,12 +383,16 @@ export const AIChatPage: React.FC = () => {
     setModelError('');
     setModelsLoading(true);
 
-    fetch(`/api/ai/models?provider=${provider}`, { signal: controller.signal })
-      .then(async (res) => {
-        const data = await readApiData<{
-          defaultModel?: string;
-          models?: Array<AIModelOption | string>;
-        }>(res);
+    api
+      .get<{ ok: boolean; data?: { defaultModel?: string; models?: Array<AIModelOption | string> }; error?: string }>(
+        `/ai/models?provider=${provider}`,
+        { signal: controller.signal }
+      )
+      .then((res) => {
+        const data = res.data?.data;
+        if (!res.data?.ok || !data) {
+          throw new Error(res.data?.error || 'Unable to load models.');
+        }
         const options = (data.models || [])
           .map((option) =>
             typeof option === 'string' ? { id: option, label: option } : option
@@ -568,8 +574,8 @@ export const AIChatPage: React.FC = () => {
       }
 
       if (instagramCommand) {
-        const response = await fetch('/api/v1/instagram/conversations');
-        const conversations = await readApiData<InstagramConversation[]>(response);
+        const response = await api.get<{ data: InstagramConversation[] }>('/instagram/conversations');
+        const conversations = response.data?.data || [];
         const matches = conversations
           .map((conversation) => ({
             recipient: getConversationRecipient(conversation),
@@ -682,6 +688,8 @@ export const AIChatPage: React.FC = () => {
           model: string;
           conversationId?: string;
           pendingApproval?: { id: string; summary: string };
+          generatedFiles?: Array<{ name: string; url: string; mimeType?: string }>;
+          sources?: Array<{ title: string; url: string; displayLink: string }>;
         }>
       >('/ai/chat', {
         message: currentInput,
@@ -690,6 +698,7 @@ export const AIChatPage: React.FC = () => {
         model: model || undefined,
         conversationId: activeConvIdRef.current || undefined,
         clientMessageId,
+        currentPage: window.location.pathname,
       });
 
       const payload = axiosRes.data;
@@ -739,6 +748,8 @@ export const AIChatPage: React.FC = () => {
             status: 'pending',
           }
           : undefined,
+        generatedFiles: result.generatedFiles || [],
+        sources: result.sources || [],
       };
       setMessages((prev) => {
         const nextMsgs = [...prev, botMsg];
@@ -780,16 +791,12 @@ export const AIChatPage: React.FC = () => {
     );
 
     try {
-      const response = await fetch('/api/v1/instagram/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recipientId: target.instagramSend.recipientId,
-          message: target.instagramSend.message,
-        }),
+      const response = await api.post<{ data: { success: boolean } }>('/instagram/send', {
+        recipientId: target.instagramSend.recipientId,
+        message: target.instagramSend.message,
       });
-      const result = await readApiData<{ success: boolean }>(response);
-      if (!result.success) throw new Error('Instagram did not confirm the message.');
+      const result = response.data?.data;
+      if (!result?.success) throw new Error('Instagram did not confirm the message.');
 
       setMessages((prev) =>
         prev.map((message) =>
@@ -1076,6 +1083,38 @@ export const AIChatPage: React.FC = () => {
                     {m.pendingApproval.status === 'failed' && (
                       <p className="text-red-700">{m.pendingApproval.error}</p>
                     )}
+                  </div>
+                )}
+                {m.generatedFiles && m.generatedFiles.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {m.generatedFiles.map((f, idx) => (
+                      <a
+                        key={`${f.name}-${idx}`}
+                        href={f.url}
+                        download={f.name}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-mint border-2 border-ink shadow-brutal-sm text-[11px] font-bold hover:bg-yellow transition-colors"
+                      >
+                        <span>Download {f.name}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+                {m.sources && m.sources.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {m.sources.map((s, idx) => (
+                      <a
+                        key={`${s.url}-${idx}`}
+                        href={s.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-cream-50 border border-ink text-[10px] font-mono hover:bg-yellow"
+                        title={s.title}
+                      >
+                        <span>{s.displayLink || s.title}</span>
+                      </a>
+                    ))}
                   </div>
                 )}
                 {m.role === 'assistant' && (

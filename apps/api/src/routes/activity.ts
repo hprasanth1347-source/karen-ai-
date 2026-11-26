@@ -1,10 +1,10 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { success } from '../utils/response.js';
 
 const router = Router();
 
-router.get('/activity', requireAuth, (_req, res) => {
+router.get('/activity', requireAuth, requireOwner, (_req, res) => {
   return success(res, [
     {
       id: '1',

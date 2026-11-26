@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { aiLimit } from '../middleware/rateLimit.js';
 import { config } from '../config/env.js';
@@ -12,8 +12,8 @@ import { success, error } from '../utils/response.js';
 import {
   buildGoogleAuthUrl,
   disconnectGoogleAccount,
+  getGoogleConnectionStatus,
   getGoogleRedirectUri,
-  hydrateGoogleTokensFromRequest,
   isGoogleOAuthConfigured,
 } from './googleDrive.js';
 import {
@@ -25,7 +25,9 @@ import {
   getClassroomOverview,
   getClassroomSettings,
   getGradesOverview,
+  joinClassroom,
   joinClassroomByCodeOrLink,
+  listPendingClassroomInvitations,
   listClassroomAssignments,
   runLastMinuteExamPrep,
   setPersonalAssignmentStatus,
@@ -37,16 +39,16 @@ import {
 
 const router = Router();
 
-router.use('/classroom', (req, res, next) => {
-  if (config.NODE_ENV !== 'production') return next();
-  return requireAuth(req, res, next);
-});
+router.use('/classroom', requireAuth, requireOwner);
 
 router.get('/classroom/status', async (req, res) => {
-  await hydrateGoogleTokensFromRequest(req);
-  const overview = await getClassroomOverview();
+  const [overview, googleStatus] = await Promise.all([
+    getClassroomOverview(),
+    getGoogleConnectionStatus(req.user?.id),
+  ]);
   return success(res, {
     configured: isGoogleOAuthConfigured(),
+    googleStatus,
     ...overview,
   });
 });
@@ -60,21 +62,23 @@ router.get('/classroom/auth-url', (req, res) => {
       'GOOGLE_NOT_CONFIGURED'
     );
   }
-  const redirectUri = getGoogleRedirectUri(req);
+  const redirectUri = getRedirectUriCompat(req);
   return success(res, {
-    url: buildGoogleAuthUrl(redirectUri, 'classroom'),
+    url: buildGoogleAuthUrl(redirectUri, 'classroom', req.user?.id || 'owner'),
     redirectUri,
   });
 });
 
-router.post('/classroom/disconnect', async (_req, res) => {
-  await disconnectGoogleAccount();
-  res.clearCookie('karen_google_oauth', { path: '/' });
+function getRedirectUriCompat(req: Parameters<typeof getGoogleRedirectUri>[0]) {
+  return getGoogleRedirectUri(req);
+}
+
+router.post('/classroom/disconnect', async (req, res) => {
+  await disconnectGoogleAccount(req.user?.id);
   return success(res, { disconnected: true });
 });
 
-router.post('/classroom/sync', async (req, res) => {
-  await hydrateGoogleTokensFromRequest(req);
+router.post('/classroom/sync', async (_req, res) => {
   const result = await syncClassroomData();
   const overview = await getClassroomOverview();
   return success(res, {
@@ -85,10 +89,14 @@ router.post('/classroom/sync', async (req, res) => {
 });
 
 router.get('/classroom/overview', async (req, res) => {
-  await hydrateGoogleTokensFromRequest(req);
-  const [overview, cache] = await Promise.all([getClassroomOverview(), getClassroomCache()]);
+  const [overview, cache, googleStatus] = await Promise.all([
+    getClassroomOverview(),
+    getClassroomCache(),
+    getGoogleConnectionStatus(req.user?.id),
+  ]);
   return success(res, {
     ...overview,
+    googleStatus,
     courses: cache.courses,
     upcomingDeadlines: cache.assignments
       .filter((a) => a.category !== 'submitted' && a.category !== 'graded')
@@ -98,11 +106,10 @@ router.get('/classroom/overview', async (req, res) => {
 });
 
 router.get('/classroom/bundle', async (req, res) => {
-  await hydrateGoogleTokensFromRequest(req);
   const category = typeof req.query.category === 'string' ? req.query.category : undefined;
   const sortBy =
     typeof req.query.sortBy === 'string' &&
-    ['deadline', 'subject', 'priority', 'status'].includes(req.query.sortBy)
+      ['deadline', 'subject', 'priority', 'status'].includes(req.query.sortBy)
       ? (req.query.sortBy as 'deadline' | 'subject' | 'priority' | 'status')
       : 'deadline';
   const [overview, cache, assignments, grades] = await Promise.all([
@@ -132,17 +139,29 @@ router.get('/classroom/courses', async (_req, res) => {
   return success(res, cache.courses);
 });
 
+router.get('/classroom/invitations', async (_req, res) => {
+  const invitations = await listPendingClassroomInvitations();
+  return success(res, invitations);
+});
+
 router.post(
   '/classroom/join',
   validate(
     z.object({
-      codeOrLink: z.string().min(3).max(500),
-      courseId: z.string().max(100).optional(),
+      mode: z.enum(['link', 'id_code', 'invitation']).optional(),
+      inviteLink: z.string().max(500).optional(),
+      courseId: z.string().max(200).optional(),
+      classCode: z.string().max(40).optional(),
+      classUrl: z.string().max(500).optional(),
+      invitationId: z.string().max(200).optional(),
+      codeOrLink: z.string().max(500).optional(),
     })
   ),
   async (req, res) => {
-    await hydrateGoogleTokensFromRequest(req);
-    const result = await joinClassroomByCodeOrLink(req.body);
+    const result = await joinClassroom({
+      ...req.body,
+      userId: req.user?.id,
+    });
     return success(res, result);
   }
 );
@@ -152,7 +171,7 @@ router.get('/classroom/assignments', async (req, res) => {
   const courseId = typeof req.query.courseId === 'string' ? req.query.courseId : undefined;
   const sortBy =
     typeof req.query.sortBy === 'string' &&
-    ['deadline', 'subject', 'priority', 'status'].includes(req.query.sortBy)
+      ['deadline', 'subject', 'priority', 'status'].includes(req.query.sortBy)
       ? (req.query.sortBy as 'deadline' | 'subject' | 'priority' | 'status')
       : 'deadline';
   const list = await listClassroomAssignments({ category, courseId, sortBy });

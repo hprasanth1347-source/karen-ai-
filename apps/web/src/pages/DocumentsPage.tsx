@@ -58,7 +58,6 @@ export const DocumentsPage: React.FC = () => {
       return [];
     }
   });
-  const [skills, setSkills] = useState<Array<{ name: string; description: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -70,11 +69,6 @@ export const DocumentsPage: React.FC = () => {
   }, [docs]);
 
   useEffect(() => {
-    fetch('/api/v1/skills/document')
-      .then((response) => response.json())
-      .then((body) => setSkills(body.data?.skills || []))
-      .catch(() => setSkills([]));
-
     api
       .get('/documents')
       .then((res) => {
@@ -274,22 +268,6 @@ export const DocumentsPage: React.FC = () => {
             </button>
           </div>
         </form>
-      )}
-
-      {skills.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {skills.map((skill) => (
-            <div key={skill.name} className="bg-white border-3 border-ink p-3 shadow-brutal-sm">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="font-black uppercase">{skill.name}</h3>
-                <span className="text-[9px] font-mono bg-mint border border-ink px-1.5 py-0.5">ACTIVE</span>
-              </div>
-              <p className="mt-2 text-[11px] leading-relaxed text-ink-muted line-clamp-3">
-                {skill.description}
-              </p>
-            </div>
-          ))}
-        </div>
       )}
 
       {/* Query Bar */}

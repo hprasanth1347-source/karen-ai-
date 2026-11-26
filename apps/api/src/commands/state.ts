@@ -1,0 +1,345 @@
+import { randomUUID } from 'node:crypto';
+import { supabaseAdmin } from '../config/supabase.js';
+import type { CommandMacro, LastResultItem, PendingActionRecord, UploadedFileRef } from './types.js';
+
+const pendingStore = new Map<string, PendingActionRecord>();
+const chatResultsStore = new Map<string, LastResultItem[]>();
+const chatUploadStore = new Map<string, UploadedFileRef>();
+const macrosStore = new Map<string, CommandMacro>();
+const telegramDedupeSet = new Set<number>();
+
+export async function markTelegramUpdateProcessed(updateId: number): Promise<boolean> {
+  if (telegramDedupeSet.has(updateId)) return false;
+  telegramDedupeSet.add(updateId);
+  if (telegramDedupeSet.size > 2000) {
+    const first = telegramDedupeSet.values().next().value;
+    if (first !== undefined) telegramDedupeSet.delete(first);
+  }
+  if (supabaseAdmin) {
+    try {
+      const { error } = await supabaseAdmin
+        .from('telegram_updates_dedupe')
+        .insert({ update_id: updateId });
+      if (error && error.code === '23505') return false;
+    } catch {
+      // Non-fatal
+    }
+  }
+  return true;
+}
+
+export async function savePendingAction(input: {
+  chatKey: string;
+  userId?: string;
+  actionType: string;
+  payload: Record<string, unknown>;
+  promptQuestion?: string;
+  ttlMinutes?: number;
+}): Promise<PendingActionRecord> {
+  const ttlMs = (input.ttlMinutes ?? 10) * 60 * 1000;
+  const record: PendingActionRecord = {
+    id: randomUUID(),
+    chatKey: input.chatKey,
+    userId: input.userId,
+    actionType: input.actionType,
+    payload: input.payload,
+    promptQuestion: input.promptQuestion,
+    status: 'pending',
+    expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+  };
+
+  pendingStore.set(record.id, record);
+
+  if (supabaseAdmin) {
+    try {
+      await supabaseAdmin.from('pending_actions').insert({
+        id: record.id,
+        chat_key: record.chatKey,
+        user_id: record.userId || null,
+        action_type: record.actionType,
+        payload: record.payload,
+        prompt_question: record.promptQuestion || null,
+        status: 'pending',
+        expires_at: record.expiresAt,
+      });
+    } catch {
+      // Fallback in memory
+    }
+  }
+  return record;
+}
+
+export async function getActivePendingAction(chatKey: string): Promise<PendingActionRecord | null> {
+  const now = Date.now();
+  const inMem = Array.from(pendingStore.values())
+    .filter((p) => p.chatKey === chatKey && p.status === 'pending')
+    .sort((a, b) => new Date(b.expiresAt).getTime() - new Date(a.expiresAt).getTime())[0];
+
+  if (inMem) {
+    if (new Date(inMem.expiresAt).getTime() <= now) {
+      inMem.status = 'expired';
+      return null;
+    }
+    return inMem;
+  }
+
+  if (supabaseAdmin) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('pending_actions')
+        .select('*')
+        .eq('chat_key', chatKey)
+        .eq('status', 'pending')
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (data) {
+        return {
+          id: data.id,
+          chatKey: data.chat_key,
+          userId: data.user_id || undefined,
+          actionType: data.action_type,
+          payload: (data.payload || {}) as Record<string, unknown>,
+          promptQuestion: data.prompt_question || undefined,
+          status: data.status,
+          expiresAt: data.expires_at,
+        };
+      }
+    } catch {
+      // Ignore
+    }
+  }
+  return null;
+}
+
+/**
+ * Atomically claim a pending action by ID (prevents double-tap sends).
+ */
+export async function claimPendingActionById(
+  actionId: string,
+  newStatus: 'confirmed' | 'cancelled'
+): Promise<{ claimed: boolean; action?: PendingActionRecord; reason?: 'not_found' | 'expired' | 'already_processed' }> {
+  const mem = pendingStore.get(actionId);
+  if (mem) {
+    if (mem.status !== 'pending') {
+      return { claimed: false, reason: 'already_processed' };
+    }
+    if (new Date(mem.expiresAt).getTime() <= Date.now()) {
+      mem.status = 'expired';
+      return { claimed: false, reason: 'expired' };
+    }
+    mem.status = newStatus;
+    if (supabaseAdmin) {
+      await supabaseAdmin
+        .from('pending_actions')
+        .update({ status: newStatus })
+        .eq('id', actionId)
+        .eq('status', 'pending')
+        .then(() => {}, () => {});
+    }
+    return { claimed: true, action: mem };
+  }
+
+  if (supabaseAdmin) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('pending_actions')
+        .update({ status: newStatus })
+        .eq('id', actionId)
+        .eq('status', 'pending')
+        .gt('expires_at', new Date().toISOString())
+        .select()
+        .maybeSingle();
+      if (data) {
+        return {
+          claimed: true,
+          action: {
+            id: data.id,
+            chatKey: data.chat_key,
+            userId: data.user_id || undefined,
+            actionType: data.action_type,
+            payload: (data.payload || {}) as Record<string, unknown>,
+            promptQuestion: data.prompt_question || undefined,
+            status: data.status,
+            expiresAt: data.expires_at,
+          },
+        };
+      }
+      return { claimed: false, reason: 'expired' };
+    } catch {
+      return { claimed: false, reason: 'not_found' };
+    }
+  }
+  return { claimed: false, reason: 'not_found' };
+}
+
+export async function cancelPendingForChat(chatKey: string): Promise<boolean> {
+  let cancelled = false;
+  for (const p of pendingStore.values()) {
+    if (p.chatKey === chatKey && p.status === 'pending') {
+      p.status = 'cancelled';
+      cancelled = true;
+    }
+  }
+  if (supabaseAdmin) {
+    await supabaseAdmin
+      .from('pending_actions')
+      .update({ status: 'cancelled' })
+      .eq('chat_key', chatKey)
+      .eq('status', 'pending')
+      .then(() => {}, () => {});
+  }
+  return cancelled;
+}
+
+export async function saveLastResults(chatKey: string, items: LastResultItem[]): Promise<void> {
+  chatResultsStore.set(chatKey, items);
+  if (supabaseAdmin) {
+    await supabaseAdmin
+      .from('chat_command_state')
+      .upsert({
+        chat_key: chatKey,
+        last_results: items,
+        updated_at: new Date().toISOString(),
+      })
+      .then(() => {}, () => {});
+  }
+}
+
+export async function getLastResults(chatKey: string): Promise<LastResultItem[]> {
+  const mem = chatResultsStore.get(chatKey);
+  if (mem) return mem;
+  if (supabaseAdmin) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('chat_command_state')
+        .select('last_results')
+        .eq('chat_key', chatKey)
+        .maybeSingle();
+      if (data?.last_results && Array.isArray(data.last_results)) {
+        chatResultsStore.set(chatKey, data.last_results as LastResultItem[]);
+        return data.last_results as LastResultItem[];
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return [];
+}
+
+export async function saveLastUploadedFile(chatKey: string, file: UploadedFileRef): Promise<void> {
+  chatUploadStore.set(chatKey, file);
+  if (supabaseAdmin) {
+    await supabaseAdmin
+      .from('chat_command_state')
+      .upsert({
+        chat_key: chatKey,
+        last_uploaded_file: file,
+        updated_at: new Date().toISOString(),
+      })
+      .then(() => {}, () => {});
+  }
+}
+
+export async function getLastUploadedFile(chatKey: string): Promise<UploadedFileRef | null> {
+  const thirtyMinsMs = 30 * 60 * 1000;
+  const mem = chatUploadStore.get(chatKey);
+  if (mem) {
+    if (Date.now() - new Date(mem.uploadedAt).getTime() <= thirtyMinsMs) return mem;
+    chatUploadStore.delete(chatKey);
+    return null;
+  }
+  if (supabaseAdmin) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('chat_command_state')
+        .select('last_uploaded_file')
+        .eq('chat_key', chatKey)
+        .maybeSingle();
+      const file = data?.last_uploaded_file as UploadedFileRef | undefined;
+      if (file && Date.now() - new Date(file.uploadedAt).getTime() <= thirtyMinsMs) {
+        chatUploadStore.set(chatKey, file);
+        return file;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+export async function saveCommandMacro(triggerPhrase: string, instruction: string, userId?: string): Promise<CommandMacro> {
+  const key = triggerPhrase.trim().toLowerCase();
+  const macro: CommandMacro = {
+    id: randomUUID(),
+    triggerPhrase: key,
+    steps: [{ instruction: instruction.trim() }],
+    createdAt: new Date().toISOString(),
+  };
+  macrosStore.set(key, macro);
+
+  if (supabaseAdmin) {
+    await supabaseAdmin
+      .from('command_macros')
+      .upsert(
+        {
+          id: macro.id,
+          user_id: userId || null,
+          trigger_phrase: key,
+          steps: macro.steps,
+        },
+        { onConflict: 'trigger_phrase' }
+      )
+      .then(() => {}, () => {});
+  }
+  return macro;
+}
+
+export async function listCommandMacros(): Promise<CommandMacro[]> {
+  if (supabaseAdmin) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('command_macros')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (data && data.length > 0) {
+        return data.map((d: any) => ({
+          id: d.id,
+          triggerPhrase: d.trigger_phrase,
+          steps: (d.steps || []) as Array<{ instruction: string }>,
+          createdAt: d.created_at,
+        }));
+      }
+    } catch {
+      // Fallback
+    }
+  }
+  return Array.from(macrosStore.values());
+}
+
+export async function deleteCommandMacro(triggerOrId: string): Promise<boolean> {
+  const key = triggerOrId.trim().toLowerCase();
+  let deleted = macrosStore.delete(key);
+  for (const [k, m] of macrosStore.entries()) {
+    if (m.id === triggerOrId) {
+      macrosStore.delete(k);
+      deleted = true;
+    }
+  }
+  if (supabaseAdmin) {
+    await supabaseAdmin
+      .from('command_macros')
+      .delete()
+      .or(`trigger_phrase.eq.${key},id.eq.${triggerOrId}`)
+      .then(() => {}, () => {});
+  }
+  return deleted;
+}
+
+export async function findMatchingMacro(text: string): Promise<CommandMacro | null> {
+  const clean = text.trim().toLowerCase();
+  const macros = await listCommandMacros();
+  return macros.find((m) => clean === m.triggerPhrase || clean.startsWith(`${m.triggerPhrase} `)) || null;
+}

@@ -1,14 +1,26 @@
 import { supabaseAdmin, supabaseAnon } from '../config/supabase.js';
+import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { logAudit } from '../utils/audit.js';
 
 export async function hasOwnerAccount(): Promise<boolean> {
   try {
-    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
-    if (error) return false;
-    return Array.isArray(data?.users) && data.users.length > 0;
-  } catch {
-    return false;
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 50 });
+    if (error) {
+      logger.warn('hasOwnerAccount failed closed due to Supabase error', { error });
+      return true; // Fail closed
+    }
+    const users = data?.users || [];
+    if (config.OWNER_USER_ID) {
+      return users.some((u) => u.id === config.OWNER_USER_ID);
+    }
+    if (config.OWNER_EMAIL) {
+      return users.some((u) => (u.email || '').toLowerCase() === config.OWNER_EMAIL.toLowerCase());
+    }
+    return users.some((u) => u.app_metadata?.role === 'owner') || users.length > 0;
+  } catch (err) {
+    logger.warn('hasOwnerAccount failed closed due to exception', { err });
+    return true; // Fail closed
   }
 }
 

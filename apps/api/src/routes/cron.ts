@@ -1,4 +1,5 @@
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import { generateAIReply } from '../services/ai.service.js';
 import { addNotification } from '../services/approval.service.js';
 import { listTasks } from '../services/task.service.js';
@@ -11,11 +12,74 @@ import {
   type GreetingSlot,
 } from '../services/dailyCompanion.service.js';
 import { syncClassroomData } from '../services/classroom.service.js';
+import { purgeOldGeneratedSkillFiles } from '../skills/storage.js';
+import {
+  loadInstagramTokensWithStatus,
+  markInstagramNeedsReauth,
+  saveInstagramTokensToDb,
+} from '../services/persistence.service.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
+import { config } from '../config/env.js';
 import { success, error } from '../utils/response.js';
 
 const router = Router();
 
+function verifyCronSecret(req: Request, res: Response, next: NextFunction) {
+  const cronSecret = config.CRON_SECRET || process.env.CRON_SECRET;
+  if (!cronSecret) {
+    return error(res, 'CRON_SECRET is not configured', 401, 'UNAUTHORIZED');
+  }
+  const authHeader = req.header('authorization') || '';
+  const expected = `Bearer ${cronSecret}`;
+  const a = Buffer.from(authHeader, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    return error(res, 'Unauthorized cron invocation', 401, 'UNAUTHORIZED');
+  }
+  return next();
+}
+
+export async function refreshMetaTokenIfNeeded(): Promise<{ refreshed: boolean; status: string }> {
+  const { tokens, status } = await loadInstagramTokensWithStatus();
+  if (!tokens || status !== 'connected') {
+    return { refreshed: false, status };
+  }
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  if (tokens.expiresAt && Date.now() < tokens.expiresAt - sevenDaysMs) {
+    return { refreshed: false, status: 'valid' };
+  }
+  try {
+    const params = new URLSearchParams({
+      grant_type: 'ig_refresh_token',
+      access_token: tokens.accessToken,
+    });
+    const res = await fetch(`https://graph.instagram.com/refresh_access_token?${params.toString()}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    const json = (await res.json().catch(() => ({}))) as { access_token?: string; expires_in?: number };
+    if (res.ok && json.access_token) {
+      await saveInstagramTokensToDb({
+        ...tokens,
+        accessToken: json.access_token,
+        expiresAt: Date.now() + (Number(json.expires_in) || 5184000) * 1000,
+      });
+      return { refreshed: true, status: 'connected' };
+    }
+    if (res.status === 400 || res.status === 401) {
+      await markInstagramNeedsReauth();
+      await sendTelegramMessage(
+        '⚠️ *Karen Meta Alert*\n\nInstagram token refresh failed and needs re-authorization. Please reconnect on `/instagram`.'
+      ).catch(() => { });
+      return { refreshed: false, status: 'needs_reauth' };
+    }
+    return { refreshed: false, status: 'transient_error' };
+  } catch {
+    return { refreshed: false, status: 'transient_error' };
+  }
+}
+
 async function runMorningBriefing() {
+  await refreshMetaTokenIfNeeded().catch(() => { });
   await hydrateGoogleTokensFromRequest();
   const [tasks, igLogs, emailContext] = await Promise.all([
     listTasks(),
@@ -31,7 +95,7 @@ async function runMorningBriefing() {
     ? igLogs.slice(0, 5).map((l) => `- @${l.senderUsername}: "${l.incomingText}" -> ${l.status}`).join('\n')
     : 'No recent Instagram auto-replies.';
 
-  const prompt = `Generate a concise Morning Briefing for Hari (in clear English bullet points):
+  const prompt = `Generate a concise Morning Briefing for the owner (in clear English bullet points):
 Active Tasks:
 ${taskLines}
 
@@ -45,11 +109,7 @@ ${emailContext || '\nNo Gmail context connected.'}`;
   return { briefing: aiRes.reply, sentToTelegram };
 }
 
-router.get('/cron/morning-briefing', async (req, res) => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && req.header('authorization') !== `Bearer ${cronSecret}`) {
-    return error(res, 'Unauthorized cron invocation', 401, 'UNAUTHORIZED');
-  }
+router.get('/cron/morning-briefing', verifyCronSecret, async (_req, res) => {
   try {
     const result = await runMorningBriefing();
     return success(res, result);
@@ -58,7 +118,7 @@ router.get('/cron/morning-briefing', async (req, res) => {
   }
 });
 
-router.post('/cron/morning-briefing', async (_req, res) => {
+router.post('/cron/morning-briefing', verifyCronSecret, async (_req, res) => {
   try {
     const result = await runMorningBriefing();
     return success(res, result);
@@ -68,11 +128,7 @@ router.post('/cron/morning-briefing', async (_req, res) => {
 });
 
 /** Evaluate IST time and send any due Daily Companion greeting (idempotent) */
-router.get('/cron/companion-tick', async (req, res) => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && req.header('authorization') !== `Bearer ${cronSecret}`) {
-    return error(res, 'Unauthorized cron invocation', 401, 'UNAUTHORIZED');
-  }
+router.get('/cron/companion-tick', verifyCronSecret, async (_req, res) => {
   try {
     const result = await runCompanionTick();
     return success(res, result);
@@ -81,7 +137,7 @@ router.get('/cron/companion-tick', async (req, res) => {
   }
 });
 
-router.post('/cron/companion-tick', async (_req, res) => {
+router.post('/cron/companion-tick', verifyCronSecret, async (_req, res) => {
   try {
     const result = await runCompanionTick();
     return success(res, result);
@@ -90,7 +146,7 @@ router.post('/cron/companion-tick', async (_req, res) => {
   }
 });
 
-router.post('/cron/greeting/:slot', async (req, res) => {
+router.post('/cron/greeting/:slot', verifyCronSecret, requireAuth, requireOwner, async (req, res) => {
   const slot = String(req.params.slot) as GreetingSlot;
   if (!['morning', 'afternoon', 'evening', 'night'].includes(slot)) {
     return error(res, 'Invalid greeting slot', 400);
@@ -103,11 +159,7 @@ router.post('/cron/greeting/:slot', async (req, res) => {
   }
 });
 
-router.get('/cron/classroom-sync', async (req, res) => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && req.header('authorization') !== `Bearer ${cronSecret}`) {
-    return error(res, 'Unauthorized cron invocation', 401, 'UNAUTHORIZED');
-  }
+router.get('/cron/classroom-sync', verifyCronSecret, async (_req, res) => {
   try {
     const result = await syncClassroomData();
     return success(res, {
@@ -120,7 +172,7 @@ router.get('/cron/classroom-sync', async (req, res) => {
   }
 });
 
-router.post('/cron/classroom-sync', async (_req, res) => {
+router.post('/cron/classroom-sync', verifyCronSecret, async (_req, res) => {
   try {
     const result = await syncClassroomData();
     return success(res, {
@@ -131,6 +183,18 @@ router.post('/cron/classroom-sync', async (_req, res) => {
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Classroom sync failed', 500);
   }
+});
+
+router.get('/cron/meta-token-refresh', verifyCronSecret, async (_req, res) => {
+  const result = await refreshMetaTokenIfNeeded();
+  const purgedRuns = await purgeOldGeneratedSkillFiles().catch(() => 0);
+  return success(res, { ...result, purgedRuns });
+});
+
+router.post('/cron/meta-token-refresh', verifyCronSecret, async (_req, res) => {
+  const result = await refreshMetaTokenIfNeeded();
+  const purgedRuns = await purgeOldGeneratedSkillFiles().catch(() => 0);
+  return success(res, { ...result, purgedRuns });
 });
 
 export default router;

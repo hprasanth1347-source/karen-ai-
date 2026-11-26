@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { InstagramHubTabs } from '../components/instagram/InstagramHubTabs';
 import { supabase } from '../lib/supabase';
 import {
   Instagram,
@@ -1449,6 +1450,8 @@ export const InstagramPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <InstagramHubTabs />
     </div>
   );
 };

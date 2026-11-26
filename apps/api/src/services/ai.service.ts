@@ -4,8 +4,11 @@ import { addMemory, getMemoryContextPrompt, type MemoryCategory } from './memory
 import {
   formatSearchContext,
   isWebSearchConfigured,
+  rewriteSearchQuery,
   searchWebWithGoogle,
   shouldSearchWeb,
+  type SearchResponse,
+  type SearchSource,
 } from './search.service.js';
 import { getGoogleContextForPrompt, sendGmailMessage } from '../routes/googleDrive.js';
 import { getDocumentsContextPrompt } from '../routes/documents.js';
@@ -24,6 +27,14 @@ import {
   syncClassroomData,
 } from './classroom.service.js';
 import { sendTelegramMessage } from '../providers/telegram.js';
+import { routeSkills } from '../skills/router.js';
+import { buildSkillsPromptSection, executeSkillToolCalls } from '../skills/executor.js';
+import type { SkillModule } from '../skills/types.js';
+import {
+  gateOutboundAction,
+  wrapUntrustedContent,
+  type ExecutedActionRecord,
+} from './actionPolicy.service.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -90,13 +101,64 @@ interface Message {
   content: string;
 }
 
+export interface GeneratedFileRecord {
+  name: string;
+  url: string;
+  mimeType?: string;
+}
+
+export interface AIReplyResult {
+  reply: string;
+  provider: string;
+  model: string;
+  pendingApproval?: ApprovalItem;
+  generatedFiles?: GeneratedFileRecord[];
+  sources?: SearchSource[];
+  actions?: ExecutedActionRecord[];
+}
+
+interface FinalizeMeta {
+  activeSkills?: SkillModule[];
+  userId?: string;
+  currentPage?: string;
+  loveMode?: boolean;
+  sources?: SearchSource[];
+  searchUnavailable?: boolean;
+}
+
 async function finalizeAIReply(
   rawReply: string,
   provider: string,
-  model: string
-): Promise<{ reply: string; provider: string; model: string; pendingApproval?: ApprovalItem }> {
-  let cleaned = rawReply;
-  let pendingApproval: ApprovalItem | undefined;
+  model: string,
+  meta: FinalizeMeta = {}
+): Promise<AIReplyResult> {
+  const toolExec = await executeSkillToolCalls(rawReply, meta.activeSkills || [], {
+    userId: meta.userId,
+    currentPage: meta.currentPage,
+    loveMode: meta.loveMode,
+  });
+
+  let cleaned = toolExec.cleanedReply;
+  let pendingApproval: ApprovalItem | undefined = toolExec.outcome.pendingApproval
+    ? {
+      id: toolExec.outcome.pendingApproval.id,
+      action_type: 'send_email',
+      summary: toolExec.outcome.pendingApproval.summary,
+      action_data: {},
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    }
+    : undefined;
+  const generatedFiles: GeneratedFileRecord[] = toolExec.outcome.files.map((f) => ({
+    name: f.name,
+    url: f.url,
+    mimeType: f.mimeType,
+  }));
+  const actions: ExecutedActionRecord[] = toolExec.outcome.executedCalls.map((c) => ({
+    type: c.tool,
+    summary: c.summary,
+    status: c.ok ? 'executed' : 'blocked',
+  }));
 
   const taskTagRegex = /\[\[TASK:\s*([^|\]]+?)(?:\s*\|\s*([^|\]]*?))?(?:\s*\|\s*(low|medium|high|urgent))?\s*\]\]/gi;
   for (const match of rawReply.matchAll(taskTagRegex)) {
@@ -127,17 +189,23 @@ async function finalizeAIReply(
     const attachmentQuery = match[4]?.trim() || '';
     if (to && subject && body) {
       if (isSensitiveSend(`${subject} ${body} ${attachmentQuery}`)) {
-        pendingApproval = await createApprovalRequest(
-          'send_email',
-          `Send sensitive email "${subject}"${attachmentQuery ? ` (file: ${attachmentQuery})` : ''} to ${to}`,
-          { to, subject, body, attachmentQuery }
-        );
+        const gated = await gateOutboundAction({
+          userId: meta.userId,
+          type: 'send_email',
+          summary: `Send sensitive email "${subject}"${attachmentQuery ? ` (file: ${attachmentQuery})` : ''} to ${to}`,
+          payload: { to, subject, body, attachmentQuery },
+          contentToInspect: `${subject} ${body} ${attachmentQuery}`,
+        });
+        pendingApproval = gated.approval;
+        actions.push(gated.action);
         cleaned += `\n\n⚠ Approval required before sending sensitive file/email to ${to}. Click "Approve & Send" below to confirm.`;
       } else {
         const res = await sendGmailMessage(to, subject, body, attachmentQuery || undefined);
         if (res.success) {
+          actions.push({ type: 'send_email', summary: `Sent email to ${to}`, status: 'executed' });
           cleaned += `\n\n✓ Email sent to ${to}${res.attachedFile ? ` (attached: ${res.attachedFile})` : ''}`;
         } else {
+          actions.push({ type: 'send_email', summary: `Email to ${to} failed`, status: 'blocked' });
           cleaned += `\n\n(Note: Email to ${to} could not be sent: ${res.error})`;
         }
       }
@@ -151,11 +219,15 @@ async function finalizeAIReply(
     const msg = match[2]?.trim();
     if (targetUser && msg) {
       if (isSensitiveSend(msg)) {
-        pendingApproval = await createApprovalRequest(
-          'send_insta',
-          `Send sensitive Instagram DM to @${targetUser}`,
-          { username: targetUser, message: msg }
-        );
+        const gated = await gateOutboundAction({
+          userId: meta.userId,
+          type: 'send_insta',
+          summary: `Send sensitive Instagram DM to @${targetUser}`,
+          payload: { username: targetUser, message: msg },
+          contentToInspect: msg,
+        });
+        pendingApproval = gated.approval;
+        actions.push(gated.action);
         cleaned += `\n\n⚠ Approval required before sending sensitive Instagram DM to @${targetUser}. Click "Approve & Send" below to confirm.`;
       } else {
         try {
@@ -226,7 +298,19 @@ async function finalizeAIReply(
     cleaned = cleaned.replace(match[0], '').trim();
   }
 
-  return { reply: cleaned.trim(), provider, model, pendingApproval };
+  if (meta.searchUnavailable && (!meta.sources || meta.sources.length === 0)) {
+    cleaned += '\n\nLive search was unavailable, so this may be out of date.';
+  }
+
+  return {
+    reply: cleaned.trim(),
+    provider,
+    model,
+    pendingApproval,
+    generatedFiles,
+    sources: meta.sources || [],
+    actions,
+  };
 }
 
 export async function generateAIReply(
@@ -234,25 +318,72 @@ export async function generateAIReply(
   history: Message[] = [],
   preferredProvider?: AIProvider,
   preferredModel?: string,
-  signal?: AbortSignal
-): Promise<{ reply: string; provider: string; model: string; pendingApproval?: ApprovalItem }> {
-  // ── Love Mode prefix detection ──────────────────────────────────────────────
-  const isLoveMode = prompt.startsWith('[LOVE_MODE] ');
-  const cleanPrompt = isLoveMode ? prompt.slice('[LOVE_MODE] '.length) : prompt;
+  signal?: AbortSignal,
+  options?: { loveMode?: boolean; currentPage?: string; userId?: string; skipSkills?: boolean }
+): Promise<AIReplyResult> {
+  // ── Love Mode detection (server-verified only; strip any spoofed client prefix) ──
+  const isLoveMode = options?.loveMode === true;
+  const cleanPrompt = prompt.replace(/^\[LOVE_MODE\]\s*/i, '');
 
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
   const reqSignal = signal ?? AbortSignal.timeout(15000);
-  const needsSearch = !isLoveMode && shouldSearchWeb(cleanPrompt);
-  const [searchResults, googleContext, memoryContext, tasksContext, classroomContext] = await Promise.all([
-    needsSearch && isWebSearchConfigured()
-      ? searchWebWithGoogle(cleanPrompt, 5, reqSignal)
-      : Promise.resolve([]),
-    isLoveMode ? Promise.resolve('') : getGoogleContextForPrompt(cleanPrompt),
-    getMemoryContextPrompt(),
-    isLoveMode ? Promise.resolve('') : getTasksContextPrompt(),
-    isLoveMode ? Promise.resolve('') : getClassroomContextPrompt(cleanPrompt),
-  ]);
+  const needsSearch = shouldSearchWeb(cleanPrompt, { loveMode: isLoveMode });
+
+  const searchPromise: Promise<SearchResponse | null> = needsSearch
+    ? (async () => {
+      const rewritten = await rewriteSearchQuery(cleanPrompt, history);
+      return searchWebWithGoogle(rewritten.query, { limit: 5, freshness: rewritten.freshness }, reqSignal);
+    })()
+    : Promise.resolve(null);
+
+  const needsGoogleCtx =
+    !isLoveMode &&
+    (/\b(gmail|mail|email|drive|gdrive|file|pdf|doc|sheet|calendar|schedule|meeting|aadhar|pan|resume|contact)\b/i.test(
+      cleanPrompt
+    ) ||
+      options?.currentPage === '/drive' ||
+      options?.currentPage === '/gmail');
+
+  const needsClassroomCtx =
+    !isLoveMode &&
+    (/\b(classroom|assignment|homework|exam|grade|course|syllabus|due|study|cram)\b/i.test(cleanPrompt) ||
+      options?.currentPage === '/classroom');
+
+  const withFastTimeout = <T,>(p: Promise<T>, fallback: T, ms = 1200): Promise<T> =>
+    Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]).catch(() => fallback);
+
+  const [searchRes, googleContext, memoryContext, tasksContext, classroomContext, routeResult] =
+    await Promise.all([
+      searchPromise,
+      needsGoogleCtx ? withFastTimeout(getGoogleContextForPrompt(cleanPrompt), '', 2500) : Promise.resolve(''),
+      withFastTimeout(getMemoryContextPrompt(), ''),
+      isLoveMode ? Promise.resolve('') : withFastTimeout(getTasksContextPrompt(), ''),
+      needsClassroomCtx ? withFastTimeout(getClassroomContextPrompt(cleanPrompt), '', 2000) : Promise.resolve(''),
+      options?.skipSkills
+        ? Promise.resolve({ skills: [], skillNames: [], confidence: 1, latencyMs: 0, lowConfidence: false })
+        : routeSkills(cleanPrompt, { currentPage: options?.currentPage, loveMode: isLoveMode, useLlmFallback: false }),
+    ]);
   const docsContext = isLoveMode ? '' : getDocumentsContextPrompt();
+
+  const activeSkills = routeResult.skills;
+  const skillsPromptSection = buildSkillsPromptSection(activeSkills);
+  const searchResults = searchRes?.ok ? searchRes.results : [];
+  const searchSources = searchRes?.ok ? searchRes.sources : [];
+  const searchUnavailable = needsSearch && (!searchRes || !searchRes.ok || searchResults.length === 0);
+
+  const replyMeta: FinalizeMeta = {
+    activeSkills,
+    userId: options?.userId,
+    currentPage: options?.currentPage,
+    loveMode: isLoveMode,
+    sources: searchSources,
+    searchUnavailable,
+  };
+
+  const wrappedGoogle = googleContext ? `\n${wrapUntrustedContent('google', googleContext)}` : '';
+  const wrappedDocs = docsContext ? `\n${wrapUntrustedContent('docs', docsContext)}` : '';
+  const wrappedClassroom = classroomContext ? `\n${wrapUntrustedContent('classroom', classroomContext)}` : '';
+  const formattedSearch = formatSearchContext(searchResults);
 
   const nowIst = new Date().toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
@@ -262,13 +393,16 @@ export async function generateAIReply(
   const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
   const systemPrompt = isLoveMode
-    ? getLoveModeSystemPrompt() + memoryContext
+    ? getLoveModeSystemPrompt() + memoryContext + skillsPromptSection
     :
     `You are Karen AI, a sharp, loyal, and friendly female personal AI assistant for your owner Hari Prasath with full access across Personal Memory, Tasks, Document Vault, Google Drive, Gmail, Instagram, and Live Web Search.
 
 ⚠️ CRITICAL DATE OVERRIDE — IGNORE YOUR TRAINING CUTOFF DATE COMPLETELY:
 The REAL current date and time right now is: ${nowIst} (ISO: ${todayIso}).
 Your training data may reference an older year — that is STALE and WRONG. This server-injected date is ground truth. Always answer date/time questions using the date above. Never claim you lack real-time date access.
+
+Web Grounding Rule:
+Web results below (when present before the user's message) were fetched just now (${nowIst}). For any fact about people, products, prices, news, versions, scores, or dates, answer ONLY from these results. If they do not contain the answer, say you could not confirm it. Never answer such facts from memory. Mention the source name for each fact.
 
 Language Rule: Communicate in clear, natural English by default. Only reply in Thanglish or Tamil if the user writes in Tamil/Thanglish or the prompt explicitly requests Thanglish (e.g., Instagram DMs).
 Live Actions & Auto-Learning (append tags silently at the very end when applicable):
@@ -280,15 +414,18 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
 - Sync Google Classroom courses/assignments: [[CLASSROOM_SYNC]]
 - Join a Google Classroom by invite link or courseId+code: [[JOIN_CLASS: <invite_link_or_code> | <optional_course_id>]]
 - Track an exam date: [[ADD_EXAM: <subject> | <YYYY-MM-DD> | <optional_time>]]` +
+    skillsPromptSection +
     memoryContext +
     tasksContext +
-    docsContext +
-    googleContext +
-    classroomContext +
-    formatSearchContext(searchResults);
+    wrappedDocs +
+    wrappedGoogle +
+    wrappedClassroom;
 
-  // Use cleaned prompt (strips [LOVE_MODE] prefix if present)
+  // Use cleaned prompt (strips [LOVE_MODE] prefix if present) and place web search results right before the latest user message
   const effectivePrompt = isLoveMode ? cleanPrompt : prompt;
+  const userMessageWithSearch = formattedSearch
+    ? `${formattedSearch}\n\nUser message: ${effectivePrompt}`
+    : effectivePrompt;
 
   // 1. Groq Cloud (Qwen 3.8 27B) - Verified & Operational
   if (provider === 'groq' && config.GROQ_API_KEY) {
@@ -299,7 +436,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
           content: systemPrompt,
         },
         ...history.map((h) => ({ role: h.role, content: h.content })),
-        { role: 'user', content: effectivePrompt },
+        { role: 'user', content: userMessageWithSearch },
       ];
 
       const modelId = preferredModel || getDefaultAIModel('groq');
@@ -323,7 +460,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
         const json = await res.json();
         const reply = json.choices?.[0]?.message?.content;
         if (reply) {
-          return await finalizeAIReply(reply, 'groq', modelId);
+          return await finalizeAIReply(reply, 'groq', modelId, replyMeta);
         }
       } else {
         const errJson = await res.json().catch(() => ({}));
@@ -348,7 +485,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
             role: h.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: h.content }],
           })),
-          { role: 'user', parts: [{ text: effectivePrompt }] },
+          { role: 'user', parts: [{ text: userMessageWithSearch }] },
         ],
       };
 
@@ -373,8 +510,32 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
       if (res.ok) {
         const json = await res.json();
         const reply = json.candidates?.[0]?.content?.parts?.[0]?.text;
+        const groundingChunks: Array<{ web?: { uri?: string; title?: string } }> =
+          json.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+        const geminiSources: SearchSource[] = groundingChunks
+          .filter((c) => c.web?.uri)
+          .map((c) => {
+            const url = c.web!.uri!;
+            let displayLink = url;
+            try {
+              displayLink = new URL(url).hostname;
+            } catch {
+              // keep raw
+            }
+            return { title: c.web?.title || displayLink, url, displayLink };
+          });
+        const mergedSources = [...(replyMeta.sources || [])];
+        for (const gs of geminiSources) {
+          if (!mergedSources.some((s) => s.url === gs.url)) {
+            mergedSources.push(gs);
+          }
+        }
         if (reply) {
-          return await finalizeAIReply(reply, 'gemini', modelName);
+          return await finalizeAIReply(reply, 'gemini', modelName, {
+            ...replyMeta,
+            sources: mergedSources,
+            searchUnavailable: replyMeta.searchUnavailable && mergedSources.length === 0,
+          });
         }
       }
     } catch (err) {
@@ -401,7 +562,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
               content: systemPrompt,
             },
             ...history.map((h) => ({ role: h.role, content: h.content })),
-            { role: 'user', content: effectivePrompt },
+            { role: 'user', content: userMessageWithSearch },
           ],
         }),
         signal: reqSignal,
@@ -411,7 +572,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
         const json = await res.json();
         const reply = json.choices?.[0]?.message?.content;
         if (reply) {
-          return await finalizeAIReply(reply, 'copilot', model);
+          return await finalizeAIReply(reply, 'copilot', model, replyMeta);
         }
       } else {
         const errJson = await res.json().catch(() => ({}));
@@ -424,8 +585,10 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
 
   // 4. Default graceful fallback
   return {
-    reply: `Hi Hari! I received your message: "${prompt}". I am ready to help whenever you need.`,
+    reply: `Hi Hari! I received your message: "${prompt}". I am ready to help whenever you need.${searchUnavailable ? '\n\nLive search was unavailable, so this may be out of date.' : ''
+      }`,
     provider: 'local-karen',
     model: 'karen-core-v1',
+    sources: searchSources,
   };
 }

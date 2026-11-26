@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate.js';
 import { aiLimit } from '../middleware/rateLimit.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import {
   AIProviderError,
   getDefaultAIModel,
@@ -27,6 +27,7 @@ import {
   getLoveModeState,
   setLoveModeActive,
 } from '../services/loveMode.service.js';
+import { runCommandEngine } from '../commands/engine.js';
 
 const router = Router();
 const providerSchema = z.enum(['groq', 'gemini', 'copilot']);
@@ -47,9 +48,10 @@ const chatSchema = z.object({
   conversationId: z.string().uuid().optional(),
   clientMessageId: z.string().min(1).max(120).optional(),
   saveToLibrary: z.boolean().optional(),
+  currentPage: z.string().max(120).optional(),
 });
 
-router.get('/ai/models', aiLimit, async (req, res) => {
+router.get('/ai/models', requireAuth, requireOwner, aiLimit, async (req, res) => {
   const parsedProvider = providerSchema.safeParse(req.query.provider);
   if (!parsedProvider.success) {
     return error(res, 'A valid AI provider is required.', 400);
@@ -70,11 +72,12 @@ router.get('/ai/models', aiLimit, async (req, res) => {
   }
 });
 
-router.post('/ai/chat', requireAuth, aiLimit, validate(chatSchema), async (req, res) => {
+router.post('/ai/chat', requireAuth, requireOwner, aiLimit, validate(chatSchema), async (req, res) => {
   await hydrateGoogleTokensFromRequest(req);
   try {
     const ownerChatKey = config.TELEGRAM_OWNER_CHAT_ID || req.user?.id || 'owner';
-    let promptText: string = req.body.message;
+    let promptText: string = req.body.message.replace(/^\[LOVE_MODE\]\s*/i, '');
+    let isLoveMode = false;
 
     if (detectLoveModeDeactivation(promptText)) {
       await setLoveModeActive(ownerChatKey, false);
@@ -85,16 +88,40 @@ router.post('/ai/chat', requireAuth, aiLimit, validate(chatSchema), async (req, 
         await setLoveModeActive(ownerChatKey, true);
       }
       if (loveState.active || shouldActivate) {
-        promptText = `[LOVE_MODE] ${promptText}`;
+        isLoveMode = true;
       }
     }
 
-    const result = await generateAIReply(
-      promptText,
-      req.body.history,
-      req.body.provider,
-      req.body.model
-    );
+    const engineRes = isLoveMode
+      ? null
+      : await runCommandEngine({
+          chatKey: req.body.conversationId || ownerChatKey,
+          text: promptText,
+          userId: req.user?.id,
+          channel: 'web',
+          history: req.body.history,
+        });
+
+    const result = engineRes?.handled
+      ? {
+          reply: engineRes.reply,
+          provider: 'karen-command-engine',
+          model: 'command-router-v1',
+          buttons: engineRes.buttons,
+          outcome: engineRes.outcome,
+        }
+      : await generateAIReply(
+          promptText,
+          req.body.history,
+          req.body.provider,
+          req.body.model,
+          undefined,
+          {
+            loveMode: isLoveMode,
+            currentPage: req.body.currentPage,
+            userId: req.user?.id,
+          }
+        );
 
     let conversationId: string | undefined = req.body.conversationId;
     if (req.body.saveToLibrary !== false) {
@@ -134,7 +161,7 @@ router.post('/ai/chat', requireAuth, aiLimit, validate(chatSchema), async (req, 
 
 // ─── Chat Library (Database-persisted conversations) ──────────────────────────
 
-router.get('/ai/conversations', requireAuth, async (req, res) => {
+router.get('/ai/conversations', requireAuth, requireOwner, async (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
   const limit = req.query.limit ? Number(req.query.limit) : undefined;
   const offset = req.query.offset ? Number(req.query.offset) : undefined;
@@ -142,20 +169,20 @@ router.get('/ai/conversations', requireAuth, async (req, res) => {
   return success(res, conversations);
 });
 
-router.post('/ai/conversations', requireAuth, async (req, res) => {
+router.post('/ai/conversations', requireAuth, requireOwner, async (req, res) => {
   const title = typeof req.body?.title === 'string' ? req.body.title : 'New Chat';
   const created = await createConversation(title, 'web', req.user?.id);
   return success(res, created, 201);
 });
 
-router.get('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
+router.get('/ai/conversations/:id/messages', requireAuth, requireOwner, async (req, res) => {
   const limit = req.query.limit ? Number(req.query.limit) : undefined;
   const before = typeof req.query.before === 'string' ? req.query.before : undefined;
   const messages = await getConversationMessages(String(req.params.id), req.user?.id, { limit, before });
   return success(res, messages);
 });
 
-router.post('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
+router.post('/ai/conversations/:id/messages', requireAuth, requireOwner, async (req, res) => {
   const bodySchema = z.object({
     role: z.enum(['user', 'assistant', 'system']),
     content: z.string().min(1).max(8000),
@@ -183,7 +210,7 @@ router.post('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
   return success(res, saved, 201);
 });
 
-router.delete('/ai/conversations/:id', requireAuth, async (req, res) => {
+router.delete('/ai/conversations/:id', requireAuth, requireOwner, async (req, res) => {
   const deleted = await deleteConversation(String(req.params.id), req.user?.id);
   if (!deleted) {
     return error(res, 'Conversation not found', 404);
@@ -191,11 +218,11 @@ router.delete('/ai/conversations/:id', requireAuth, async (req, res) => {
   return success(res, { deleted: true });
 });
 
-router.get('/voice/status', (_req, res) => {
+router.get('/voice/status', requireAuth, requireOwner, (_req, res) => {
   return success(res, voiceStatus());
 });
 
-router.post('/voice/synthesize', async (req, res) => {
+router.post('/voice/synthesize', requireAuth, requireOwner, aiLimit, async (req, res) => {
   const text = z.string().min(1).max(4000).safeParse(req.body?.text);
   if (!text.success) {
     return error(res, 'Text must be between 1 and 4000 characters.', 400);

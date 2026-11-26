@@ -68,6 +68,14 @@ function prefetchRoute(path: string) {
   }
 }
 
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    for (const p of ['/', '/ai-chat', '/gmail', '/drive', '/classroom', '/instagram', '/tasks', '/memory', '/contacts', '/reminders']) {
+      prefetchRoute(p);
+    }
+  }, 800);
+}
+
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const navSections = [
     {

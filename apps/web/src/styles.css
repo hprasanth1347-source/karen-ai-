@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,69 +5,201 @@
 @layer base {
   :root {
     --cream: #FAF7F0;
+    --cream-50: #FDFCF8;
+    --cream-100: #FAF7F0;
+    --cream-200: #F5EFE0;
+    --surface: #FFFFFF;
     --ink: #0A0A0A;
+    --ink-muted: #4B5563;
+    --border-ink: #0A0A0A;
+    --shadow-color: #0A0A0A;
     --coral: #FF6B6B;
+    --coral-hover: #FF5252;
+    --teal: #00B4D8;
+    --teal-hover: #009EC0;
+    --yellow: #FCD34D;
+    --mint: #34D399;
+    --danger: #DC2626;
+    --warning: #D97706;
+    --success: #059669;
+    --info: #0284C7;
+    --radius-sm: 2px;
+    --motion-fast: 100ms;
+    --focus-ring: #7C3AED;
   }
+
+  html.dark {
+    --cream: #111318;
+    --cream-50: #181B22;
+    --cream-100: #111318;
+    --cream-200: #1F242E;
+    --surface: #1A1E26;
+    --ink: #FAF7F0;
+    --ink-muted: #CBD5E1;
+    --border-ink: #E2E8F0;
+    --shadow-color: #000000;
+    --coral: #FF8585;
+    --coral-hover: #FF6B6B;
+    --teal: #38C9E8;
+    --teal-hover: #22B8DA;
+    --yellow: #FCD34D;
+    --mint: #34D399;
+    --danger: #F87171;
+    --warning: #FBBF24;
+    --success: #34D399;
+    --info: #38BDF8;
+    --focus-ring: #A78BFA;
+  }
+
+  html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
-    background-color: #FAF7F0;
-    color: #0A0A0A;
-    font-family: 'Inter', system-ui, sans-serif;
+    background-color: var(--cream);
+    color: var(--ink);
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     margin: 0;
     padding: 0;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  *:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 767px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
+  }
+
+  @media (pointer: coarse) {
+    button,
+    [role='button'],
+    a[href],
+    select {
+      min-height: 44px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
 @layer components {
+  .skip-to-content {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 100;
+    background: var(--yellow);
+    color: #0A0A0A;
+    border: 2px solid #0A0A0A;
+    padding: 0.5rem 1rem;
+    font-weight: 800;
+  }
+  .skip-to-content:focus {
+    left: 1rem;
+    top: 1rem;
+  }
+
   .btn-brutal {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 0.5rem;
     padding: 0.5rem 1rem;
     font-weight: 800;
-    border: 2px solid #0A0A0A;
-    box-shadow: 4px 4px 0px #0A0A0A;
-    transition: all 100ms ease;
+    border: 2px solid var(--border-ink);
+    box-shadow: 4px 4px 0px var(--shadow-color);
+    border-radius: var(--radius-sm);
+    transition: transform var(--motion-fast) ease, box-shadow var(--motion-fast) ease, background-color var(--motion-fast) ease;
     cursor: pointer;
     text-decoration: none;
   }
-  .btn-brutal:hover {
-    transform: translate(-2px, -2px);
-    box-shadow: 6px 6px 0px #0A0A0A;
+
+  @media (hover: hover) {
+    .btn-brutal:hover:not(:disabled) {
+      transform: translate(-2px, -2px);
+      box-shadow: 6px 6px 0px var(--shadow-color);
+    }
   }
-  .btn-brutal:active {
+
+  .btn-brutal:active:not(:disabled) {
     transform: translate(2px, 2px);
-    box-shadow: 0px 0px 0px #0A0A0A;
+    box-shadow: 0px 0px 0px var(--shadow-color);
   }
+
+  .btn-brutal:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  /* WCAG AA compliant: ink (#0A0A0A) on coral/teal/yellow/mint */
   .btn-coral {
     @apply btn-brutal;
-    background-color: #FF6B6B;
-    color: #FFFFFF;
+    background-color: var(--coral);
+    color: #0A0A0A;
   }
-  .btn-coral:hover {
-    background-color: #FF4949;
+  @media (hover: hover) {
+    .btn-coral:hover:not(:disabled) {
+      background-color: var(--coral-hover);
+    }
   }
+
   .btn-teal {
     @apply btn-brutal;
-    background-color: #00B4D8;
-    color: #FFFFFF;
+    background-color: var(--teal);
+    color: #0A0A0A;
   }
+  @media (hover: hover) {
+    .btn-teal:hover:not(:disabled) {
+      background-color: var(--teal-hover);
+    }
+  }
+
   .btn-ghost {
     @apply btn-brutal;
-    background-color: #FAF7F0;
-    color: #0A0A0A;
+    background-color: var(--cream);
+    color: var(--ink);
   }
-  .btn-ghost:hover {
-    background-color: #F5EFE0;
+  @media (hover: hover) {
+    .btn-ghost:hover:not(:disabled) {
+      background-color: var(--cream-200);
+    }
   }
+
   .btn-yellow {
     @apply btn-brutal;
-    background-color: #FCD34D;
+    background-color: var(--yellow);
     color: #0A0A0A;
   }
+
   .card-brutal {
-    background-color: #FFFFFF;
-    border: 2px solid #0A0A0A;
-    box-shadow: 4px 4px 0px #0A0A0A;
+    background-color: var(--surface);
+    color: var(--ink);
+    border: 2px solid var(--border-ink);
+    box-shadow: 4px 4px 0px var(--shadow-color);
+    border-radius: var(--radius-sm);
     padding: 1rem;
+  }
+
+  /* Dark mode utility bridge for pages using bg-white */
+  html.dark .bg-white {
+    background-color: var(--surface) !important;
   }
 }

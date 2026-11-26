@@ -8,6 +8,15 @@
 import type { Request, Response } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { generateAIReply } from '../services/ai.service.js';
+import { executeConfirmedPendingAction, runCommandEngine } from '../commands/engine.js';
+import { generateRegistryHelpText } from '../commands/registry.js';
+import {
+  deleteCommandMacro,
+  listCommandMacros,
+  markTelegramUpdateProcessed,
+  saveLastUploadedFile,
+} from '../commands/state.js';
+import { downloadTelegramFileSafe } from '../services/driveUpload.service.js';
 import { hydrateGoogleTokensFromRequest } from '../routes/googleDrive.js';
 import { addNotification } from '../services/approval.service.js';
 import { addMemory } from '../services/memory.service.js';
@@ -306,7 +315,83 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       return `👋 *Vanakkam! I'm Karen AI.*\n\nYour personal AI assistant is now active on Telegram.\n\nSend any message to chat, or type /help for commands.`;
 
     case '/help':
-      return HELP_TEXT;
+      return generateRegistryHelpText();
+
+    case '/macros': {
+      const argTrim = args.trim();
+      if (argTrim.toLowerCase().startsWith('delete ')) {
+        const target = argTrim.slice(7).trim();
+        const ok = await deleteCommandMacro(target);
+        return ok ? `🗑️ Deleted macro "${target}".` : `Macro "${target}" not found.`;
+      }
+      const macros = await listCommandMacros();
+      if (macros.length === 0) {
+        return 'No custom macros saved yet. Say: `teach Karen: when I say "my work" show pending assignments and latest 5 mails`';
+      }
+      return `⚡ *Saved Macros (${macros.length}):*\n\n${macros
+        .map((m, i) => `${i + 1}. "${m.triggerPhrase}" → ${m.steps.map((s) => s.instruction).join(' ; ')}`)
+        .join('\n')}\n\nDelete with \`/macros delete <trigger>\`.`;
+    }
+
+    case '/cancel': {
+      const res = await runCommandEngine({
+        chatKey: String(chatId),
+        text: '/cancel',
+        channel: 'telegram',
+        useLlmFallback: false,
+      });
+      return res.reply;
+    }
+
+    case '/joinclass': {
+      const trimmed = args.trim();
+      if (!trimmed) {
+        await tgApiCall('sendMessage', {
+          chat_id: chatId,
+          text: '🎓 *Join a Google Classroom*\n\nChoose how you want to join, or reply with an invite link or `<Class ID> <Code>`:',
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Invite link', callback_data: 'join_mode:link' },
+                { text: 'Class ID + code', callback_data: 'join_mode:id_code' },
+                { text: 'Pending invitations', callback_data: 'join_mode:invitation' },
+              ],
+            ],
+          },
+        });
+        return '';
+      }
+      const tokens = trimmed.split(/\s+/);
+      const commandText =
+        tokens.length >= 2 && !/classroom\.google\.com/i.test(tokens[0])
+          ? `join class ${tokens[0]} code ${tokens[1]}`
+          : `join this class ${trimmed}`;
+      const res = await runCommandEngine({
+        chatKey: String(chatId),
+        text: commandText,
+        channel: 'telegram',
+        useLlmFallback: false,
+      });
+      if (res.buttons && res.buttons.length > 0) {
+        await tgApiCall('sendMessage', {
+          chat_id: chatId,
+          text: res.reply,
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: res.buttons.map((row) =>
+              row.map((b) => ({
+                text: b.label,
+                ...(b.callbackData ? { callback_data: b.callbackData } : {}),
+                ...(b.url ? { url: b.url } : {}),
+              }))
+            ),
+          },
+        });
+        return '';
+      }
+      return res.reply;
+    }
 
     case '/status': {
       const nowIst = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });
@@ -457,7 +542,7 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     case '/classes': {
       const cache = await getClassroomCache();
       if (!cache.courses.length) {
-        await syncClassroomData().catch(() => {});
+        await syncClassroomData().catch(() => { });
       }
       const updated = await getClassroomCache();
       if (!updated.courses.length) {
@@ -469,18 +554,6 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
             `${i + 1}. *${c.name}*${c.section ? ` (${c.section})` : ''} [${c.courseState}]${c.teacherNames[0] ? `\n   👤 ${c.teacherNames[0]}` : ''}`
         )
         .join('\n\n')}`;
-    }
-
-    case '/joinclass': {
-      if (!args.trim()) {
-        return '⚠️ Usage: `/joinclass <classroom_invite_link>` or `/joinclass <courseId> <classCode>`\nExample: `/joinclass https://classroom.google.com/c/...?cjc=abc1234`';
-      }
-      const parts = args.trim().split(/\s+/);
-      const res =
-        parts.length >= 2 && !/classroom\.google\.com/i.test(parts[0])
-          ? await joinClassroomByCodeOrLink({ courseId: parts[0], codeOrLink: parts[1] })
-          : await joinClassroomByCodeOrLink({ codeOrLink: args.trim() });
-      return res.joined ? `✅ ${res.message}` : `⚠️ ${res.message}`;
     }
 
     case '/assignments':
@@ -620,45 +693,111 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
   void sendTyping(chatId); // fire-and-forget — don't block AI on typing indicator
 
   let reply = '';
+  let replyButtons: Array<Array<{ text: string; callback_data?: string; url?: string }>> | undefined;
 
   try {
     // ── Voice messages ──────────────────────────────────────────────────────
     if (msg.voice || msg.audio) {
       const fileId = msg.voice?.file_id ?? msg.audio?.file_id ?? '';
-      const fileUrl = await getFileUrl(fileId);
-      if (fileUrl) {
-        reply = `🎤 *Voice message received.*\n\nSorry, I can't transcribe audio files directly yet — Telegram sends them as OGG/OPUS format which requires a speech-to-text service. Please type your message or send it as text.\n\n*Tip:* Connect ElevenLabs or Google Speech-to-Text for voice transcription.`;
-      } else {
-        reply = '⚠️ Could not download the voice message. Please try again.';
+      if (config.GROQ_API_KEY && fileId) {
+        const dl = await downloadTelegramFileSafe(fileId);
+        if (dl.ok && dl.buffer) {
+          try {
+            const form = new FormData();
+            form.append('file', new Blob([new Uint8Array(dl.buffer)], { type: 'audio/ogg' }), 'voice.ogg');
+            form.append('model', 'whisper-large-v3-turbo');
+            const sttRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${config.GROQ_API_KEY}` },
+              body: form,
+              signal: AbortSignal.timeout(12000),
+            });
+            if (sttRes.ok) {
+              const sttJson = (await sttRes.json()) as { text?: string };
+              const transcript = sttJson.text?.trim() || '';
+              if (transcript) {
+                const engineRes = await runCommandEngine({
+                  chatKey: String(chatId),
+                  text: transcript,
+                  channel: 'telegram',
+                  history: getHistory(chatId),
+                });
+                if (engineRes.handled) {
+                  reply = `🎤 _"${transcript}"_\n\n${engineRes.reply}`;
+                  if (engineRes.buttons) {
+                    replyButtons = engineRes.buttons.map((row) =>
+                      row.map((b) => ({ text: b.label, ...(b.callbackData ? { callback_data: b.callbackData } : {}), ...(b.url ? { url: b.url } : {}) }))
+                    );
+                  }
+                } else {
+                  const aiRes = await generateAIReply(transcript, getHistory(chatId), undefined, undefined, AbortSignal.timeout(15000), { currentPage: '/telegram' });
+                  reply = `🎤 _"${transcript}"_\n\n${aiRes.reply}`;
+                }
+              }
+            }
+          } catch {
+            // Fall through
+          }
+        }
+      }
+      if (!reply) {
+        reply = '🎤 Voice message received, but speech transcription failed or GROQ_API_KEY is not configured. Please type your command.';
       }
     }
 
     // ── Documents / Files ────────────────────────────────────────────────────
     else if (msg.document) {
-      const { file_id, file_name = 'document', mime_type = '' } = msg.document;
-      const fileUrl = await getFileUrl(file_id);
-      if (!fileUrl) {
-        reply = '⚠️ Could not download the file. Please try again.';
-      } else {
-        await tgApiCall('sendMessage', { chat_id: chatId, text: `📄 Processing *${file_name}*...` });
-        try {
-          const fileRes = await fetch(fileUrl);
-          const arrayBuf = await fileRes.arrayBuffer();
-          const buffer = Buffer.from(arrayBuf);
-          const text = await extractTextFromBuffer(buffer, file_name, mime_type);
-          if (!text || text.length < 10) {
-            reply = `⚠️ Could not extract text from *${file_name}*. It may be a scanned image or encrypted PDF.`;
-          } else {
-            const aiRes = await generateAIReply(
-              `Analyze this document named "${file_name}" and give me a clear summary with key points:\n\n${text.slice(0, 8000)}`,
-              getHistory(chatId)
+      const { file_id, file_name = 'document', mime_type = 'application/octet-stream' } = msg.document;
+      await saveLastUploadedFile(String(chatId), {
+        fileId: file_id,
+        fileName: file_name,
+        mimeType: mime_type,
+        source: 'telegram',
+        uploadedAt: new Date().toISOString(),
+      });
+
+      const caption = msg.caption?.trim() || '';
+      if (caption) {
+        const engineRes = await runCommandEngine({
+          chatKey: String(chatId),
+          text: caption,
+          channel: 'telegram',
+          history: getHistory(chatId),
+        });
+        if (engineRes.handled) {
+          reply = engineRes.reply;
+          if (engineRes.buttons) {
+            replyButtons = engineRes.buttons.map((row) =>
+              row.map((b) => ({ text: b.label, ...(b.callbackData ? { callback_data: b.callbackData } : {}), ...(b.url ? { url: b.url } : {}) }))
             );
-            pushHistory(chatId, 'user', `[Document: ${file_name}]`);
-            pushHistory(chatId, 'assistant', aiRes.reply);
-            reply = `📄 *${file_name}*\n\n${aiRes.reply}`;
           }
-        } catch (err) {
-          reply = `⚠️ Error reading *${file_name}*: ${err instanceof Error ? err.message : 'Unknown error'}`;
+        }
+      }
+
+      if (!reply) {
+        const fileUrl = await getFileUrl(file_id);
+        if (!fileUrl) {
+          reply = '⚠️ Could not download the file. Please try again.';
+        } else {
+          await tgApiCall('sendMessage', { chat_id: chatId, text: `📄 Processing *${file_name}*...` });
+          try {
+            const fileRes = await fetch(fileUrl);
+            const buffer = Buffer.from(await fileRes.arrayBuffer());
+            const text = await extractTextFromBuffer(buffer, file_name, mime_type);
+            if (!text || text.length < 10) {
+              reply = `📄 Saved *${file_name}* for Drive/email commands (type "save this to drive" within 30 mins), though no extractable text was found.`;
+            } else {
+              const aiRes = await generateAIReply(
+                `Analyze this document named "${file_name}" and give me a clear summary with key points:\n\n${text.slice(0, 8000)}`,
+                getHistory(chatId)
+              );
+              pushHistory(chatId, 'user', `[Document: ${file_name}]`);
+              pushHistory(chatId, 'assistant', aiRes.reply);
+              reply = `📄 *${file_name}*\n\n${aiRes.reply}`;
+            }
+          } catch (err) {
+            reply = `⚠️ Error reading *${file_name}*: ${err instanceof Error ? err.message : 'Unknown error'}`;
+          }
         }
       }
     }
@@ -666,18 +805,34 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
     // ── Photos / Images ──────────────────────────────────────────────────────
     else if (msg.photo) {
       const largest = msg.photo[msg.photo.length - 1];
-      const caption = msg.caption?.trim() || 'Describe this image.';
-      const fileUrl = await getFileUrl(largest.file_id);
-      if (!fileUrl) {
-        reply = '⚠️ Could not download the image.';
-      } else {
-        // Karen doesn't have vision API yet — provide a helpful message
-        reply = `🖼️ *Image received.*\n\nI can see you sent a photo${msg.caption ? ` with caption: "${msg.caption}"` : ''}.\n\n_I don't have image analysis (vision) capability yet. Please describe what you need help with or use /drive to access your Google Drive documents._`;
-        const questionPart = caption !== 'Describe this image.' ? caption : '';
-        if (questionPart) {
-          const aiRes = await generateAIReply(`The user sent an image and asked: "${questionPart}". I cannot see images but I can help with text-based questions about it.`, getHistory(chatId));
+      await saveLastUploadedFile(String(chatId), {
+        fileId: largest.file_id,
+        fileName: `photo-${Date.now()}.jpg`,
+        mimeType: 'image/jpeg',
+        source: 'telegram',
+        uploadedAt: new Date().toISOString(),
+      });
+      const caption = msg.caption?.trim() || '';
+      if (caption) {
+        const engineRes = await runCommandEngine({
+          chatKey: String(chatId),
+          text: caption,
+          channel: 'telegram',
+          history: getHistory(chatId),
+        });
+        if (engineRes.handled) {
+          reply = engineRes.reply;
+          if (engineRes.buttons) {
+            replyButtons = engineRes.buttons.map((row) =>
+              row.map((b) => ({ text: b.label, ...(b.callbackData ? { callback_data: b.callbackData } : {}), ...(b.url ? { url: b.url } : {}) }))
+            );
+          }
+        } else {
+          const aiRes = await generateAIReply(`The user sent an image and asked: "${caption}".`, getHistory(chatId));
           reply = aiRes.reply;
         }
+      } else {
+        reply = `🖼️ Photo received and ready! Say *"save this to drive"* or *"mail this file to ..."* within 30 minutes.`;
       }
     }
 
@@ -700,79 +855,9 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
         const args = spaceIdx > -1 ? text.slice(spaceIdx + 1).trim() : '';
         reply = await handleCommand(cmd, args, chatId);
       } else {
-        // Full AI conversation — no Google hydration needed here (only for /digest or Drive commands)
         const history = getHistory(chatId);
 
-        // ── Instagram natural language detection ──────────────────────────────
-        const isInstagramCommand = config.INSTAGRAM_ACCESS_TOKEN && (
-          /\b(send\s+(msg|message|dm)\s+to|dm|tell)\s+\w/i.test(text) ||
-          /\b\w+\s+(ku|kku)\s+(msg|message|anupu|solu)\b/i.test(text) ||
-          /\b(check|read)\s+(my\s+)?(instagram\s+)?(dms?|messages?|inbox)\b/i.test(text) ||
-          /\binsta(gram)?\s+(dm|message|send)\b/i.test(text)
-        );
-
-        if (isInstagramCommand) {
-          try {
-            const result = await executeInstagramVoiceCommand(text);
-            reply = result.replyMessage || (result.success ? '✅ Done!' : '❌ Instagram action failed.');
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Unknown error';
-            reply = `❌ Instagram error: ${msg}`;
-          }
-        }
-        // ── Google Classroom natural language detection ─────────────────────
-        else if (
-          /\b(join\s+(this\s+)?class|add\s+(me\s+)?to\s+class|class\s+code\s*[:\-]?\s*[a-z0-9]+|classroom\.google\.com\/c\/)/i.test(text)
-        ) {
-          const linkMatch = text.match(/https?:\/\/classroom\.google\.com\/\S+/i);
-          const codeMatch = text.match(/\b(?:code|join\s+class)\s*[:\-]?\s*([a-z0-9]{5,12})/i);
-          const target = linkMatch?.[0] || codeMatch?.[1] || text;
-          const res = await joinClassroomByCodeOrLink({ codeOrLink: target });
-          reply = res.joined ? `✅ ${res.message}` : `⚠️ ${res.message}`;
-        }
-        else if (
-          /\b(my\s+assignments?|pending\s+(work|assignments?)|assignment\s+is\s+due|due\s+tomorrow|show\s+my\s+grades|my\s+classes|new\s+announcements?|next\s+exam|exam\s+tomorrow|prepare\s+me\s+for.*exam|start\s+exam\s+prep|i\s+have\s+only\s+\d+\s+hours?|haven'?t\s+studied\s+anything|explain\s+my\s+.*assignment|prepare\s+an?\s+assignment\s+draft)\b/i.test(text)
-        ) {
-          if (/\b(exam\s+tomorrow|prepare\s+me|start\s+exam\s+prep|i\s+have\s+only\s+\d+\s+hours?|haven'?t\s+studied)\b/i.test(text)) {
-            const hoursMatch = text.match(/(\d+(?:\.\d+)?)\s*hours?/i);
-            const hours = hoursMatch ? Number(hoursMatch[1]) : 5;
-            const subjectMatch = text.match(/(?:for|have)\s+([a-z0-9 &_-]{2,40}?)\s+exam/i);
-            const subject = subjectMatch?.[1]?.trim() || text;
-            const prep = await runLastMinuteExamPrep({
-              subject,
-              hoursAvailable: hours,
-              language: /thanglish|tamil/i.test(text) ? 'thanglish' : 'english',
-              mode: 'plan',
-            });
-            reply = `🎯 *Last-Minute Exam Prep (${prep.subject})*\n\n${prep.plan}`;
-          } else if (/\bexplain\b/i.test(text)) {
-            const res = await explainClassroomAssignment(
-              text,
-              /thanglish|tamil/i.test(text) ? 'thanglish' : 'english'
-            );
-            reply = res.explanation;
-          } else if (/\bdraft\b/i.test(text)) {
-            const list = await listClassroomAssignments({ category: 'pending' });
-            if (!list.length) {
-              reply = '📝 No pending assignments found to draft. Sync Classroom first with /classroom.';
-            } else {
-              const drafted = await draftClassroomAssignment(list[0].id, 'md');
-              reply = `📄 *Draft: ${drafted.filename}*\n\n${drafted.draft}`;
-            }
-          } else if (/\bgrades?\b/i.test(text)) {
-            reply = await handleCommand('/grades', '', chatId);
-          } else if (/\bannouncements?\b/i.test(text)) {
-            reply = await handleCommand('/announcements', '', chatId);
-          } else if (/\bnext\s+exam\b/i.test(text)) {
-            reply = await handleCommand('/exams', '', chatId);
-          } else if (/\bpending\b/i.test(text)) {
-            reply = await handleCommand('/pending', '', chatId);
-          } else {
-            reply = await handleCommand('/assignments', '', chatId);
-          }
-        }
-        // ── Love Mode detection ──────────────────────────────────────────────
-        else if (detectLoveModeDeactivation(text)) {
+        if (detectLoveModeDeactivation(text)) {
           await setLoveModeActive(chatId, false);
           reply = `Seri da ❤️ Love Mode off. But whenever you need to talk, I'm here. Take care of yourself. 💙`;
         } else {
@@ -782,33 +867,69 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
             await setLoveModeActive(chatId, true);
           }
           const loveModeActive = loveState.active || shouldActivate;
-          const aiPrompt = loveModeActive ? `[LOVE_MODE] ${text}` : text;
 
-          const aiRes = await generateAIReply(
-            aiPrompt,
-            history,
-            undefined,
-            undefined,
-            AbortSignal.timeout(15000)
-          );
-          pushHistory(chatId, 'user', text);
-          pushHistory(chatId, 'assistant', aiRes.reply);
-          reply = aiRes.reply;
+          const engineRes = loveModeActive
+            ? { handled: false as const, reply: '', buttons: undefined }
+            : await runCommandEngine({
+                chatKey: String(chatId),
+                text,
+                channel: 'telegram',
+                history,
+              });
 
-          if (loveModeActive) {
-            await incrementLoveModeMessageCount(chatId);
-          }
+          if (engineRes.handled) {
+            pushHistory(chatId, 'user', text);
+            pushHistory(chatId, 'assistant', engineRes.reply);
+            reply = engineRes.reply;
+            if (engineRes.buttons) {
+              replyButtons = engineRes.buttons.map((row) =>
+                row.map((b) => ({ text: b.label, ...(b.callbackData ? { callback_data: b.callbackData } : {}), ...(b.url ? { url: b.url } : {}) }))
+              );
+            }
+          } else {
+            const aiRes = await generateAIReply(
+              text,
+              history,
+              undefined,
+              undefined,
+              AbortSignal.timeout(15000),
+              { loveMode: loveModeActive, currentPage: '/telegram' }
+            );
+            pushHistory(chatId, 'user', text);
+            pushHistory(chatId, 'assistant', aiRes.reply);
+            reply = aiRes.reply;
 
-          if (aiRes.pendingApproval) {
-            reply += `\n\n⚠️ *Approval Required*\n${aiRes.pendingApproval.summary}\n\nType \`/approve ${aiRes.pendingApproval.id}\` to confirm or \`/reject ${aiRes.pendingApproval.id}\` to cancel.`;
+            if (aiRes.sources && aiRes.sources.length > 0) {
+              const links = aiRes.sources.slice(0, 4).map((s) => `• [${s.displayLink || s.title}](${s.url})`).join('\n');
+              reply += `\n\n🔗 *Sources*\n${links}`;
+            }
+            if (aiRes.generatedFiles && aiRes.generatedFiles.length > 0) {
+              const fileLinks = aiRes.generatedFiles.map((f) => `📎 [${f.name}](${f.url})`).join('\n');
+              reply += `\n\n${fileLinks}`;
+            }
+            if (loveModeActive) {
+              await incrementLoveModeMessageCount(chatId);
+            }
+            if (aiRes.pendingApproval) {
+              reply += `\n\n⚠️ *Approval Required*\n${aiRes.pendingApproval.summary}\n\nType \`/approve ${aiRes.pendingApproval.id}\` to confirm or \`/reject ${aiRes.pendingApproval.id}\` to cancel.`;
+            }
           }
         }
       }
     }
 
     await Promise.all([
-      reply ? sendTelegramMessage(reply, chatId) : Promise.resolve(false),
-      addNotification('telegram', 'Telegram Message', `"${(msg.text || '[media]').slice(0, 60)}"`, 'normal', 'telegram').catch(() => {}),
+      reply
+        ? replyButtons && replyButtons.length > 0
+          ? tgApiCall('sendMessage', {
+              chat_id: chatId,
+              text: reply,
+              parse_mode: 'Markdown',
+              reply_markup: { inline_keyboard: replyButtons },
+            })
+          : sendTelegramMessage(reply, chatId)
+        : Promise.resolve(false),
+      addNotification('telegram', 'Telegram Message', `"${(msg.text || '[media]').slice(0, 60)}"`, 'normal', 'telegram').catch(() => { }),
       (async () => {
         if (!msg.text || !reply) return;
         try {
@@ -928,6 +1049,35 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
         ? `📚 *Topics for ${exam.subject}*\n\n${exam.topics.map((t, i) => `${i + 1}. ${t.revised ? '✅' : '⬜'} ${t.title}`).join('\n')}`
         : '📚 No topics listed yet for this exam.';
       await sendTelegramMessage(msg, chatId);
+    } else if (action === 'cmd_confirm' && arg) {
+      const result = await executeConfirmedPendingAction(arg, 'confirm');
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: result.ok ? 'Done' : 'Failed' });
+      await sendTelegramMessage(result.message, chatId);
+    } else if (action === 'cmd_cancel' && arg) {
+      const result = await executeConfirmedPendingAction(arg, 'cancel');
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'Cancelled' });
+      await sendTelegramMessage(result.message, chatId);
+    } else if (action === 'cmd' && arg === 'classroom_sync') {
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'Syncing Classroom...' });
+      const res = await runCommandEngine({ chatKey: String(chatId), text: 'show pending assignments', channel: 'telegram', useLlmFallback: false });
+      await sendTelegramMessage(res.reply, chatId);
+    } else if (action === 'join_mode') {
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id });
+      if (arg === 'link') {
+        await sendTelegramMessage('Paste your Google Classroom invite link (`https://classroom.google.com/c/...?cjc=...`).', chatId);
+      } else if (arg === 'id_code') {
+        await sendTelegramMessage('Reply with your Class ID (number or URL) and 5–12 character Class Code, e.g. `join class 123456789 code abc1234`.', chatId);
+      } else if (arg === 'invitation') {
+        const invs = await (await import('../services/classroom.service.js')).listPendingClassroomInvitations();
+        if (invs.length === 0) {
+          await sendTelegramMessage('No pending Classroom invitations found.', chatId);
+        } else {
+          await sendTelegramMessage(
+            `Found ${invs.length} pending invitation(s). Tap to join:\n${invs.map((i, idx) => `${idx + 1}. Course ${i.courseId}`).join('\n')}`,
+            chatId
+          );
+        }
+      }
     } else {
       await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'OK' });
     }
@@ -941,7 +1091,11 @@ export async function telegramWebhook(req: Request, res: Response): Promise<void
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET || config.TELEGRAM_WEBHOOK_SECRET;
   const received = req.header('x-telegram-bot-api-secret-token');
 
-  // Allow if no secret is configured (development)
+  if (config.NODE_ENV === 'production' && !expected) {
+    res.sendStatus(401);
+    return;
+  }
+
   if (expected) {
     if (!received) { res.sendStatus(401); return; }
     const exp = Buffer.from(expected);
@@ -953,6 +1107,13 @@ export async function telegramWebhook(req: Request, res: Response): Promise<void
   }
 
   const update: TelegramUpdate = req.body || {};
+  if (typeof update.update_id === 'number') {
+    const fresh = await markTelegramUpdateProcessed(update.update_id);
+    if (!fresh) {
+      res.sendStatus(200);
+      return;
+    }
+  }
   try {
     if (update.callback_query) {
       await handleCallbackQuery(update.callback_query);
@@ -1092,7 +1253,7 @@ export async function getTelegramBotInfo(): Promise<{ username: string; name: st
       telegramState.botUsername = result.username;
       return { username: result.username, name: result.first_name || 'Karen' };
     }
-  } catch {}
+  } catch { }
   return null;
 }
 

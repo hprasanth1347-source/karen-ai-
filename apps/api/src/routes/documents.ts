@@ -1,9 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { aiLimit } from '../middleware/rateLimit.js';
-import { config } from '../config/env.js';
 import { generateAIReply } from '../services/ai.service.js';
 import { extractTextFromBuffer } from '../utils/docParser.js';
 import { success, error } from '../utils/response.js';
@@ -22,12 +21,7 @@ interface StoredDocument {
 const documentsStore: StoredDocument[] = [];
 const router = Router();
 
-router.use('/documents', (req, res, next) => {
-  if (config.NODE_ENV !== 'production') {
-    return next();
-  }
-  return requireAuth(req, res, next);
-});
+router.use('/documents', requireAuth, requireOwner);
 
 router.get('/documents', (_req, res) => {
   const items = documentsStore.map(({ content, ...meta }) => ({

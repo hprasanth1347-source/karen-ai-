@@ -7,7 +7,9 @@
  *  - Gemini AI assignment explanations, structured drafts, and Last-Minute Exam Prep ONLY
  */
 
+import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { logAudit } from '../utils/audit.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateAIReply } from './ai.service.js';
@@ -580,115 +582,266 @@ export async function syncClassroomData(): Promise<{
   }
 }
 
-// ─── Join Class by Invite Link / Code ─────────────────────────────────────────
+// ─── Join Class by Invite Link / Class ID + Code / Invitation ────────────────
 
-function decodeCourseIdFromClassroomSlug(slug: string): string {
-  if (/^\d+$/.test(slug)) return slug;
+export function decodeCourseIdFromClassroomSlug(slug: string): string {
+  const trimmed = slug.trim();
+  if (!trimmed) return '';
+  if (/^\d+$/.test(trimmed)) return trimmed;
   try {
-    const padded = slug.replace(/-/g, '+').replace(/_/g, '/');
-    const decoded = Buffer.from(padded, 'base64').toString('utf8').trim();
+    let b64 = trimmed.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4;
+    if (pad > 0) {
+      b64 += '='.repeat(4 - pad);
+    }
+    const decoded = Buffer.from(b64, 'base64').toString('utf8').trim();
     if (/^\d+$/.test(decoded)) return decoded;
   } catch {
     // Fallback to raw slug
   }
-  return slug;
+  return trimmed;
 }
 
-export async function joinClassroomByCodeOrLink(input: {
-  codeOrLink: string;
-  courseId?: string;
-}): Promise<{
+export function parseClassroomCourseInput(raw: string): { courseId: string; cjc?: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { courseId: '' };
+  if (/classroom\.google\.com/i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+      const cjc = url.searchParams.get('cjc')?.trim() || undefined;
+      const pathMatch = url.pathname.match(/\/c\/([^/]+)/i);
+      const courseId = pathMatch?.[1] ? decodeCourseIdFromClassroomSlug(pathMatch[1]) : '';
+      return { courseId, cjc };
+    } catch {
+      return { courseId: '' };
+    }
+  }
+  return { courseId: decodeCourseIdFromClassroomSlug(trimmed) };
+}
+
+export type JoinClassroomMode = 'link' | 'id_code' | 'invitation';
+
+export interface JoinClassroomResult {
   joined: boolean;
-  courseName?: string;
   courseId?: string;
+  courseName?: string;
+  teacher?: string;
+  alreadyEnrolled?: boolean;
+  errorCode?:
+    | 'NOT_CONNECTED'
+    | 'INVALID_INPUT'
+    | 'BARE_CODE_UNSUPPORTED'
+    | 'MISSING_ROSTER_SCOPE'
+    | 'WRONG_CODE'
+    | 'COURSE_NOT_FOUND'
+    | 'COURSE_ARCHIVED'
+    | 'DOMAIN_RESTRICTION'
+    | 'TIMEOUT'
+    | 'JOIN_FAILED';
   message: string;
-}> {
+}
+
+export async function listPendingClassroomInvitations(): Promise<
+  Array<{ id: string; courseId: string; role?: string }>
+> {
+  const token = await getValidGoogleAccessToken();
+  if (!token) return [];
+  try {
+    const res = await fetch(`${CLASSROOM_BASE}/invitations?userId=me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const json = (await res.json()) as { invitations?: Array<{ id: string; courseId: string; role?: string }> };
+    return json.invitations || [];
+  } catch {
+    return [];
+  }
+}
+
+const classCodeSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9]{5,12}$/, 'Class code must be 5–12 alphanumeric characters.');
+
+export async function joinClassroom(input: {
+  mode?: JoinClassroomMode;
+  inviteLink?: string;
+  courseId?: string;
+  classCode?: string;
+  classUrl?: string;
+  invitationId?: string;
+  codeOrLink?: string;
+  userId?: string;
+}): Promise<JoinClassroomResult> {
   const token = await getValidGoogleAccessToken();
   if (!token) {
     return {
       joined: false,
+      errorCode: 'NOT_CONNECTED',
       message: 'Google Classroom is not connected. Connect your Google account first.',
     };
   }
 
-  const raw = input.codeOrLink.trim();
-  let courseId = input.courseId?.trim() || '';
-  let enrollmentCode = raw;
+  let mode = input.mode;
+  let courseId = '';
+  let enrollmentCode = input.classCode?.trim() || '';
 
-  // Parse Google Classroom invite link: https://classroom.google.com/c/<base64Id>?cjc=<code>
-  if (/classroom\.google\.com/i.test(raw)) {
-    try {
-      const url = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
-      const cjc = url.searchParams.get('cjc') || '';
-      const pathMatch = url.pathname.match(/\/c\/([^/]+)/i);
-      if (pathMatch?.[1]) {
-        courseId = decodeCourseIdFromClassroomSlug(pathMatch[1]);
-      }
-      if (cjc) {
-        enrollmentCode = cjc.trim();
-      }
-    } catch {
-      // Keep raw string
-    }
+  const rawLinkOrCode = (input.inviteLink || input.classUrl || input.codeOrLink || '').trim();
+  const rawIdOrUrl = (input.courseId || input.classUrl || '').trim();
+
+  if (!mode) {
+    if (input.invitationId) mode = 'invitation';
+    else if (/classroom\.google\.com/i.test(rawLinkOrCode) && !input.courseId) mode = 'link';
+    else if (rawIdOrUrl) mode = 'id_code';
+    else mode = 'link';
   }
 
-  // If no courseId yet, check pending Classroom invitations for the user
-  if (!courseId) {
-    try {
-      const invRes = await fetch(`${CLASSROOM_BASE}/invitations?userId=me`, {
+  if (mode === 'invitation') {
+    const invitations = await listPendingClassroomInvitations();
+    const targetInv = input.invitationId
+      ? invitations.find((i) => i.id === input.invitationId)
+      : invitations.find((i) => i.role === 'STUDENT') || invitations[0];
+    if (!targetInv) {
+      return {
+        joined: false,
+        errorCode: 'COURSE_NOT_FOUND',
+        message: 'No matching pending Classroom invitation found.',
+      };
+    }
+    const acceptRes = await fetch(
+      `${CLASSROOM_BASE}/invitations/${encodeURIComponent(targetInv.id)}:accept`,
+      {
+        method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(10000),
-      });
-      if (invRes.ok) {
-        const invData = (await invRes.json()) as {
-          invitations?: Array<{ id: string; courseId: string; role?: string }>;
-        };
-        const match = invData.invitations?.find((inv) => inv.role === 'STUDENT') || invData.invitations?.[0];
-        if (match?.id) {
-          const acceptRes = await fetch(
-            `${CLASSROOM_BASE}/invitations/${encodeURIComponent(match.id)}:accept`,
-            {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${token}` },
-              signal: AbortSignal.timeout(10000),
-            }
-          );
-          if (acceptRes.ok) {
-            const syncRes = await syncClassroomData();
-            const joinedCourse = syncRes.cache.courses.find((c) => c.id === match.courseId);
-            return {
-              joined: true,
-              courseId: match.courseId,
-              courseName: joinedCourse?.name || match.courseId,
-              message: `Joined class "${joinedCourse?.name || match.courseId}" via your pending Classroom invitation!`,
-            };
-          }
-        }
       }
-    } catch {
-      // Continue to code/link guidance
+    );
+    if (!acceptRes.ok) {
+      return {
+        joined: false,
+        errorCode: 'JOIN_FAILED',
+        message: `Could not accept invitation (${acceptRes.status}).`,
+      };
     }
-
+    void syncClassroomData().catch(() => {});
+    const cache = await getClassroomCache();
+    const course = cache.courses.find((c) => c.id === targetInv.courseId);
+    const courseName = course?.name || targetInv.courseId;
+    if (input.userId) {
+      await logAudit(input.userId, 'CLASSROOM_JOIN', 'classroom', targetInv.courseId, { mode, courseName }).catch(() => {});
+    }
+    await sendTelegramMessage(`🎓 Joined Google Classroom: *${courseName}* (via invitation).`).catch(() => {});
     return {
-      joined: false,
-      message:
-        'Google Classroom API requires the Course Invite Link (e.g. classroom.google.com/c/...?cjc=' +
-        enrollmentCode +
-        ') or Course ID + Class Code, because Google does not provide a lookup by 6-7 char code alone. Paste the full Classroom invite link or enter the Course ID.',
+      joined: true,
+      courseId: targetInv.courseId,
+      courseName,
+      teacher: course?.teacherNames?.[0],
+      message: `Joined "${courseName}" via your pending Classroom invitation!`,
     };
   }
 
-  // Enroll via official Classroom API: POST /v1/courses/{courseId}/students?enrollmentCode={code}
+  if (mode === 'link') {
+    if (/classroom\.google\.com/i.test(rawLinkOrCode)) {
+      const parsed = parseClassroomCourseInput(rawLinkOrCode);
+      courseId = parsed.courseId;
+      if (parsed.cjc && !enrollmentCode) enrollmentCode = parsed.cjc;
+    } else if (/^[A-Za-z0-9]{5,12}$/.test(rawLinkOrCode)) {
+      return {
+        joined: false,
+        errorCode: 'BARE_CODE_UNSUPPORTED',
+        message:
+          `Google Classroom does not allow joining by a 5–12 character code ("${rawLinkOrCode}") alone. Switch to "Class ID + code" or paste the full invite link (classroom.google.com/c/...?cjc=${rawLinkOrCode}).`,
+      };
+    }
+  } else if (mode === 'id_code') {
+    const parsed = parseClassroomCourseInput(rawIdOrUrl || rawLinkOrCode);
+    courseId = parsed.courseId;
+    if (parsed.cjc && !enrollmentCode) {
+      enrollmentCode = parsed.cjc;
+    }
+  }
+
+  if (!/^\d+$/.test(courseId)) {
+    return {
+      joined: false,
+      errorCode: 'INVALID_INPUT',
+      message: 'Course ID must be numeric (or a valid Classroom course URL / base64 slug).',
+    };
+  }
+
+  const parsedCode = classCodeSchema.safeParse(enrollmentCode);
+  if (!parsedCode.success) {
+    return {
+      joined: false,
+      errorCode: 'INVALID_INPUT',
+      message: parsedCode.error.errors[0]?.message || 'Class code must be 5–12 alphanumeric characters.',
+    };
+  }
+  enrollmentCode = parsedCode.data;
+
+  // Preflight: check if owner is already enrolled in cache
+  const cache = await getClassroomCache();
+  const existingCourse = cache.courses.find((c) => c.id === courseId);
+  if (existingCourse) {
+    if (existingCourse.courseState === 'ARCHIVED') {
+      return {
+        joined: false,
+        courseId,
+        courseName: existingCourse.name,
+        errorCode: 'COURSE_ARCHIVED',
+        message: `Course "${existingCourse.name}" is archived and cannot accept new enrollments.`,
+      };
+    }
+    return {
+      joined: true,
+      alreadyEnrolled: true,
+      courseId,
+      courseName: existingCourse.name,
+      teacher: existingCourse.teacherNames?.[0],
+      message: `Already in "${existingCourse.name}".`,
+    };
+  }
+
   const enrollUrl = `${CLASSROOM_BASE}/courses/${encodeURIComponent(courseId)}/students?enrollmentCode=${encodeURIComponent(enrollmentCode)}`;
-  const res = await fetch(enrollUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ userId: 'me' }),
-    signal: AbortSignal.timeout(10000),
-  });
+  let res: Response | null = null;
+  let lastErr: unknown = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      res = await fetch(enrollUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ userId: 'me' }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.status >= 500 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 350));
+        continue;
+      }
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 350));
+        continue;
+      }
+    }
+  }
+
+  if (!res) {
+    const isTimeout = lastErr instanceof Error && (lastErr.name === 'TimeoutError' || lastErr.name === 'AbortError');
+    return {
+      joined: false,
+      errorCode: isTimeout ? 'TIMEOUT' : 'JOIN_FAILED',
+      message: isTimeout
+        ? 'Google Classroom timed out while joining. Please try again.'
+        : 'Network error while joining Google Classroom.',
+    };
+  }
 
   const json = (await res.json().catch(() => ({}))) as {
     error?: { message?: string; status?: string };
@@ -699,21 +852,76 @@ export async function joinClassroomByCodeOrLink(input: {
     if (/insufficient.*scope|permission/i.test(errMsg)) {
       return {
         joined: false,
-        message:
-          'Missing Classroom roster write permission. Click "Reconnect Google" to grant join-class permission, then try again.',
+        errorCode: 'MISSING_ROSTER_SCOPE',
+        message: 'Missing Classroom roster write permission. Click "Reconnect Google" to grant join-class permission, then try again.',
       };
     }
-    return { joined: false, message: errMsg };
+    if (res.status === 409 || /already.*exists|already.*enrolled/i.test(errMsg)) {
+      return {
+        joined: true,
+        alreadyEnrolled: true,
+        courseId,
+        courseName: courseId,
+        message: `Already in course ${courseId}.`,
+      };
+    }
+    if (res.status === 404 || /not found/i.test(errMsg)) {
+      return {
+        joined: false,
+        errorCode: 'COURSE_NOT_FOUND',
+        message: `Course ${courseId} was not found. Double-check the Class ID or invite link.`,
+      };
+    }
+    if (/archived/i.test(errMsg)) {
+      return {
+        joined: false,
+        errorCode: 'COURSE_ARCHIVED',
+        message: 'This course is archived and cannot be joined.',
+      };
+    }
+    if (/domain|policy|not allowed/i.test(errMsg)) {
+      return {
+        joined: false,
+        errorCode: 'DOMAIN_RESTRICTION',
+        message: 'Your Google account domain is restricted from joining this class.',
+      };
+    }
+    if (/enrollment.*code|invalid.*code|precondition/i.test(errMsg)) {
+      return {
+        joined: false,
+        errorCode: 'WRONG_CODE',
+        message: 'Wrong class code for this Course ID. Check the code (case-sensitive) and try again.',
+      };
+    }
+    return { joined: false, errorCode: 'JOIN_FAILED', message: errMsg };
   }
 
-  const syncRes = await syncClassroomData();
-  const joinedCourse = syncRes.cache.courses.find((c) => c.id === courseId);
+  void syncClassroomData().catch(() => {});
+  const updatedCache = await getClassroomCache();
+  const joinedCourse = updatedCache.courses.find((c) => c.id === courseId);
+  const courseName = joinedCourse?.name || courseId;
+  if (input.userId) {
+    await logAudit(input.userId, 'CLASSROOM_JOIN', 'classroom', courseId, { mode, courseName }).catch(() => {});
+  }
+  await sendTelegramMessage(`🎓 Successfully joined Google Classroom: *${courseName}*!`).catch(() => {});
+
   return {
     joined: true,
     courseId,
-    courseName: joinedCourse?.name || courseId,
-    message: `Successfully joined "${joinedCourse?.name || courseId}"!`,
+    courseName,
+    teacher: joinedCourse?.teacherNames?.[0],
+    message: `Successfully joined "${courseName}"!`,
   };
+}
+
+export async function joinClassroomByCodeOrLink(input: {
+  codeOrLink: string;
+  courseId?: string;
+}): Promise<JoinClassroomResult> {
+  return joinClassroom({
+    codeOrLink: input.codeOrLink,
+    courseId: input.courseId,
+  });
 }
 
 // ─── Notifications (Deduplicated + Inline Buttons) ────────────────────────────

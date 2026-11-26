@@ -81,6 +81,21 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
-    return Promise.reject(error)
+    const status = error?.response?.status;
+    if (status === 401 && typeof window !== 'undefined') {
+      getCache.clear();
+      try {
+        window.sessionStorage.removeItem('karen_auth_session');
+      } catch {
+        // Ignore storage errors
+      }
+      if (supabase) {
+        await supabase.auth.signOut().catch(() => {});
+      }
+      if (!window.location.pathname.startsWith('/auth')) {
+        window.location.assign('/auth?expired=1');
+      }
+    }
+    return Promise.reject(error);
   }
 )

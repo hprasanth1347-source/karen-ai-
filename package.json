@@ -18,6 +18,8 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "node --test tests/unit/*.test.js",
+    "skills:selftest": "npx tsx apps/api/src/scripts/skillsSelfTest.ts",
+    "check:contrast": "node scripts/check-contrast.mjs",
     "lint": "eslint . --ext .ts,.tsx --max-warnings 0"
   },
   "devDependencies": {

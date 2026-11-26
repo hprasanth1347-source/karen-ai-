@@ -48,7 +48,10 @@ export const VoicePage: React.FC = () => {
     setIsProcessing(true);
     setStatusMessage(null);
     try {
-      const res = await api.post('/ai/chat', { message: spoken.trim() });
+      const res = await api.post('/ai/chat', {
+        message: spoken.trim(),
+        currentPage: window.location.pathname,
+      });
       const reply = res.data?.data?.reply || '';
       setReplyText(reply);
       if (reply) await speakFemale(reply);

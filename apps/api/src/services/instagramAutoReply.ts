@@ -1,6 +1,8 @@
 import { logger } from '../config/logger.js';
 import { config } from '../config/env.js';
 import { generateAIReply, type AIProvider } from './ai.service.js';
+import { analyzeInstagramMediaWithGemini, type MediaAttachmentKind } from './geminiMultimodal.service.js';
+import { sendTelegramMessage } from '../providers/telegram.js';
 import { loadUserSetting, saveUserSetting } from './persistence.service.js';
 import {
   sendInstagramMessage,
@@ -130,6 +132,18 @@ class InstagramAutoReplyService {
     return hiRegex.test(lower);
   }
 
+  private humanTakeoverIds = new Set<string>();
+
+  public setHumanTakeover(id: string, active: boolean): boolean {
+    if (active) this.humanTakeoverIds.add(id);
+    else this.humanTakeoverIds.delete(id);
+    return active;
+  }
+
+  public isHumanTakeover(id: string): boolean {
+    return this.humanTakeoverIds.has(id);
+  }
+
   /**
    * Processes a single incoming message from Meta Webhook or Poller
    */
@@ -138,14 +152,22 @@ class InstagramAutoReplyService {
     senderUsername: string,
     messageId: string,
     messageText: string,
-    bypassRateLimit = false
+    bypassRateLimit = false,
+    mediaMeta?: {
+      attachments?: Array<{ type?: string; payload?: { url?: string; title?: string; reel_video_id?: string } }>;
+      replyToStoryId?: string;
+    }
   ): Promise<{ autoReplied: boolean; replyText?: string; error?: string }> {
     await this.ensureHydrated();
     const ownerId = config.INSTAGRAM_ACCOUNT_ID;
     const ownerUsername = config.INSTAGRAM_USERNAME;
 
-    // 1. Skip if message is from the owner
+    // 1. Skip if message is from the owner or human takeover is active
     if (senderId === ownerId || senderUsername === ownerUsername) {
+      return { autoReplied: false };
+    }
+    if (this.isHumanTakeover(senderId) || this.isHumanTakeover(senderUsername)) {
+      logger.info(`Human takeover active for @${senderUsername}; skipping AI auto-reply.`);
       return { autoReplied: false };
     }
 
@@ -165,19 +187,61 @@ class InstagramAutoReplyService {
       return { autoReplied: false };
     }
 
-    // 4. Check if trigger matches
-    if (!this.shouldAutoReply(messageText)) {
+    // 3b. Identify attachments & analyze accessible media with Gemini Multimodal
+    const firstAtt = mediaMeta?.attachments?.[0];
+    let detectedType: string = mediaMeta?.replyToStoryId ? 'story_reply' : 'text';
+    let mediaContextNote = '';
+    if (firstAtt) {
+      const rawType = (firstAtt.type || '').toLowerCase();
+      const kind: MediaAttachmentKind =
+        rawType === 'ig_reel' || rawType === 'reel'
+          ? 'reel'
+          : rawType === 'video'
+            ? 'video'
+            : rawType === 'audio'
+              ? 'audio'
+              : rawType === 'ig_post' || rawType === 'share'
+                ? 'ig_post'
+                : 'image';
+      detectedType = kind;
+      const analysis = await analyzeInstagramMediaWithGemini({
+        mediaUrl: firstAtt.payload?.url,
+        kind,
+        caption: firstAtt.payload?.title,
+        senderUsername,
+      });
+      if (analysis.accessible && analysis.summary) {
+        mediaContextNote = `\n[Accessible ${kind} analysis]: ${analysis.summary}`;
+      } else {
+        mediaContextNote = `\n[Attachment type=${kind}${firstAtt.payload?.title ? `, title="${firstAtt.payload.title}"` : ''}; media binary not accessible via API — do NOT pretend you saw/heard it; acknowledge naturally and ask if needed.]`;
+      }
+    } else if (mediaMeta?.replyToStoryId) {
+      mediaContextNote = `\n[Context: This message is a reply to Hari's Instagram Story ID ${mediaMeta.replyToStoryId}.]`;
+    }
+
+    const effectiveText = `${messageText}${mediaContextNote}`.trim();
+
+    // Safety control: never auto-share OTPs, passwords, bank/UPI details, or financial commitments
+    if (/\b(otp|password|pin\b|cvv|bank\s+account|upi\s+pin|send\s+money|transfer\s+\d+)\b/i.test(messageText)) {
+      await sendTelegramMessage(
+        `KAREN AI - INSTAGRAM SAFETY HOLD\n\nSender: @${senderUsername}\nReason: Sensitive request (OTP/password/financial) — auto-reply paused for human review.`
+      ).catch(() => {});
+      return { autoReplied: false };
+    }
+
+    // 4. Check if trigger matches (allow media/story replies when enabled)
+    if (!firstAtt && !mediaMeta?.replyToStoryId && !this.shouldAutoReply(messageText)) {
       logger.info(`Message "${messageText}" from @${senderUsername} does not match trigger criteria.`);
       return { autoReplied: false };
     }
 
     this.processingMessageIds.add(messageId);
-    logger.info(`Generating auto-reply for @${senderUsername}: "${messageText}"`);
+    logger.info(`Generating auto-reply for @${senderUsername} (${detectedType})`);
 
     // 5. Generate Karen's response
     let replyText = '';
     const provider = this.config.aiProvider || 'groq';
-    const intent = classifyIncomingIntent(messageText);
+    const intent = classifyIncomingIntent(messageText || detectedType);
 
     if (this.config.customTemplate && this.config.customTemplate.trim()) {
       replyText = this.config.customTemplate.replace('{name}', senderUsername);
@@ -194,13 +258,13 @@ class InstagramAutoReplyService {
         thanks:
           'Respond warmly and briefly, and leave the conversation open for any other need.',
         general:
-          'Understand the sender’s actual need from the message, answer only what can be answered safely, and ask one concise follow-up question if more context is required.',
+          'Understand the sender’s actual need from the message/media context, answer only what can be answered safely, and ask one concise follow-up question if more context is required.',
       };
       const customTraining = this.config.customInstructions?.trim()
         ? `\nOwner's Custom DM Training Rules (follow strictly):\n${this.config.customInstructions.trim()}\n`
         : '';
 
-      const prompt = `User @${senderUsername} sent this Instagram DM to Hari: "${messageText}".
+      const prompt = `User @${senderUsername} sent this Instagram DM (${detectedType}) to Hari: "${effectiveText}".
 Hari is currently away. You are Karen AI, Hari's personal female AI assistant.
 Detected intent: ${intent}.
 Goal: ${intentInstructions[intent]}

@@ -1,58 +1,43 @@
-import React from 'react';
-import { Key, ExternalLink, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Key } from 'lucide-react';
+import { api } from '../lib/api';
 
 export const ApiManagementPage: React.FC = () => {
-  const apis = [
-    { name: 'Google Gemini 2.0 Flash', env: 'GEMINI_API_KEY', status: 'Available', doc: 'https://aistudio.google.com' },
-    { name: 'Groq Cloud (Llama 3.3)', env: 'GROQ_API_KEY', status: 'Available', doc: 'https://console.groq.com' },
-    { name: 'ElevenLabs Voice Engine', env: 'ELEVENLABS_API_KEY', status: 'Voice Confirmed', doc: 'https://elevenlabs.io' },
-    { name: 'Supabase PostgreSQL & Auth', env: 'SUPABASE_URL', status: 'Configured', doc: 'https://supabase.com' },
-    { name: 'WhatsApp Business Cloud', env: 'WHATSAPP_ACCESS_TOKEN', status: 'Meta Credentials Needed', doc: 'https://developers.facebook.com' },
-    { name: 'Instagram Creator Graph API', env: 'META_PAGE_ACCESS_TOKEN', status: 'Meta Credentials Needed', doc: 'https://developers.facebook.com' },
-    { name: 'Google Workspace (Gmail & Drive)', env: 'GOOGLE_CLIENT_ID', status: 'Google Cloud OAuth Needed', doc: 'https://console.cloud.google.com' },
-    { name: 'Telegram Bot API', env: 'TELEGRAM_BOT_TOKEN', status: 'Bot Token Needed', doc: 'https://t.me/botfather' },
-  ];
+  const [status, setStatus] = useState<Record<string, unknown> | null>(null);
+  const [search, setSearch] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    api.get('/integrations/status').then((r) => setStatus(r.data?.data ?? null)).catch(() => {});
+    api.get('/integrations/search-status').then((r) => setSearch(r.data?.data ?? null)).catch(() => {});
+  }, []);
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white border-3 border-ink p-5 shadow-brutal flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="inline-flex items-center gap-2 px-2 py-0.5 bg-yellow text-ink text-xs font-mono font-bold border-2 border-ink shadow-brutal-sm mb-2">
-            <Key className="w-3.5 h-3.5" />
-            <span>EXTERNAL PROVIDER & CREDENTIALS VAULT</span>
-          </div>
-          <h1 className="text-xl md:text-2xl font-black">API & Integration Management</h1>
-          <p className="text-xs text-ink-muted mt-1 max-w-xl">
-            Live credentials status for all 8 providers. Full secrets are stored strictly on the server-side in <code>.env</code> and never exposed to the client.
-          </p>
+    <div className="space-y-6 max-w-4xl">
+      <div className="bg-white border-3 border-ink p-5 shadow-brutal">
+        <div className="inline-flex items-center gap-2 px-2 py-0.5 bg-coral text-[#0A0A0A] text-xs font-mono font-bold border-2 border-ink shadow-brutal-sm mb-2">
+          <Key className="w-3.5 h-3.5" />
+          <span>API &amp; PROVIDER KEYS</span>
         </div>
+        <h1 className="text-xl md:text-2xl font-black">API Management</h1>
+        <p className="text-xs text-ink-muted mt-1">Live configuration status for Groq, Gemini, Google Workspace, Meta, Telegram, and Custom Search.</p>
       </div>
 
-      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
-        <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2">PROVIDER CREDENTIAL AUDIT</h3>
-        <div className="space-y-2">
-          {apis.map((a, i) => (
-            <div key={i} className="p-3 border-2 border-ink bg-cream-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-              <div>
-                <h4 className="font-bold">{a.name}</h4>
-                <span className="text-[10px] font-mono text-ink-muted">Server Variable: {a.env}</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] font-mono px-2 py-0.5 border border-ink bg-white font-bold">
-                  {a.status}
-                </span>
-                <a
-                  href={a.doc}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-coral hover:underline flex items-center gap-1 font-bold"
-                >
-                  Setup Docs <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-            </div>
-          ))}
-        </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+        {[
+          { name: 'Groq AI', ok: Boolean(status?.groq) },
+          { name: 'Google Gemini', ok: Boolean(status?.gemini) },
+          { name: 'Google Workspace (Drive/Gmail/Cal/Sheets)', ok: Boolean(status?.google) },
+          { name: 'Google Custom Search', ok: Boolean(search?.working) },
+          { name: 'Instagram / Meta', ok: Boolean(status?.instagram) },
+          { name: 'Telegram Bot', ok: Boolean(status?.telegram) },
+        ].map((p) => (
+          <div key={p.name} className="bg-white border-2 border-ink p-3 flex justify-between items-center shadow-brutal-sm">
+            <span className="font-bold">{p.name}</span>
+            <span className={`px-2 py-0.5 border border-ink font-bold ${p.ok ? 'bg-mint' : 'bg-yellow'}`}>
+              {p.ok ? 'CONNECTED' : 'NEEDS SETUP'}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );

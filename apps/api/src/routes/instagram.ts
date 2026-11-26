@@ -15,15 +15,29 @@ import {
   executeInstagramVoiceCommand,
 } from '../providers/instagram.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
+import {
+  getActiveStories,
+  getAllReels,
+  getFollowerMonitorSummary,
+  getInstagramConnectionHealth,
+  getInstagramNotesActivity,
+  handleInstagramCommentEvent,
+  handleInstagramMentionEvent,
+  handleInstagramNoteActivityEvent,
+} from '../services/instagramHub.service.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
+import {
+  clearInstagramTokensFromDb,
+  loadInstagramTokensWithStatus,
+  loadUserSetting,
+  saveInstagramTokensToDb,
+  saveUserSetting,
+} from '../services/persistence.service.js';
 
 const router = Router();
 
 router.use((req, res, next) => {
   if (req.path === '/webhook') {
-    return next();
-  }
-  if (config.NODE_ENV !== 'production') {
     return next();
   }
   return requireAuth(req, res, () => requireOwner(req, res, next));
@@ -123,17 +137,79 @@ router.post('/voice-command', validate(voiceCommandSchema), async (req, res) => 
   }
 });
 
-// 7. VIP / Favourite contacts
-router.get('/favourites', (_req, res) => {
-  return success(res, vipContacts);
+// 7. VIP / Favourite contacts & server-persisted UI state
+router.get('/status', async (req, res) => {
+  const { tokens, status } = await loadInstagramTokensWithStatus(req.user?.id);
+  return success(res, {
+    connected: status === 'connected',
+    status,
+    accountId: tokens?.accountId || config.INSTAGRAM_ACCOUNT_ID || null,
+    expiresAt: tokens?.expiresAt ? new Date(tokens.expiresAt).toISOString() : null,
+  });
 });
 
-router.post('/favourites', (req, res) => {
-  const username = req.body?.username;
-  if (username && !vipContacts.includes(username)) {
-    vipContacts.push(username);
+router.post(
+  '/connect',
+  validate(
+    z.object({
+      accessToken: z.string().min(10),
+      accountId: z.string().optional(),
+      pageId: z.string().optional(),
+      expiresInDays: z.number().min(1).max(365).optional(),
+    })
+  ),
+  async (req, res) => {
+    const expiresAt = Date.now() + (req.body.expiresInDays ?? 60) * 24 * 60 * 60 * 1000;
+    await saveInstagramTokensToDb(
+      {
+        accessToken: req.body.accessToken,
+        accountId: req.body.accountId || config.INSTAGRAM_ACCOUNT_ID || '',
+        pageId: req.body.pageId || config.INSTAGRAM_PAGE_ID || '',
+        expiresAt,
+      },
+      req.user?.id
+    );
+    return success(res, { connected: true, status: 'connected', expiresAt: new Date(expiresAt).toISOString() });
   }
-  return success(res, vipContacts);
+);
+
+router.post('/disconnect', async (req, res) => {
+  await clearInstagramTokensFromDb(req.user?.id);
+  return success(res, { disconnected: true, status: 'disconnected' });
+});
+
+router.get('/ui-state', async (_req, res) => {
+  const saved = await loadUserSetting<{ lastTab?: string; vipContacts?: string[] }>('instagram_ui_state');
+  return success(res, {
+    lastTab: saved?.lastTab || 'inbox',
+    vipContacts: Array.isArray(saved?.vipContacts) ? saved.vipContacts : vipContacts,
+  });
+});
+
+router.put('/ui-state', async (req, res) => {
+  const prev = await loadUserSetting<{ lastTab?: string; vipContacts?: string[] }>('instagram_ui_state');
+  const next = {
+    lastTab: typeof req.body?.lastTab === 'string' ? req.body.lastTab : prev?.lastTab || 'inbox',
+    vipContacts: Array.isArray(req.body?.vipContacts) ? req.body.vipContacts : prev?.vipContacts || vipContacts,
+  };
+  await saveUserSetting('instagram_ui_state', next);
+  return success(res, next);
+});
+
+router.get('/favourites', async (_req, res) => {
+  const saved = await loadUserSetting<{ vipContacts?: string[] }>('instagram_ui_state');
+  return success(res, Array.isArray(saved?.vipContacts) ? saved.vipContacts : vipContacts);
+});
+
+router.post('/favourites', async (req, res) => {
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const saved = await loadUserSetting<{ lastTab?: string; vipContacts?: string[] }>('instagram_ui_state');
+  const current = Array.isArray(saved?.vipContacts) ? saved.vipContacts : [...vipContacts];
+  if (username && !current.includes(username)) {
+    current.push(username);
+    await saveUserSetting('instagram_ui_state', { ...saved, vipContacts: current });
+  }
+  return success(res, current);
 });
 
 // 8. Creator account insights
@@ -200,15 +276,51 @@ router.post('/webhook', async (req, res) => {
             logger.info(`Instagram webhook received message for sender ${senderId}`);
 
             try {
+              if (event.message.reply_to?.note) {
+                await handleInstagramNoteActivityEvent({
+                  eventKey: `note_reply:${messageId}`,
+                  activityType: 'note_reply',
+                  noteId: event.message.reply_to.note.id,
+                  noteText: event.message.reply_to.note.text,
+                  actorId: senderId,
+                  actorUsername: senderUsername,
+                  replyText: messageText,
+                });
+              }
               await instagramAutoReplyService.handleIncomingMessage(
                 senderId,
                 senderUsername,
                 messageId,
-                messageText
+                messageText,
+                false,
+                {
+                  attachments: event.message.attachments,
+                  replyToStoryId: event.message.reply_to?.story?.id,
+                }
               );
             } catch (err) {
               logger.error('Error handling webhook auto-reply:', err);
             }
+          }
+        }
+      }
+      if (Array.isArray(entry.changes)) {
+        for (const change of entry.changes) {
+          if (change.field === 'comments' && change.value?.id) {
+            await handleInstagramCommentEvent({
+              commentId: String(change.value.id),
+              mediaId: String(change.value.media?.id || ''),
+              username: String(change.value.from?.username || 'user'),
+              text: String(change.value.text || ''),
+            }).catch(() => {});
+          } else if (change.field === 'mentions' && (change.value?.media_id || change.value?.comment_id)) {
+            await handleInstagramMentionEvent({
+              id: String(change.value.comment_id || change.value.media_id),
+              mediaId: change.value.media_id ? String(change.value.media_id) : undefined,
+              creatorUsername: String(change.value.username || 'creator'),
+              permalink: change.value.permalink,
+              caption: change.value.caption,
+            }).catch(() => {});
           }
         }
       }
@@ -315,6 +427,39 @@ router.post('/auto-reply/retry', async (req, res) => {
   } catch (err: any) {
     return error(res, err.message, 500);
   }
+});
+
+router.get('/health', async (req, res) => {
+  const health = await getInstagramConnectionHealth(req.user?.id);
+  return success(res, health);
+});
+
+router.get('/reels', async (req, res) => {
+  const source = (typeof req.query.source === 'string' ? req.query.source : 'all') as 'my_reels' | 'tagged_reels' | 'all';
+  const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+  const data = await getAllReels({ source, search, userId: req.user?.id });
+  return success(res, data);
+});
+
+router.get('/stories', async (req, res) => {
+  const stories = await getActiveStories(req.user?.id);
+  return success(res, stories);
+});
+
+router.get('/monitor', async (req, res) => {
+  const monitor = await getFollowerMonitorSummary(req.user?.id);
+  return success(res, monitor);
+});
+
+router.get('/notes-activity', async (_req, res) => {
+  const notes = await getInstagramNotesActivity();
+  return success(res, notes);
+});
+
+router.post('/conversations/:id/takeover', async (req, res) => {
+  const active = Boolean(req.body?.active ?? true);
+  instagramAutoReplyService.setHumanTakeover(String(req.params.id), active);
+  return success(res, { conversationId: req.params.id, humanTakeover: active });
 });
 
 export default router;
