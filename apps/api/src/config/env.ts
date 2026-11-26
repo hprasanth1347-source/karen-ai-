@@ -132,10 +132,22 @@ if (process.env.NODE_ENV === 'production') {
     process.exit(1);
   }
 
-  const productionRequired = [
+  const coreRequired = [
     'SUPABASE_URL',
     'SUPABASE_ANON_KEY',
     'SUPABASE_SERVICE_ROLE_KEY',
+  ] as const;
+
+  const missingCore = coreRequired.filter((key) => {
+    const value = process.env[key];
+    return !value || value.includes('placeholder') || value.includes('replace-with');
+  });
+
+  if (missingCore.length > 0) {
+    console.error(`Missing core Supabase environment variables: ${missingCore.join(', ')}`);
+  }
+
+  const featureSecrets = [
     'JWT_SECRET',
     'ENCRYPTION_KEY',
     'APP_SECRET',
@@ -144,20 +156,13 @@ if (process.env.NODE_ENV === 'production') {
     'TELEGRAM_WEBHOOK_SECRET',
   ] as const;
 
-  const missing = productionRequired.filter((key) => {
+  const missingSecrets = featureSecrets.filter((key) => {
     const value = process.env[key];
     return !value || value.includes('placeholder') || value.includes('replace-with');
   });
 
-  if (missing.length > 0) {
-    console.error(`Production startup blocked. Missing or unsafe environment variables: ${missing.join(', ')}`);
-    process.exit(1);
-  }
-
-  if (!/^[a-fA-F0-9]{64}$/.test(process.env.ENCRYPTION_KEY || '') &&
-      !/^[a-zA-Z0-9+/]{43}=$/.test(process.env.ENCRYPTION_KEY || '')) {
-    console.error('Production startup blocked. ENCRYPTION_KEY must be 32 random bytes encoded as hex or base64.');
-    process.exit(1);
+  if (missingSecrets.length > 0) {
+    console.warn(`Optional/feature secrets not configured (those endpoints will fail closed): ${missingSecrets.join(', ')}`);
   }
 }
 
