@@ -259,7 +259,7 @@ export const InstagramPage: React.FC = () => {
       } catch {
         // Ignore transient poll errors
       }
-    }, 15000);
+    }, 12000);
     return () => clearInterval(timer);
   }, [autoReplyConfig.enabled]);
 

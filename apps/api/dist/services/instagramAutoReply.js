@@ -30,6 +30,31 @@ export function classifyIncomingIntent(text) {
         return 'greeting';
     return 'general';
 }
+function isUnwantedOrNoisyDm(text) {
+    const trimmed = text.trim();
+    if (!trimmed)
+        return false;
+    // Meta reaction / like notifications
+    if (/^(liked a message|reacted\s+.+\s+to your message)$/i.test(trimmed))
+        return true;
+    // Pure emoji / punctuation only (no letters or digits)
+    if (!/[\p{L}\p{N}]/u.test(trimmed) && trimmed.length <= 16)
+        return true;
+    // Tiny low-signal acknowledgments that don't need an AI reply
+    if (/^(ok|okk|okay|k|kk|hmm|hmmm|hm|yup|yep|yeah|ya|tq|ty|thx|lol|lmao|nice|cool|good|done|noted|fine|👍|👌|❤️|😂|🙏)+[.!]*$/i.test(trimmed)) {
+        return true;
+    }
+    // Common Instagram bot / promo spam
+    if (/(free followers|buy followers|dm for promo|dm for collab|brand ambassador|crypto signal|forex|guaranteed profit)/i.test(trimmed)) {
+        return true;
+    }
+    return false;
+}
+function isImportantDm(text, hasMedia, isStoryReply) {
+    if (hasMedia || isStoryReply)
+        return true;
+    return /\b(urgent|important|asap|emergency|call\s+me|meeting|schedule|project|deadline|exam|interview|job|offer|payment|invoice|help|problem|issue|sir|boss)\b/i.test(text);
+}
 class InstagramAutoReplyService {
     config = {
         enabled: true,
@@ -144,6 +169,13 @@ class InstagramAutoReplyService {
             logger.info(`Auto-reply rate limit for sender ${senderUsername} (${senderId})`);
             return { autoReplied: false };
         }
+        // 3a. Skip unwanted/noisy DMs (reactions, tiny "ok"/"hmm" acks, promo spam) unless there is media
+        const hasAttachment = Boolean(mediaMeta?.attachments?.length);
+        if (!hasAttachment && !mediaMeta?.replyToStoryId && isUnwantedOrNoisyDm(messageText)) {
+            logger.info(`Skipping unwanted/low-signal DM from @${senderUsername}: "${messageText}"`);
+            this.repliedMessageIds.add(messageId);
+            return { autoReplied: false };
+        }
         // 3b. Identify attachments & analyze accessible media with Gemini Multimodal
         const firstAtt = mediaMeta?.attachments?.[0];
         let detectedType = mediaMeta?.replyToStoryId ? 'story_reply' : 'text';
@@ -223,10 +255,10 @@ Thanglish Style Guide (CRITICAL):
 - Keep it warm, friendly, and under 2 sentences. Do not invent facts or claim Hari already confirmed anything.`;
             try {
                 const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 4000);
+                const timeout = setTimeout(() => controller.abort(), 5000);
                 let aiRes;
                 try {
-                    aiRes = await generateAIReply(prompt, [], provider, this.config.aiModel, controller.signal);
+                    aiRes = await generateAIReply(prompt, mediaMeta?.history || [], provider, this.config.aiModel, controller.signal, { skipSkills: true });
                 }
                 finally {
                     clearTimeout(timeout);
@@ -280,10 +312,16 @@ Thanglish Style Guide (CRITICAL):
         await saveUserSetting('instagram_auto_reply_logs', this.logs);
         if (sendRes.success) {
             logger.info(`Auto-reply sent successfully to @${senderUsername}: "${replyText}"`);
+            if (isImportantDm(messageText, Boolean(firstAtt), Boolean(mediaMeta?.replyToStoryId))) {
+                void sendTelegramMessage(`KAREN AI - IMPORTANT INSTAGRAM DM\n\nFrom: @${senderUsername}\nType: ${detectedType}\nMessage: "${(messageText || '[Media]').slice(0, 220)}"\nAuto-Reply Sent: "${replyText.slice(0, 220)}"`).catch(() => { });
+            }
             return { autoReplied: true, replyText };
         }
         else {
             logger.error(`Failed to send auto-reply to @${senderUsername}:`, sendRes.error);
+            if (isImportantDm(messageText, Boolean(firstAtt), Boolean(mediaMeta?.replyToStoryId))) {
+                void sendTelegramMessage(`KAREN AI - IMPORTANT INSTAGRAM DM (REPLY FAILED)\n\nFrom: @${senderUsername}\nMessage: "${(messageText || '[Media]').slice(0, 220)}"\nError: ${sendRes.error || 'Meta send failed'}`).catch(() => { });
+            }
             return { autoReplied: false, replyText, error: sendRes.error };
         }
     }
@@ -327,17 +365,34 @@ Thanglish Style Guide (CRITICAL):
                 if (!latestMsg || !latestMsg.from)
                     continue;
                 // Only reply if the latest message is FROM the external user (not from Hari)
+                // and within the 24-hour Meta messaging window
+                const msgTime = latestMsg.created_time ? new Date(latestMsg.created_time).getTime() : Date.now();
+                if (Date.now() - msgTime > 24 * 60 * 60 * 1000)
+                    continue;
                 if ((!ownerUsername || latestMsg.from.username !== ownerUsername) &&
                     (!ownerId || latestMsg.from.id !== ownerId)) {
                     if (!this.repliedMessageIds.has(latestMsg.id)) {
-                        const mediaMeta = Array.isArray(latestMsg.attachments) && latestMsg.attachments.length > 0
-                            ? {
-                                attachments: latestMsg.attachments.map((att) => ({
-                                    type: att.type,
-                                    payload: { url: att.url, title: att.title },
-                                })),
-                            }
-                            : undefined;
+                        const history = msgs
+                            .slice(1, 7)
+                            .reverse()
+                            .map((m) => ({
+                            role: ((ownerUsername && m.from?.username === ownerUsername) ||
+                                (ownerId && m.from?.id === ownerId)
+                                ? 'assistant'
+                                : 'user'),
+                            content: m.message || '[Media]',
+                        }));
+                        const mediaMeta = {
+                            ...(Array.isArray(latestMsg.attachments) && latestMsg.attachments.length > 0
+                                ? {
+                                    attachments: latestMsg.attachments.map((att) => ({
+                                        type: att.type,
+                                        payload: { url: att.url, title: att.title },
+                                    })),
+                                }
+                                : {}),
+                            history,
+                        };
                         const res = await this.handleIncomingMessage(t.participant.id, t.participant.username, latestMsg.id, latestMsg.message, false, mediaMeta);
                         if (res.autoReplied) {
                             repliesCount++;
