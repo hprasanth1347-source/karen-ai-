@@ -81,6 +81,12 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
+    const rawErr = error?.response?.data?.error;
+    if (rawErr && typeof rawErr === 'object') {
+      const msg = (rawErr as { message?: string }).message;
+      const code = (rawErr as { code?: string }).code;
+      error.response.data.error = msg || (code ? `Error (${code})` : 'Request failed.');
+    }
     const status = error?.response?.status;
     if (status === 401 && typeof window !== 'undefined') {
       getCache.clear();

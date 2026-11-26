@@ -13,9 +13,7 @@
       (function () {
         try {
           var saved = localStorage.getItem('karen_theme');
-          var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var isDark = saved === 'dark' || (!saved && prefersDark);
-          if (isDark) {
+          if (saved === 'dark') {
             document.documentElement.classList.add('dark');
             var meta = document.querySelector('meta[name="theme-color"]');
             if (meta) meta.setAttribute('content', '#111318');
