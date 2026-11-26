@@ -646,21 +646,24 @@ export const AIChatPage: React.FC = () => {
         setConversations((prev) => {
           const exists = prev.some((c) => c.id === cid);
           const nowIso = new Date().toISOString();
-          if (exists) {
-            return prev.map((c) =>
-              c.id === cid ? { ...c, message_count: (c.message_count || 0) + 2, last_message_at: nowIso } : c
-            );
-          }
-          return [
-            {
-              id: cid,
-              title: currentInput.trim().slice(0, 60) || 'New Chat',
-              channel: 'web',
-              message_count: 2,
-              last_message_at: nowIso,
-            },
-            ...prev,
-          ];
+          const nextList = exists
+            ? prev.map((c) =>
+                c.id === cid ? { ...c, message_count: (c.message_count || 0) + 2, last_message_at: nowIso } : c
+              )
+            : [
+                {
+                  id: cid,
+                  title: currentInput.trim().slice(0, 60) || 'New Chat',
+                  channel: 'web',
+                  message_count: 2,
+                  last_message_at: nowIso,
+                },
+                ...prev,
+              ];
+          const store = readLocalLibrary();
+          store.conversations = nextList;
+          writeLocalLibrary(store);
+          return nextList;
         });
         void loadConversations(false);
       }

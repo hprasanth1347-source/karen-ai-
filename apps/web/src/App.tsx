@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/queryClient';
@@ -43,31 +43,31 @@ class AppErrorBoundary extends React.Component<
   }
 }
 
-import OverviewPage from './pages/OverviewPage';
-import AIChatPage from './pages/AIChatPage';
-import WhatsAppPage from './pages/WhatsAppPage';
-import InstagramPage from './pages/InstagramPage';
-import GmailPage from './pages/GmailPage';
-import DrivePage from './pages/DrivePage';
-import MemoryPage from './pages/MemoryPage';
-import DocumentsPage from './pages/DocumentsPage';
-import VoicePage from './pages/VoicePage';
-import TelegramPage from './pages/TelegramPage';
-import NotificationsPage from './pages/NotificationsPage';
-import ContactsPage from './pages/ContactsPage';
-import AutomationPage from './pages/AutomationPage';
-import TasksPage from './pages/TasksPage';
-import RemindersPage from './pages/RemindersPage';
-import SecurityPage from './pages/SecurityPage';
-import ApiManagementPage from './pages/ApiManagementPage';
-import DatabasePage from './pages/DatabasePage';
-import MonitorPage from './pages/MonitorPage';
-import ActivityPage from './pages/ActivityPage';
-import SettingsPage from './pages/SettingsPage';
-import AuthPage from './pages/AuthPage';
-import NotFoundPage from './pages/NotFoundPage';
-import LoveModePage from './pages/LoveModePage';
-import ClassroomPage from './pages/ClassroomPage';
+const OverviewPage = lazy(() => import('./pages/OverviewPage'));
+const AIChatPage = lazy(() => import('./pages/AIChatPage'));
+const WhatsAppPage = lazy(() => import('./pages/WhatsAppPage'));
+const InstagramPage = lazy(() => import('./pages/InstagramPage'));
+const GmailPage = lazy(() => import('./pages/GmailPage'));
+const DrivePage = lazy(() => import('./pages/DrivePage'));
+const MemoryPage = lazy(() => import('./pages/MemoryPage'));
+const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
+const VoicePage = lazy(() => import('./pages/VoicePage'));
+const TelegramPage = lazy(() => import('./pages/TelegramPage'));
+const NotificationsPage = lazy(() => import('./pages/NotificationsPage'));
+const ContactsPage = lazy(() => import('./pages/ContactsPage'));
+const AutomationPage = lazy(() => import('./pages/AutomationPage'));
+const TasksPage = lazy(() => import('./pages/TasksPage'));
+const RemindersPage = lazy(() => import('./pages/RemindersPage'));
+const SecurityPage = lazy(() => import('./pages/SecurityPage'));
+const ApiManagementPage = lazy(() => import('./pages/ApiManagementPage'));
+const DatabasePage = lazy(() => import('./pages/DatabasePage'));
+const MonitorPage = lazy(() => import('./pages/MonitorPage'));
+const ActivityPage = lazy(() => import('./pages/ActivityPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const AuthPage = lazy(() => import('./pages/AuthPage'));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
+const LoveModePage = lazy(() => import('./pages/LoveModePage'));
+const ClassroomPage = lazy(() => import('./pages/ClassroomPage'));
 
 // ─── Auth Guard ──────────────────────────────────────────────────────────────
 
@@ -97,6 +97,7 @@ export function App() {
       <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <BrowserRouter>
+          <Suspense fallback={<LoadingScreen />}>
           <Routes>
             <Route path="/auth" element={<AuthPage />} />
             <Route
@@ -135,6 +136,7 @@ export function App() {
               }
             />
           </Routes>
+          </Suspense>
         </BrowserRouter>
       </AuthProvider>
     </QueryClientProvider>

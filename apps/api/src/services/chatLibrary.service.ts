@@ -86,7 +86,12 @@ export async function listConversations(
     }
   };
 
-  const uid = await resolveUserId(userId);
+  const [uid, backup] = await Promise.all([
+    resolveUserId(userId),
+    readSettingsLibrary().catch(() => ({ conversations: [], messages: {} })),
+  ]);
+  addItems(backup.conversations);
+
   if (uid) {
     try {
       let query = supabaseAdmin
@@ -119,12 +124,6 @@ export async function listConversations(
     }
   }
 
-  try {
-    const backup = await readSettingsLibrary();
-    addItems(backup.conversations);
-  } catch {
-    // Ignore backup read errors
-  }
   addItems(memoryConversations);
 
   return Array.from(byId.values()).sort(

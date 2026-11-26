@@ -57,9 +57,12 @@ function clearStoredSession() {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialStored = readStoredSession();
+  const [user, setUser] = useState<User | null>(initialStored?.user ?? null);
+  const [session, setSession] = useState<Session | null>(
+    initialStored ? ({ access_token: initialStored.accessToken, user: initialStored.user } as Session) : null
+  );
+  const [loading, setLoading] = useState(!initialStored);
 
   useEffect(() => {
     let mounted = true;
