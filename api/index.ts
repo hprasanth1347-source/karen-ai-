@@ -36,43 +36,16 @@ if (typeof g.Path2D === 'undefined') {
 }
 
 import type { Request, Response } from 'express';
+import app from '../apps/api/dist/app.js';
 
-// Cache the Express app instance across warm serverless invocations
-let appInstance: any = null;
+export default function handler(req: Request, res: Response): void {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const originalPath = url.searchParams.get('__path');
 
-async function getApp() {
-  if (appInstance) return appInstance;
-  try {
-    const mod = await import('../apps/api/dist/app.js');
-    appInstance = mod.default || mod;
-    return appInstance;
-  } catch (err) {
-    console.warn('[serverless] Failed to load dist/app.js, trying src/app.js:', err);
-    const mod = await import('../apps/api/src/app.js');
-    appInstance = mod.default || mod;
-    return appInstance;
+  if (originalPath) {
+    url.searchParams.delete('__path');
+    req.url = `${originalPath}${url.search}`;
   }
-}
 
-export default async function handler(req: Request, res: Response): Promise<void> {
-  try {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const originalPath = url.searchParams.get('__path');
-
-    if (originalPath) {
-      url.searchParams.delete('__path');
-      req.url = `${originalPath}${url.search}`;
-    }
-
-    const app = await getApp();
-    app(req, res);
-  } catch (err: unknown) {
-    console.error('[serverless-handler] Unhandled function error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({
-        ok: false,
-        error: err instanceof Error ? err.message : 'Server function error',
-      });
-    }
-  }
+  app(req, res);
 }
