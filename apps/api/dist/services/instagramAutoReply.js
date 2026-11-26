@@ -60,6 +60,11 @@ class InstagramAutoReplyService {
         const savedLogs = await loadUserSetting('instagram_auto_reply_logs');
         if (Array.isArray(savedLogs) && savedLogs.length > 0) {
             this.logs = savedLogs.slice(0, 30);
+            for (const l of this.logs) {
+                if (l.status === 'SENT' && l.id) {
+                    this.repliedMessageIds.add(l.id);
+                }
+            }
         }
     }
     async getConfig() {

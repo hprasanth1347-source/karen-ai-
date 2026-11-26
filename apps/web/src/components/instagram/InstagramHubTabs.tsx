@@ -118,14 +118,14 @@ export const InstagramHubTabs: React.FC = () => {
 
   const handleCopyLink = (id: string, url?: string) => {
     if (!url) return;
-    navigator.clipboard?.writeText(url).catch(() => {});
+    navigator.clipboard?.writeText(url).catch(() => { });
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
   const handleNativeShare = (reel: ReelItem) => {
     if (navigator.share && reel.permalink) {
-      navigator.share({ title: `Reel by @${reel.creatorUsername}`, url: reel.permalink }).catch(() => {});
+      navigator.share({ title: `Reel by @${reel.creatorUsername}`, url: reel.permalink }).catch(() => { });
     }
   };
 
@@ -149,9 +149,8 @@ export const InstagramHubTabs: React.FC = () => {
                 key={t.id}
                 type="button"
                 onClick={() => setSection(t.id as 'reels' | 'stories' | 'followers' | 'monitor')}
-                className={`px-3 py-1.5 text-xs font-bold border-2 border-ink flex items-center gap-1.5 ${
-                  section === t.id ? 'bg-coral text-white' : 'bg-cream-50 hover:bg-yellow/40'
-                }`}
+                className={`px-3 py-1.5 text-xs font-bold border-2 border-ink flex items-center gap-1.5 ${section === t.id ? 'bg-coral text-white' : 'bg-cream-50 hover:bg-yellow/40'
+                  }`}
               >
                 <Icon className="w-3.5 h-3.5" />
                 <span>{t.label}</span>
@@ -174,9 +173,8 @@ export const InstagramHubTabs: React.FC = () => {
                   key={rt.id}
                   type="button"
                   onClick={() => setReelsTab(rt.id as 'all' | 'my_reels' | 'tagged_reels')}
-                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink ${
-                    reelsTab === rt.id ? 'bg-ink text-white' : 'bg-white'
-                  }`}
+                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink ${reelsTab === rt.id ? 'bg-ink text-white' : 'bg-white'
+                    }`}
                 >
                   {rt.label}
                 </button>
@@ -192,7 +190,11 @@ export const InstagramHubTabs: React.FC = () => {
           </div>
 
           {reels.length === 0 ? (
-            <p className="text-xs font-mono text-ink-muted">No Reels loaded yet (connect Instagram to sync My Reels and Tagged Reels).</p>
+            <p className="text-xs font-mono text-ink-muted">
+              {reelsTab === 'tagged_reels'
+                ? 'No Tagged Reels found from Meta Graph API (/{ig-user-id}/tags).'
+                : 'No Reels loaded yet (connect Instagram to sync My Reels and Tagged Reels).'}
+            </p>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {reels.map((r) => (
@@ -330,9 +332,8 @@ export const InstagramHubTabs: React.FC = () => {
                   key={ft.id}
                   type="button"
                   onClick={() => setFollowTab(ft.id as 'followers' | 'following' | 'mutual')}
-                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink ${
-                    followTab === ft.id ? 'bg-ink text-white' : 'bg-white'
-                  }`}
+                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink ${followTab === ft.id ? 'bg-ink text-white' : 'bg-white'
+                    }`}
                 >
                   {ft.label}
                 </button>
@@ -360,16 +361,16 @@ export const InstagramHubTabs: React.FC = () => {
             const q = followSearch.trim().toLowerCase();
             const filtered = q
               ? baseList.filter(
-                  (u) =>
-                    u.username.toLowerCase().includes(q) ||
-                    (u.name || '').toLowerCase().includes(q)
-                )
+                (u) =>
+                  u.username.toLowerCase().includes(q) ||
+                  (u.name || '').toLowerCase().includes(q)
+              )
               : baseList;
 
             if (filtered.length === 0) {
               return (
                 <p className="text-xs font-mono text-ink-muted py-4 text-center border border-ink bg-cream-50">
-                  No matching accounts found in permitted snapshot.
+                  No individual accounts recorded yet. Meta Graph API only provides aggregate follower/following counts; accounts appear here as they interact via permitted webhooks.
                 </p>
               );
             }
@@ -395,13 +396,12 @@ export const InstagramHubTabs: React.FC = () => {
                         <div className="flex items-center gap-1.5">
                           <span className="font-bold truncate">@{u.username}</span>
                           <span
-                            className={`text-[9px] font-mono font-bold px-1.5 py-0.5 border border-ink ${
-                              u.status === 'MUTUAL'
+                            className={`text-[9px] font-mono font-bold px-1.5 py-0.5 border border-ink ${u.status === 'MUTUAL'
                                 ? 'bg-mint text-ink'
                                 : u.detectionStatus === 'NEW'
                                   ? 'bg-yellow text-ink'
                                   : 'bg-white text-ink'
-                            }`}
+                              }`}
                           >
                             {u.detectionStatus === 'NEW' ? 'NEW' : u.status}
                           </span>

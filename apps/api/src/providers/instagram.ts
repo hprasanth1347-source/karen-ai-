@@ -117,34 +117,36 @@ export async function getInstagramProfile(): Promise<InstagramProfile> {
   const token = config.INSTAGRAM_ACCESS_TOKEN;
   const accountId = config.INSTAGRAM_ACCOUNT_ID || '';
 
-  if (!token) {
+  if (!token || !accountId) {
     return {
       id: accountId,
-      name: 'Hari Prasath',
+      name: '',
       username: config.INSTAGRAM_USERNAME || '',
       profile_picture_url: '',
-      followers_count: 1420,
-      media_count: 58,
+      followers_count: 0,
+      media_count: 0,
     };
   }
 
   try {
     const res = await metaFetch(
-      `${META_BASE_URL}/${accountId}?fields=id,name,username,profile_picture_url&access_token=${token}`
+      `${META_BASE_URL}/${accountId}?fields=id,name,username,profile_picture_url,followers_count,media_count&access_token=${token}`
     );
     if (!res.ok) {
       return {
         id: accountId,
-        name: 'Hari Prasath',
+        name: '',
         username: config.INSTAGRAM_USERNAME || '',
       };
     }
     const data = await res.json();
-    const profile = {
+    const profile: InstagramProfile = {
       id: data.id,
-      name: data.name || 'Hari Prasath',
+      name: data.name || data.username || '',
       username: data.username || config.INSTAGRAM_USERNAME || '',
       profile_picture_url: data.profile_picture_url,
+      followers_count: data.followers_count,
+      media_count: data.media_count,
     };
     profileCache = { expiresAt: Date.now() + 60_000, data: profile };
     return profile;
@@ -153,7 +155,7 @@ export async function getInstagramProfile(): Promise<InstagramProfile> {
     if (profileCache) return profileCache.data;
     return {
       id: accountId,
-      name: 'Hari Prasath',
+      name: '',
       username: config.INSTAGRAM_USERNAME || '',
     };
   }

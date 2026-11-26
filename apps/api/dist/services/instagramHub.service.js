@@ -201,48 +201,8 @@ export async function getTaggedReels(userId) {
             }));
         }
     }
-    // 3. Fallback demonstrative tagged reels so KAREN AI Tagged Reels Hub is never blank
-    return [
-        {
-            id: 'tag_reel_101',
-            source: 'tagged_reels',
-            creatorUsername: '_.raghul._.15',
-            caption: 'Collaborating on the new Karen AI automated direct messaging & voice bot with @hari.ii_14! 🔥 Testing live multimodal image recognition and Gemini AI answers.',
-            thumbnailUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80',
-            mediaUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1200&auto=format&fit=crop&q=80',
-            permalink: 'https://www.instagram.com/reel/DEvTagRaghul14/',
-            publishedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
-            likeCount: 142,
-            commentsCount: 28,
-            mediaProductType: 'REELS',
-        },
-        {
-            id: 'tag_reel_102',
-            source: 'tagged_reels',
-            creatorUsername: 'tamil_tech_creators',
-            caption: 'Awesome demo by @hari.ii_14 showing how Tamil + Thanglish voice commands trigger Instagram direct message replies seamlessly! 🚀 #KarenAI #TechTamil',
-            thumbnailUrl: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=600&auto=format&fit=crop&q=80',
-            mediaUrl: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1200&auto=format&fit=crop&q=80',
-            permalink: 'https://www.instagram.com/reel/DEvTagTechCreators/',
-            publishedAt: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
-            likeCount: 389,
-            commentsCount: 45,
-            mediaProductType: 'REELS',
-        },
-        {
-            id: 'tag_reel_103',
-            source: 'tagged_reels',
-            creatorUsername: 'ai_builds_daily',
-            caption: 'Next-gen personal AI operating system created by @hari.ii_14. Full automatic meta webhook reply engine with OCR & story analytics.',
-            thumbnailUrl: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600&auto=format&fit=crop&q=80',
-            mediaUrl: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1200&auto=format&fit=crop&q=80',
-            permalink: 'https://www.instagram.com/reel/DEvTagDailyBuilds/',
-            publishedAt: new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString(),
-            likeCount: 512,
-            commentsCount: 63,
-            mediaProductType: 'REELS',
-        },
-    ];
+    // 3. No fake fallback data: return empty when no live or cached tagged reels exist
+    return [];
 }
 export async function getAllReels(options) {
     const [myReels, taggedReels] = await Promise.all([
@@ -323,112 +283,57 @@ export async function getActiveStories(userId) {
     }));
     return stories;
 }
-const DEFAULT_COMMUNITY_ROSTER = [
-    {
-        id: '1681852029959817',
-        username: '_.raghul._.15',
-        name: 'Raghul S',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-        status: 'MUTUAL',
-        firstObserved: '2026-01-10T10:00:00Z',
-        lastActive: new Date().toISOString(),
-        detectionStatus: 'ACTIVE',
-    },
-    {
-        id: '1784140023456789',
-        username: 'tech_colleague',
-        name: 'Arun Kumar',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=150&auto=format&fit=crop&q=80',
-        status: 'MUTUAL',
-        firstObserved: '2026-02-14T08:30:00Z',
-        lastActive: new Date(Date.now() - 3600 * 1000).toISOString(),
-        detectionStatus: 'ACTIVE',
-    },
-    {
-        id: '1784140098765432',
-        username: 'founder_friend',
-        name: 'Priya Dharshini',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-        status: 'MUTUAL',
-        firstObserved: '2026-03-01T14:20:00Z',
-        lastActive: new Date(Date.now() - 12 * 3600 * 1000).toISOString(),
-        detectionStatus: 'ACTIVE',
-    },
-    {
-        id: '1784140011223344',
-        username: 'tamil_tech_creators',
-        name: 'Tamil Tech Network',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-        status: 'FOLLOWER',
-        firstObserved: '2026-05-18T19:00:00Z',
-        lastActive: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
-        detectionStatus: 'NEW',
-    },
-    {
-        id: '1784140055667788',
-        username: 'ai_builds_daily',
-        name: 'AI Engineering Daily',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-        status: 'FOLLOWER',
-        firstObserved: '2026-06-02T11:45:00Z',
-        lastActive: new Date(Date.now() - 48 * 3600 * 1000).toISOString(),
-        detectionStatus: 'ACTIVE',
-    },
-    {
-        id: '1784140099887766',
-        username: 'karen_ai_fan',
-        name: 'Senthil Nathan',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-        status: 'FOLLOWER',
-        firstObserved: '2026-07-20T16:10:00Z',
-        lastActive: new Date(Date.now() - 72 * 3600 * 1000).toISOString(),
-        detectionStatus: 'ACTIVE',
-    },
-    {
-        id: '1784140033445566',
-        username: 'developer_vibe',
-        name: 'Kavitha R',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150&auto=format&fit=crop&q=80',
-        status: 'FOLLOWING',
-        firstObserved: '2026-04-12T09:15:00Z',
-        lastActive: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
-        detectionStatus: 'ACTIVE',
-    },
-    {
-        id: '1784140077889900',
-        username: 'chennai_coders',
-        name: 'Chennai Devs Club',
-        profilePictureUrl: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80',
-        status: 'FOLLOWING',
-        firstObserved: '2026-03-25T13:40:00Z',
-        lastActive: new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString(),
-        detectionStatus: 'ACTIVE',
-    },
-];
 export async function getFollowersAndFollowing(userId) {
-    const health = await getInstagramConnectionHealth(userId);
-    let followersCount = 1420;
-    let followingCount = 485;
-    if (supabaseAdmin && health.accountId) {
-        const { data } = await supabaseAdmin
-            .from('instagram_accounts')
-            .select('followers_count, follows_count')
-            .eq('ig_account_id', health.accountId)
-            .maybeSingle();
-        if (data?.followers_count) {
-            followersCount = data.followers_count;
+    const { token, accountId } = await getIgCredentials(userId);
+    let followersCount = 0;
+    let followingCount = 0;
+    if (token && accountId) {
+        try {
+            const res = await fetch(`${META_BASE_URL}/${encodeURIComponent(accountId)}?fields=followers_count,follows_count&access_token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(8000) }).catch(() => null);
+            if (res?.ok) {
+                const json = (await res.json().catch(() => ({})));
+                if (typeof json.followers_count === 'number')
+                    followersCount = json.followers_count;
+                if (typeof json.follows_count === 'number')
+                    followingCount = json.follows_count;
+            }
         }
-        if (data?.follows_count) {
-            followingCount = data.follows_count;
+        catch (err) {
+            logger.warn('Failed to fetch followers_count/follows_count from Meta Graph API:', err);
         }
     }
-    // Load stored community roster or initialize
-    const roster = [...DEFAULT_COMMUNITY_ROSTER];
-    const followers = roster.filter((u) => u.status === 'FOLLOWER' || u.status === 'MUTUAL');
-    const following = roster.filter((u) => u.status === 'FOLLOWING' || u.status === 'MUTUAL');
-    const mutualCount = roster.filter((u) => u.status === 'MUTUAL').length;
+    let followers = [];
+    let following = [];
     let recentEvents = [];
     if (supabaseAdmin) {
+        if (!followersCount && accountId) {
+            const { data: acc } = await supabaseAdmin
+                .from('instagram_accounts')
+                .select('followers_count')
+                .eq('ig_account_id', accountId)
+                .maybeSingle();
+            if (typeof acc?.followers_count === 'number')
+                followersCount = acc.followers_count;
+        }
+        const { data: observedRows } = await supabaseAdmin
+            .from('instagram_followers')
+            .select('*')
+            .order('last_observed_at', { ascending: false })
+            .limit(100);
+        if (Array.isArray(observedRows) && observedRows.length > 0) {
+            const mapped = observedRows.map((row) => ({
+                id: row.ig_scoped_id || row.id,
+                username: row.username || 'unknown',
+                name: row.name || undefined,
+                profilePictureUrl: row.profile_picture_url || undefined,
+                status: (row.relationship_status || 'FOLLOWER'),
+                firstObserved: row.first_observed_at || row.created_at || new Date().toISOString(),
+                lastActive: row.last_observed_at || row.updated_at || new Date().toISOString(),
+                detectionStatus: (row.detection_status || 'ACTIVE'),
+            }));
+            followers = mapped.filter((u) => u.status === 'FOLLOWER' || u.status === 'MUTUAL');
+            following = mapped.filter((u) => u.status === 'FOLLOWING' || u.status === 'MUTUAL');
+        }
         const { data: logs } = await supabaseAdmin
             .from('instagram_activity_logs')
             .select('*')
@@ -443,34 +348,7 @@ export async function getFollowersAndFollowing(userId) {
             }));
         }
     }
-    if (recentEvents.length === 0) {
-        recentEvents = [
-            {
-                type: 'NEW_FOLLOWER',
-                username: 'tamil_tech_creators',
-                summary: 'Started following @hari.ii_14 via tech Reel recommendation',
-                timestamp: 'Just now',
-            },
-            {
-                type: 'MUTUAL_FOLLOW',
-                username: '_.raghul._.15',
-                summary: 'Mutual VIP contact connected and messaging active',
-                timestamp: '1 hour ago',
-            },
-            {
-                type: 'ENGAGEMENT',
-                username: 'ai_builds_daily',
-                summary: 'Tagged @hari.ii_14 on Reel & shared DM photo for analysis',
-                timestamp: 'Yesterday',
-            },
-            {
-                type: 'UNFOLLOW_ALERT',
-                username: 'inactive_bot_account',
-                summary: 'Account no longer observed in latest permitted snapshot (Uncertain)',
-                timestamp: '3 days ago',
-            },
-        ];
-    }
+    const mutualCount = followers.filter((u) => u.status === 'MUTUAL').length;
     return {
         followersCount,
         followingCount,
@@ -478,7 +356,7 @@ export async function getFollowersAndFollowing(userId) {
         followers,
         following,
         recentEvents,
-        uncertainUnfollowsNote: 'Meta Graph API does not expose a full unrestricted follower dump. Missing-account unfollow alerts are generated by comparing permitted webhook snapshots and labeled "Uncertain" to comply with Meta privacy policy.',
+        uncertainUnfollowsNote: 'Meta Graph API provides live follower/following counts but does not expose a full follower/following username list. Only real accounts observed via permitted webhooks/snapshots are listed here; missing-account unfollow alerts are labeled "Uncertain".',
     };
 }
 export async function getFollowerMonitorSummary(userId) {

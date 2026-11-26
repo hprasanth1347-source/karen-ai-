@@ -141,12 +141,18 @@ export async function loadUserSetting<T>(key: string): Promise<T | null> {
   }
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function saveGoogleTokensToDb(
   tokens: StoredGoogleTokens,
   explicitUserId?: string
 ): Promise<void> {
-  const userId = explicitUserId || (await getOwnerUserId());
-  if (!userId) return;
+  const validExplicit = explicitUserId && UUID_RE.test(explicitUserId) ? explicitUserId : undefined;
+  const userId = validExplicit || (await getOwnerUserId());
+  if (!userId) {
+    logger.warn('saveGoogleTokensToDb: no valid owner userId available');
+    return;
+  }
   await ensureProfileRow(userId);
 
   // Never overwrite an existing refreshToken with an empty one
@@ -159,7 +165,7 @@ export async function saveGoogleTokensToDb(
   }
 
   const encrypted = encryptJson(finalTokens);
-  await supabaseAdmin.from('provider_connections').upsert(
+  const { error: upsertErr } = await supabaseAdmin.from('provider_connections').upsert(
     {
       user_id: userId,
       provider: 'google',
@@ -177,6 +183,10 @@ export async function saveGoogleTokensToDb(
     },
     { onConflict: 'user_id,provider' }
   );
+  if (upsertErr) {
+    logger.error('saveGoogleTokensToDb upsert failed', { userId, upsertErr });
+    throw new Error(`Failed to persist Google tokens: ${upsertErr.message}`);
+  }
 }
 
 export async function loadGoogleTokensWithStatus(
@@ -184,13 +194,29 @@ export async function loadGoogleTokensWithStatus(
 ): Promise<{ tokens: StoredGoogleTokens | null; status: ConnectionStatus }> {
   try {
     const userId = explicitUserId || (await getOwnerUserId());
-    if (!userId) return { tokens: null, status: 'disconnected' };
-    const { data } = await supabaseAdmin
-      .from('provider_connections')
-      .select('config, status')
-      .eq('user_id', userId)
-      .eq('provider', 'google')
-      .maybeSingle();
+    let data: { config: unknown; status: string } | null = null;
+
+    if (userId) {
+      const res = await supabaseAdmin
+        .from('provider_connections')
+        .select('config, status')
+        .eq('user_id', userId)
+        .eq('provider', 'google')
+        .maybeSingle();
+      data = res.data;
+    }
+
+    // Single-owner fallback: if userId didn't match (e.g. callback vs auth token userId), load latest active Google row
+    if (!data) {
+      const fallback = await supabaseAdmin
+        .from('provider_connections')
+        .select('config, status')
+        .eq('provider', 'google')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      data = fallback.data;
+    }
 
     if (!data || data.status === 'inactive') {
       return { tokens: null, status: 'disconnected' };

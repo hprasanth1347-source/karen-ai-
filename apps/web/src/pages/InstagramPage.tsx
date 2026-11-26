@@ -146,18 +146,7 @@ export const InstagramPage: React.FC = () => {
   const [voiceCommand, setVoiceCommand] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [processingVoice, setProcessingVoice] = useState(false);
-  const [voiceLogs, setVoiceLogs] = useState<VoiceLogItem[]>([
-    {
-      id: 'log-1',
-      command: 'Send msg to Raghul: Vanakkam da machan',
-      reply: 'Message sent to @_.raghul._.15 thalaiva: "Vanakkam da machan"',
-      recipient: '_.raghul._.15',
-      provider: 'groq',
-      model: 'qwen/qwen3.8-27b',
-      success: true,
-      time: '12:04 PM',
-    },
-  ]);
+  const [voiceLogs, setVoiceLogs] = useState<VoiceLogItem[]>([]);
 
   // Direct DM drafting & sending
   const [drafting, setDrafting] = useState(false);

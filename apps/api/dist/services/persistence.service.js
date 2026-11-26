@@ -116,10 +116,14 @@ export async function loadUserSetting(key) {
         return null;
     }
 }
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function saveGoogleTokensToDb(tokens, explicitUserId) {
-    const userId = explicitUserId || (await getOwnerUserId());
-    if (!userId)
+    const validExplicit = explicitUserId && UUID_RE.test(explicitUserId) ? explicitUserId : undefined;
+    const userId = validExplicit || (await getOwnerUserId());
+    if (!userId) {
+        logger.warn('saveGoogleTokensToDb: no valid owner userId available');
         return;
+    }
     await ensureProfileRow(userId);
     // Never overwrite an existing refreshToken with an empty one
     let finalTokens = tokens;
@@ -130,7 +134,7 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
         }
     }
     const encrypted = encryptJson(finalTokens);
-    await supabaseAdmin.from('provider_connections').upsert({
+    const { error: upsertErr } = await supabaseAdmin.from('provider_connections').upsert({
         user_id: userId,
         provider: 'google',
         status: 'active',
@@ -145,18 +149,35 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
         last_sync_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id,provider' });
+    if (upsertErr) {
+        logger.error('saveGoogleTokensToDb upsert failed', { userId, upsertErr });
+        throw new Error(`Failed to persist Google tokens: ${upsertErr.message}`);
+    }
 }
 export async function loadGoogleTokensWithStatus(explicitUserId) {
     try {
         const userId = explicitUserId || (await getOwnerUserId());
-        if (!userId)
-            return { tokens: null, status: 'disconnected' };
-        const { data } = await supabaseAdmin
-            .from('provider_connections')
-            .select('config, status')
-            .eq('user_id', userId)
-            .eq('provider', 'google')
-            .maybeSingle();
+        let data = null;
+        if (userId) {
+            const res = await supabaseAdmin
+                .from('provider_connections')
+                .select('config, status')
+                .eq('user_id', userId)
+                .eq('provider', 'google')
+                .maybeSingle();
+            data = res.data;
+        }
+        // Single-owner fallback: if userId didn't match (e.g. callback vs auth token userId), load latest active Google row
+        if (!data) {
+            const fallback = await supabaseAdmin
+                .from('provider_connections')
+                .select('config, status')
+                .eq('provider', 'google')
+                .order('updated_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            data = fallback.data;
+        }
         if (!data || data.status === 'inactive') {
             return { tokens: null, status: 'disconnected' };
         }
