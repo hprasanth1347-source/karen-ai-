@@ -29,7 +29,12 @@ export const OverviewPage: React.FC = () => {
     fetch('/api/health')
       .then((res) => res.json())
       .then((data) => setHealthStatus(data))
-      .catch(() => setHealthStatus({ ok: false }));
+      .catch(() => {
+        fetch('/api/v1/health')
+          .then((res) => res.json())
+          .then((data) => setHealthStatus(data))
+          .catch(() => setHealthStatus({ ok: false }));
+      });
   }, []);
 
   const stats = [

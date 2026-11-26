@@ -39,13 +39,23 @@ import type { Request, Response } from 'express';
 import app from '../apps/api/src/app.js';
 
 export default function handler(req: Request, res: Response): void {
-  const url = new URL(req.url ?? '/', 'http://localhost');
-  const originalPath = url.searchParams.get('__path');
+  try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const originalPath = url.searchParams.get('__path');
 
-  if (originalPath) {
-    url.searchParams.delete('__path');
-    req.url = `${originalPath}${url.search}`;
+    if (originalPath) {
+      url.searchParams.delete('__path');
+      req.url = `${originalPath}${url.search}`;
+    }
+
+    app(req, res);
+  } catch (err: unknown) {
+    console.error('[serverless-handler] Unhandled function error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Server function error',
+      });
+    }
   }
-
-  app(req, res);
 }

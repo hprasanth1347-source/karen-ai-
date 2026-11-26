@@ -54,7 +54,19 @@ const helmetMiddleware = (helmet as unknown as () => express.RequestHandler)();
 app.use(helmetMiddleware);
 app.use(
   cors({
-    origin: config.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()),
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const allowed = config.ALLOWED_ORIGINS.split(',').map((o) => o.trim());
+      if (
+        allowed.includes(origin) ||
+        origin.endsWith('.vercel.app') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
   })
 );
