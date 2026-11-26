@@ -163,7 +163,10 @@ async function getValidAccessToken(req) {
         refreshMutexes.delete(userId);
     });
     refreshMutexes.set(userId, refreshPromise);
-    return refreshPromise;
+    const refreshedToken = await refreshPromise;
+    if (refreshedToken)
+        return refreshedToken;
+    return tokens.expiresAt > Date.now() ? tokens.accessToken : null;
 }
 export { getValidAccessToken as getValidGoogleAccessToken };
 export async function hasDriveFileScope(userId) {

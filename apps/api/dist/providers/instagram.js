@@ -1,7 +1,20 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateAIReply } from '../services/ai.service.js';
+import { loadInstagramTokensWithStatus } from '../services/persistence.service.js';
 const META_BASE_URL = `https://graph.facebook.com/${config.META_GRAPH_API_VERSION || 'v21.0'}`;
+async function resolveIgAuth() {
+    let token = config.INSTAGRAM_ACCESS_TOKEN || config.META_PAGE_ACCESS_TOKEN || '';
+    let accountId = config.INSTAGRAM_ACCOUNT_ID || '';
+    if (!token || !accountId) {
+        const stored = await loadInstagramTokensWithStatus().catch(() => ({ tokens: null, status: 'disconnected' }));
+        if (stored.tokens) {
+            token = token || stored.tokens.accessToken || '';
+            accountId = accountId || stored.tokens.accountId || '';
+        }
+    }
+    return { token, accountId };
+}
 let conversationsCache = null;
 let profileCache = null;
 let mediaCache = null;
@@ -135,19 +148,35 @@ export async function getInstagramConversations() {
     if (conversationsCache && conversationsCache.expiresAt > Date.now()) {
         return conversationsCache.data;
     }
-    const token = config.INSTAGRAM_ACCESS_TOKEN;
-    const accountId = config.INSTAGRAM_ACCOUNT_ID || '';
+    const { token, accountId } = await resolveIgAuth();
     const ownerUsername = config.INSTAGRAM_USERNAME || '';
-    if (!token) {
+    if (!token || !accountId) {
         throw new Error('Instagram is not connected. Add a server-side Instagram access token first.');
     }
     try {
-        // Single-call nested field expansion with attachments & shares
-        const url = `${META_BASE_URL}/${accountId}/conversations?platform=instagram&fields=id,updated_time,participants,messages.limit(20){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url,type},shares}&limit=10&access_token=${token}`;
-        const res = await metaFetch(url);
-        if (!res.ok) {
-            const errorBody = (await res.json().catch(() => ({})));
-            throw new Error(errorBody.error?.message || `Instagram conversation request failed (${res.status}).`);
+        // Try full fields (with attachments & shares), then gracefully fall back if Meta rejects subfields
+        const fieldVariants = [
+            'id,updated_time,participants,messages.limit(15){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url},shares}',
+            'id,updated_time,participants,messages.limit(15){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url}}',
+            'id,updated_time,participants,messages.limit(10){id,created_time,from,to,message}',
+        ];
+        let res = null;
+        let lastErrBody = {};
+        for (const fields of fieldVariants) {
+            const url = `${META_BASE_URL}/${accountId}/conversations?platform=instagram&fields=${fields}&limit=10&access_token=${encodeURIComponent(token)}`;
+            res = await metaFetch(url);
+            if (res.ok)
+                break;
+            lastErrBody = (await res.json().catch(() => ({})));
+            if (res.status !== 400)
+                break;
+            logger.warn('Retrying Instagram conversations without unsupported message subfields', {
+                status: res.status,
+                error: lastErrBody.error?.message,
+            });
+        }
+        if (!res || !res.ok) {
+            throw new Error(lastErrBody.error?.message || `Instagram conversation request failed (${res?.status || 500}).`);
         }
         const json = await res.json();
         const rawThreads = Array.isArray(json.data) ? json.data : [];
@@ -195,12 +224,24 @@ export async function getInstagramConversations() {
     }
 }
 export async function getThreadDetails(threadId) {
-    const token = config.INSTAGRAM_ACCESS_TOKEN;
+    const { token } = await resolveIgAuth();
     if (!token)
         return [];
     try {
-        const res = await metaFetch(`${META_BASE_URL}/${threadId}?fields=messages.limit(30){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url,type},shares}&access_token=${token}`);
-        if (!res.ok)
+        const fieldVariants = [
+            'messages.limit(30){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url},shares}',
+            'messages.limit(30){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url}}',
+            'messages.limit(20){id,created_time,from,to,message}',
+        ];
+        let res = null;
+        for (const fields of fieldVariants) {
+            res = await metaFetch(`${META_BASE_URL}/${threadId}?fields=${fields}&access_token=${encodeURIComponent(token)}`);
+            if (res.ok)
+                break;
+            if (res.status !== 400)
+                break;
+        }
+        if (!res || !res.ok)
             return [];
         const json = await res.json();
         const rawList = json.messages?.data || [];
@@ -219,9 +260,8 @@ export async function getThreadDetails(threadId) {
     }
 }
 export async function sendInstagramMessage(recipientId, text) {
-    const token = config.INSTAGRAM_ACCESS_TOKEN;
-    const accountId = config.INSTAGRAM_ACCOUNT_ID || '';
-    if (!token) {
+    const { token, accountId } = await resolveIgAuth();
+    if (!token || !accountId) {
         return { success: false, error: 'Instagram is not connected. Add a valid server-side access token first.' };
     }
     try {

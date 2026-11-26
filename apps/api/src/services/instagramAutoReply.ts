@@ -28,6 +28,7 @@ function getThanglishFallback(
 
 export interface AutoReplyLog {
   id: string;
+  incomingMessageId?: string;
   senderId: string;
   senderUsername: string;
   incomingText: string;
@@ -92,8 +93,9 @@ class InstagramAutoReplyService {
     if (Array.isArray(savedLogs) && savedLogs.length > 0) {
       this.logs = savedLogs.slice(0, 30);
       for (const l of this.logs) {
-        if (l.status === 'SENT' && l.id) {
-          this.repliedMessageIds.add(l.id);
+        if (l.status === 'SENT') {
+          if (l.incomingMessageId) this.repliedMessageIds.add(l.incomingMessageId);
+          if (l.id) this.repliedMessageIds.add(l.id);
         }
       }
     }
@@ -321,6 +323,7 @@ Thanglish Style Guide (CRITICAL):
 
     const logEntry: AutoReplyLog = {
       id: `reply-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      incomingMessageId: messageId,
       senderId,
       senderUsername,
       incomingText: messageText,
@@ -352,8 +355,8 @@ Thanglish Style Guide (CRITICAL):
    * Scans latest incoming conversation threads to catch unreplied messages
    */
   public async scanAndAutoReply(): Promise<number> {
+    await this.ensureHydrated();
     if (!this.config.enabled) return 0;
-    if (!config.INSTAGRAM_ACCESS_TOKEN) return 0;
     if (this.scanInProgress) return 0;
 
     // Check if in rate limit backoff cooldown
@@ -386,11 +389,22 @@ Thanglish Style Guide (CRITICAL):
           latestMsg.from.id !== config.INSTAGRAM_ACCOUNT_ID
         ) {
           if (!this.repliedMessageIds.has(latestMsg.id)) {
+            const mediaMeta =
+              Array.isArray(latestMsg.attachments) && latestMsg.attachments.length > 0
+                ? {
+                    attachments: latestMsg.attachments.map((att) => ({
+                      type: att.type,
+                      payload: { url: att.url, title: att.title },
+                    })),
+                  }
+                : undefined;
             const res = await this.handleIncomingMessage(
               t.participant.id,
               t.participant.username,
               latestMsg.id,
-              latestMsg.message
+              latestMsg.message,
+              false,
+              mediaMeta
             );
             if (res.autoReplied) {
               repliesCount++;

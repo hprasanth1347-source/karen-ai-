@@ -88,7 +88,13 @@ api.interceptors.response.use(
       error.response.data.error = msg || (code ? `Error (${code})` : 'Request failed.');
     }
     const status = error?.response?.status;
-    if (status === 401 && typeof window !== 'undefined') {
+    const errorCode = (error?.response?.data as { code?: string } | undefined)?.code;
+    const isProviderNotConnected =
+      errorCode === 'GMAIL_NOT_CONNECTED' ||
+      errorCode === 'DRIVE_NOT_CONNECTED' ||
+      errorCode === 'GOOGLE_NOT_CONNECTED';
+
+    if (status === 401 && !isProviderNotConnected && typeof window !== 'undefined') {
       getCache.clear();
       try {
         window.sessionStorage.removeItem('karen_auth_session');

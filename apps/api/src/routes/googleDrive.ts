@@ -211,7 +211,9 @@ async function getValidAccessToken(req?: Request): Promise<string | null> {
     refreshMutexes.delete(userId);
   });
   refreshMutexes.set(userId, refreshPromise);
-  return refreshPromise;
+  const refreshedToken = await refreshPromise;
+  if (refreshedToken) return refreshedToken;
+  return tokens.expiresAt > Date.now() ? tokens.accessToken : null;
 }
 
 export { getValidAccessToken as getValidGoogleAccessToken };

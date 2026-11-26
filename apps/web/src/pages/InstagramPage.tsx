@@ -123,11 +123,22 @@ function getThreadRecipient(
 
 async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
-  if (supabase) {
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    if (token) headers.set('Authorization', `Bearer ${token}`);
+  let token: string | undefined;
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = window.sessionStorage.getItem('karen_auth_session');
+      if (raw) {
+        token = (JSON.parse(raw) as { accessToken?: string }).accessToken;
+      }
+    } catch {
+      // Ignore storage errors
+    }
   }
+  if (!token && supabase) {
+    const { data } = await supabase.auth.getSession();
+    token = data.session?.access_token;
+  }
+  if (token) headers.set('Authorization', `Bearer ${token}`);
   return fetch(input, { ...init, headers });
 }
 
@@ -209,6 +220,31 @@ export const InstagramPage: React.FC = () => {
       active = false;
     };
   }, [selectedThread?.id]);
+
+  // Live DM & Auto-DM background refresh every 15s while page is open
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        const tRes = await authenticatedFetch('/api/v1/instagram/conversations');
+        if (tRes.ok) {
+          const tData = await tRes.json();
+          if (Array.isArray(tData.data)) setThreads(tData.data);
+        }
+        if (autoReplyConfig.enabled) {
+          const pollRes = await authenticatedFetch('/api/v1/instagram/auto-reply/poll', { method: 'POST' });
+          if (pollRes.ok) {
+            const pollJson = await pollRes.json();
+            if (Array.isArray(pollJson.data?.logs)) {
+              setAutoReplyLogs(pollJson.data.logs);
+            }
+          }
+        }
+      } catch {
+        // Ignore transient poll errors
+      }
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [autoReplyConfig.enabled]);
 
   // Load live data from backend
   const loadData = async () => {
