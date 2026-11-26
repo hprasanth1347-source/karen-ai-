@@ -1,11 +1,13 @@
 node_modules
-dist
+/dist
+apps/web/dist
+apps/worker/dist
+packages/shared/dist
 .env
 .env.*
 !.env.example
 .DS_Store
 coverage
-dist
 build
 *.log
 *.pem

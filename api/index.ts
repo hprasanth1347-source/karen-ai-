@@ -36,9 +36,25 @@ if (typeof g.Path2D === 'undefined') {
 }
 
 import type { Request, Response } from 'express';
-import app from '../apps/api/src/app.js';
 
-export default function handler(req: Request, res: Response): void {
+// Cache the Express app instance across warm serverless invocations
+let appInstance: any = null;
+
+async function getApp() {
+  if (appInstance) return appInstance;
+  try {
+    const mod = await import('../apps/api/dist/app.js');
+    appInstance = mod.default || mod;
+    return appInstance;
+  } catch (err) {
+    console.warn('[serverless] Failed to load dist/app.js, trying src/app.js:', err);
+    const mod = await import('../apps/api/src/app.js');
+    appInstance = mod.default || mod;
+    return appInstance;
+  }
+}
+
+export default async function handler(req: Request, res: Response): Promise<void> {
   try {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const originalPath = url.searchParams.get('__path');
@@ -48,6 +64,7 @@ export default function handler(req: Request, res: Response): void {
       req.url = `${originalPath}${url.search}`;
     }
 
+    const app = await getApp();
     app(req, res);
   } catch (err: unknown) {
     console.error('[serverless-handler] Unhandled function error:', err);

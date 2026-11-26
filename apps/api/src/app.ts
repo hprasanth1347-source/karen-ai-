@@ -25,17 +25,17 @@ if (typeof g.ImageData === 'undefined') {
 }
 if (typeof g.Path2D === 'undefined') {
   g.Path2D = class Path2D {
-    addPath() {}
-    closePath() {}
-    moveTo() {}
-    lineTo() {}
-    bezierCurveTo() {}
-    quadraticCurveTo() {}
-    rect() {}
+    addPath() { }
+    closePath() { }
+    moveTo() { }
+    lineTo() { }
+    bezierCurveTo() { }
+    quadraticCurveTo() { }
+    rect() { }
   };
 }
 
-import type {} from './types/express.js';
+import type { } from './types/express.js';
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
