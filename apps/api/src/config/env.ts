@@ -75,6 +75,29 @@ const envSchema = z.object({
   GOOGLE_SEARCH_API_KEY: z.string().optional().default(''),
   GOOGLE_SEARCH_ENGINE_ID: z.string().optional().default(''),
 
+  // Google Classroom
+  GOOGLE_CLASSROOM_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  GOOGLE_CLASSROOM_SCOPES: z
+    .string()
+    .default(
+      [
+        'https://www.googleapis.com/auth/classroom.courses.readonly',
+        'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+        'https://www.googleapis.com/auth/classroom.announcements.readonly',
+        'https://www.googleapis.com/auth/classroom.rosters.readonly',
+      ].join(' ')
+    ),
+  GOOGLE_TOKEN_ENCRYPTION_KEY: z.string().optional().default(''),
+  GOOGLE_CLASSROOM_SYNC_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  GOOGLE_CLASSROOM_SYNC_INTERVAL: z.coerce.number().int().positive().default(900000),
+  GOOGLE_CLASSROOM_TIMEZONE: z.string().default('Asia/Kolkata'),
+
   // Security
   JWT_SECRET: z.string().optional(),
   ENCRYPTION_KEY: z.string().optional(),

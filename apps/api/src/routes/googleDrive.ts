@@ -54,6 +54,8 @@ function isGoogleConfigured(): boolean {
   return Boolean(config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET);
 }
 
+export { isGoogleConfigured as isGoogleOAuthConfigured };
+
 function getRedirectUri(req: { headers: Record<string, string | string[] | undefined>; protocol?: string }): string {
   if (
     config.GOOGLE_REDIRECT_URI &&
@@ -69,22 +71,35 @@ function getRedirectUri(req: { headers: Record<string, string | string[] | undef
   return config.GOOGLE_REDIRECT_URI;
 }
 
-function buildGoogleAuthUrl(redirectUri: string, state: 'drive' | 'gmail' = 'drive'): string {
+export { getRedirectUri as getGoogleRedirectUri };
+
+function buildGoogleAuthUrl(
+  redirectUri: string,
+  state: 'drive' | 'gmail' | 'classroom' = 'drive'
+): string {
+  const scopes = [
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.send',
+  ];
+  if (config.GOOGLE_CLASSROOM_ENABLED || state === 'classroom') {
+    for (const s of config.GOOGLE_CLASSROOM_SCOPES.split(/[\s,]+/).filter(Boolean)) {
+      if (!scopes.includes(s)) scopes.push(s);
+    }
+  }
   const params = new URLSearchParams({
     client_id: config.GOOGLE_CLIENT_ID,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: [
-      'https://www.googleapis.com/auth/drive.readonly',
-      'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/gmail.send',
-    ].join(' '),
+    scope: scopes.join(' '),
     access_type: 'offline',
     prompt: 'consent',
     state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
+
+export { buildGoogleAuthUrl };
 
 async function getValidAccessToken(req?: Request): Promise<string | null> {
   await hydrateGoogleTokensFromRequest(req);
@@ -116,13 +131,34 @@ async function getValidAccessToken(req?: Request): Promise<string | null> {
     refreshToken: json.refresh_token || driveTokens.refreshToken,
     expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
   };
+  await saveGoogleTokensToDb(driveTokens).catch(() => {});
   return driveTokens.accessToken;
+}
+
+export { getValidAccessToken as getValidGoogleAccessToken };
+
+export async function disconnectGoogleAccount(): Promise<void> {
+  await hydrateGoogleTokensFromRequest();
+  const tokenToRevoke = driveTokens?.refreshToken || driveTokens?.accessToken;
+  if (tokenToRevoke) {
+    await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(tokenToRevoke)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    }).catch(() => {});
+  }
+  driveTokens = null;
+  await clearGoogleTokensFromDb();
 }
 
 router.get('/auth/google/callback', async (req, res) => {
   const code = typeof req.query.code === 'string' ? req.query.code : '';
   const oauthError = typeof req.query.error === 'string' ? req.query.error : '';
-  const targetPage = req.query.state === 'gmail' ? '/gmail' : '/drive';
+  const targetPage =
+    req.query.state === 'gmail'
+      ? '/gmail'
+      : req.query.state === 'classroom'
+        ? '/classroom'
+        : '/drive';
   if (oauthError || !code) {
     return res.redirect(`${targetPage}?error=${encodeURIComponent(oauthError || 'missing_code')}`);
   }

@@ -67,6 +67,7 @@ import SettingsPage from './pages/SettingsPage';
 import AuthPage from './pages/AuthPage';
 import NotFoundPage from './pages/NotFoundPage';
 import LoveModePage from './pages/LoveModePage';
+import ClassroomPage from './pages/ClassroomPage';
 
 // ─── Auth Guard ──────────────────────────────────────────────────────────────
 
@@ -126,6 +127,7 @@ export function App() {
                       <Route path="/activity" element={<ActivityPage />} />
                       <Route path="/settings" element={<SettingsPage />} />
                       <Route path="/love-mode" element={<LoveModePage />} />
+                      <Route path="/classroom" element={<ClassroomPage />} />
                       <Route path="*" element={<NotFoundPage />} />
                     </Routes>
                   </AppLayout>

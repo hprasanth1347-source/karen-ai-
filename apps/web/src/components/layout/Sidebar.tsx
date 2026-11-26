@@ -23,6 +23,7 @@ import {
   History,
   Settings,
   Heart,
+  GraduationCap,
   X
 } from 'lucide-react';
 
@@ -48,6 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         { path: '/instagram', label: 'Instagram', icon: Instagram },
         { path: '/gmail', label: 'Gmail', icon: Mail },
         { path: '/drive', label: 'Google Drive', icon: HardDrive },
+        { path: '/classroom', label: 'Google Classroom', icon: GraduationCap },
       ],
     },
     {

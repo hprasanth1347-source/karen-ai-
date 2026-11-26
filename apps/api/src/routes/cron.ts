@@ -10,6 +10,7 @@ import {
   runCompanionTick,
   type GreetingSlot,
 } from '../services/dailyCompanion.service.js';
+import { syncClassroomData } from '../services/classroom.service.js';
 import { success, error } from '../utils/response.js';
 
 const router = Router();
@@ -99,6 +100,36 @@ router.post('/cron/greeting/:slot', async (req, res) => {
     return success(res, result);
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Greeting trigger failed', 500);
+  }
+});
+
+router.get('/cron/classroom-sync', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.header('authorization') !== `Bearer ${cronSecret}`) {
+    return error(res, 'Unauthorized cron invocation', 401, 'UNAUTHORIZED');
+  }
+  try {
+    const result = await syncClassroomData();
+    return success(res, {
+      synced: result.synced,
+      notificationsSent: result.notificationsSent,
+      lastSyncedAt: result.cache.lastSyncedAt,
+    });
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Classroom sync failed', 500);
+  }
+});
+
+router.post('/cron/classroom-sync', async (_req, res) => {
+  try {
+    const result = await syncClassroomData();
+    return success(res, {
+      synced: result.synced,
+      notificationsSent: result.notificationsSent,
+      lastSyncedAt: result.cache.lastSyncedAt,
+    });
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Classroom sync failed', 500);
   }
 });
 

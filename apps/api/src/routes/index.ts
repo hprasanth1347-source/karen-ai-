@@ -14,6 +14,7 @@ import instagramRoutes from './instagram.js';
 import skillRoutes from './skills.js';
 import telegramRoutes from './telegram.js';
 import loveModeRoutes from './loveMode.js';
+import classroomRoutes from './classroom.js';
 
 const router = Router();
 
@@ -33,6 +34,7 @@ router.use('/v1/instagram', instagramRoutes);
 router.use('/v1', skillRoutes);
 router.use('/v1', telegramRoutes);
 router.use('/v1', loveModeRoutes);
+router.use('/v1', classroomRoutes);
 
 // Top-level aliases
 router.use('/', healthRoutes);

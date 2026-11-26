@@ -21,7 +21,19 @@ import {
   snoozeNotification,
   type NotificationSource,
 } from '../services/notificationEngine.service.js';
-import { getGoogleContextForPrompt } from '../routes/googleDrive.js';
+import { getGoogleContextForPrompt, buildGoogleAuthUrl, disconnectGoogleAccount } from '../routes/googleDrive.js';
+import {
+  draftClassroomAssignment,
+  explainClassroomAssignment,
+  getClassroomCache,
+  getClassroomOverview,
+  getClassroomSettings,
+  getGradesOverview,
+  listClassroomAssignments,
+  runLastMinuteExamPrep,
+  snoozeAssignmentReminder,
+  syncClassroomData,
+} from '../services/classroom.service.js';
 import { extractTextFromBuffer } from '../utils/docParser.js';
 import { logger } from '../config/logger.js';
 import { config } from '../config/env.js';
@@ -417,6 +429,156 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       return `Seri da ❤️ Love Mode off. But whenever you need to talk, I'm here. Take care of yourself. 💙`;
     }
 
+    case '/classroom': {
+      const ov = await getClassroomOverview();
+      if (!ov.connected) {
+        return `📚 *Google Classroom*\n\nNot connected yet.\nUse /connectclassroom or open ${config.APP_URL}/classroom to connect your Google account.`;
+      }
+      return [
+        `📚 *Karen Google Classroom*`,
+        ``,
+        `📖 Courses: ${ov.stats.activeCourses} active (${ov.stats.totalCourses} total)`,
+        `📝 Pending: ${ov.stats.pendingAssignments}`,
+        `⚠️ Overdue: ${ov.stats.overdueAssignments}`,
+        `✅ Submitted: ${ov.stats.submittedAssignments} | 🎓 Graded: ${ov.stats.gradedAssignments}`,
+        `📅 Upcoming Exams: ${ov.stats.upcomingExams}`,
+        `🕒 Last Sync: ${ov.lastSyncedAt ? new Date(ov.lastSyncedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Never'}`,
+        ``,
+        `Commands: /classes, /assignments, /pending, /overdue, /deadlines, /announcements, /grades, /exams, /examprep, /explain`,
+      ].join('\n');
+    }
+
+    case '/classes': {
+      const cache = await getClassroomCache();
+      if (!cache.courses.length) {
+        await syncClassroomData().catch(() => {});
+      }
+      const updated = await getClassroomCache();
+      if (!updated.courses.length) {
+        return '📚 No Google Classroom courses found yet. Use /connectclassroom if not connected.';
+      }
+      return `📚 *My Classroom Courses (${updated.courses.length})*\n\n${updated.courses
+        .map(
+          (c, i) =>
+            `${i + 1}. *${c.name}*${c.section ? ` (${c.section})` : ''} [${c.courseState}]${c.teacherNames[0] ? `\n   👤 ${c.teacherNames[0]}` : ''}`
+        )
+        .join('\n\n')}`;
+    }
+
+    case '/assignments':
+    case '/pending':
+    case '/overdue':
+    case '/deadlines': {
+      const cat =
+        cmd === '/pending' ? 'pending' : cmd === '/overdue' ? 'overdue' : 'all';
+      const list = await listClassroomAssignments({ category: cat, sortBy: 'deadline' });
+      const filtered =
+        cmd === '/deadlines'
+          ? list.filter((a) => a.dueIso && a.category !== 'submitted' && a.category !== 'graded')
+          : list;
+      const top = filtered.slice(0, 10);
+      if (!top.length) {
+        return cmd === '/overdue'
+          ? '🎉 No overdue assignments!'
+          : '📝 No matching assignments found. Try /classroom to check connection.';
+      }
+      return `📝 *${cmd.slice(1).toUpperCase()} (${filtered.length})*\n\n${top
+        .map(
+          (a, i) =>
+            `${i + 1}. *${a.title}*\n   📘 ${a.courseName}\n   ⏰ Due: ${a.dueIstDisplay} | Status: ${a.category.toUpperCase()}`
+        )
+        .join('\n\n')}`;
+    }
+
+    case '/announcements': {
+      const cache = await getClassroomCache();
+      const top = cache.announcements.slice(0, 6);
+      if (!top.length) return '📢 No recent Classroom announcements found.';
+      return `📢 *Recent Announcements*\n\n${top
+        .map(
+          (a, i) =>
+            `${i + 1}. *${a.courseName}*\n${a.text.slice(0, 220)}${a.text.length > 220 ? '...' : ''}`
+        )
+        .join('\n\n')}`;
+    }
+
+    case '/grades': {
+      const grades = await getGradesOverview();
+      if (!grades.length) return '🎓 No Classroom grade/submission records cached yet.';
+      return `🎓 *Grades & Submissions Overview*\n\n${grades
+        .map((g) => {
+          const scoreLine =
+            g.gradedCount > 0
+              ? `Score: ${g.earnedPoints}${g.possiblePoints ? ` / ${g.possiblePoints}` : ''}`
+              : 'No graded items yet';
+          return `📘 *${g.courseName}*\n   Graded: ${g.gradedCount} | Ungraded: ${g.ungradedCount} | Pending: ${g.pendingCount}\n   ${scoreLine}`;
+        })
+        .join('\n\n')}`;
+    }
+
+    case '/exams': {
+      const cache = await getClassroomCache();
+      if (!cache.exams.length) {
+        return `📅 No exam dates added yet.\nAdd one on ${config.APP_URL}/classroom or tell me: "Karen, DBMS exam tomorrow"`;
+      }
+      return `📅 *Tracked Exams*\n\n${cache.exams
+        .map(
+          (e, i) =>
+            `${i + 1}. *${e.subject}* — ${e.examDateIso}${e.examTime ? ` (${e.examTime})` : ''}`
+        )
+        .join('\n')}`;
+    }
+
+    case '/examprep': {
+      const subject = args.trim() || 'upcoming exam';
+      const prep = await runLastMinuteExamPrep({
+        subject,
+        hoursAvailable: 5,
+        language: 'english',
+        mode: 'plan',
+      });
+      return `🎯 *Last-Minute Exam Prep: ${prep.subject}*\n\n${prep.plan}`;
+    }
+
+    case '/explain': {
+      if (!args.trim()) {
+        return '⚠️ Usage: /explain <assignment title or subject> (e.g. `/explain DBMS`)';
+      }
+      const isThanglish = /thanglish|tamil/i.test(args);
+      const res = await explainClassroomAssignment(
+        args.replace(/in\s+thanglish/gi, '').trim(),
+        isThanglish ? 'thanglish' : 'english'
+      );
+      return res.explanation;
+    }
+
+    case '/connectclassroom': {
+      if (!config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET) {
+        return '❌ Google OAuth is not configured on the server yet.';
+      }
+      const base = config.APP_URL.replace(/\/$/, '');
+      const url = buildGoogleAuthUrl(`${base}/api/v1/auth/google/callback`, 'classroom');
+      return `🔗 *Connect Google Classroom*\n\nOpen this link to authorize read-only Classroom access:\n${url}`;
+    }
+
+    case '/disconnectclassroom': {
+      await disconnectGoogleAccount();
+      return '🔌 Google Classroom / Google OAuth disconnected and tokens revoked.';
+    }
+
+    case '/classroomsettings': {
+      const s = await getClassroomSettings();
+      return [
+        `⚙️ *Classroom Settings*`,
+        ``,
+        `🔄 Auto Sync: ${s.syncEnabled ? 'ON' : 'OFF'} (${Math.round(s.syncIntervalMs / 60000)}m)`,
+        `🕐 Timezone: ${s.timezone}`,
+        `⏰ Assignment Reminders: 3d(${s.reminders.threeDaysBefore ? '✓' : '✗'}), 1d(${s.reminders.oneDayBefore ? '✓' : '✗'}), 3h(${s.reminders.threeHoursBefore ? '✓' : '✗'}), Overdue(${s.reminders.afterDeadline ? '✓' : '✗'})`,
+        `🎯 Exam Alerts: 1d(${s.reminders.examOneDayBefore ? '✓' : '✗'}), Day(${s.reminders.examDayMorning ? '✓' : '✗'}), 3d(${s.reminders.examThreeDaysBefore ? '✓' : '✗'})`,
+        `🌙 Quiet Hours: ${s.quietHours.enabled ? `${s.quietHours.startHour}:00-${s.quietHours.endHour}:00` : 'OFF'}`,
+      ].join('\n');
+    }
+
     default:
       return `❓ Unknown command: ${cmd}\n\nType /help for all available commands.`;
   }
@@ -538,6 +700,48 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Unknown error';
             reply = `❌ Instagram error: ${msg}`;
+          }
+        }
+        // ── Google Classroom natural language detection ─────────────────────
+        else if (
+          /\b(my\s+assignments?|pending\s+(work|assignments?)|assignment\s+is\s+due|due\s+tomorrow|show\s+my\s+grades|my\s+classes|new\s+announcements?|next\s+exam|exam\s+tomorrow|prepare\s+me\s+for.*exam|start\s+exam\s+prep|i\s+have\s+only\s+\d+\s+hours?|haven'?t\s+studied\s+anything|explain\s+my\s+.*assignment|prepare\s+an?\s+assignment\s+draft)\b/i.test(text)
+        ) {
+          if (/\b(exam\s+tomorrow|prepare\s+me|start\s+exam\s+prep|i\s+have\s+only\s+\d+\s+hours?|haven'?t\s+studied)\b/i.test(text)) {
+            const hoursMatch = text.match(/(\d+(?:\.\d+)?)\s*hours?/i);
+            const hours = hoursMatch ? Number(hoursMatch[1]) : 5;
+            const subjectMatch = text.match(/(?:for|have)\s+([a-z0-9 &_-]{2,40}?)\s+exam/i);
+            const subject = subjectMatch?.[1]?.trim() || text;
+            const prep = await runLastMinuteExamPrep({
+              subject,
+              hoursAvailable: hours,
+              language: /thanglish|tamil/i.test(text) ? 'thanglish' : 'english',
+              mode: 'plan',
+            });
+            reply = `🎯 *Last-Minute Exam Prep (${prep.subject})*\n\n${prep.plan}`;
+          } else if (/\bexplain\b/i.test(text)) {
+            const res = await explainClassroomAssignment(
+              text,
+              /thanglish|tamil/i.test(text) ? 'thanglish' : 'english'
+            );
+            reply = res.explanation;
+          } else if (/\bdraft\b/i.test(text)) {
+            const list = await listClassroomAssignments({ category: 'pending' });
+            if (!list.length) {
+              reply = '📝 No pending assignments found to draft. Sync Classroom first with /classroom.';
+            } else {
+              const drafted = await draftClassroomAssignment(list[0].id, 'md');
+              reply = `📄 *Draft: ${drafted.filename}*\n\n${drafted.draft}`;
+            }
+          } else if (/\bgrades?\b/i.test(text)) {
+            reply = await handleCommand('/grades', '', chatId);
+          } else if (/\bannouncements?\b/i.test(text)) {
+            reply = await handleCommand('/announcements', '', chatId);
+          } else if (/\bnext\s+exam\b/i.test(text)) {
+            reply = await handleCommand('/exams', '', chatId);
+          } else if (/\bpending\b/i.test(text)) {
+            reply = await handleCommand('/pending', '', chatId);
+          } else {
+            reply = await handleCommand('/assignments', '', chatId);
           }
         }
         // ── Love Mode detection ──────────────────────────────────────────────
@@ -663,6 +867,25 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
         callback_query_id: cb.id,
         text: updated ? `Rescheduled to ${tomorrowIso}` : 'Task not found',
       });
+    } else if (action === 'classroom_explain' && arg) {
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'Generating explanation...' });
+      const res = await explainClassroomAssignment(arg, 'english');
+      await sendTelegramMessage(res.explanation, chatId);
+    } else if (action === 'classroom_remind' && arg) {
+      await snoozeAssignmentReminder(arg, 4);
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'Reminder snoozed for 4 hours' });
+    } else if (action === 'classroom_examprep' && arg) {
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'Starting last-minute prep...' });
+      const prep = await runLastMinuteExamPrep({ subject: arg, hoursAvailable: 5, mode: 'plan' });
+      await sendTelegramMessage(`🎯 *Last-Minute Exam Prep: ${prep.subject}*\n\n${prep.plan}`, chatId);
+    } else if (action === 'classroom_topics' && arg) {
+      await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id });
+      const cache = await getClassroomCache();
+      const exam = cache.exams.find((e) => e.id === arg);
+      const msg = exam?.topics?.length
+        ? `📚 *Topics for ${exam.subject}*\n\n${exam.topics.map((t, i) => `${i + 1}. ${t.revised ? '✅' : '⬜'} ${t.title}`).join('\n')}`
+        : '📚 No topics listed yet for this exam.';
+      await sendTelegramMessage(msg, chatId);
     } else {
       await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'OK' });
     }
@@ -809,6 +1032,12 @@ export async function setTelegramCommands(): Promise<void> {
       { command: 'endlove', description: 'Exit Love Mode, back to normal' },
       { command: 'normal', description: 'Switch back to normal mode' },
       { command: 'insta', description: 'Instagram: /insta send raghul hello' },
+      { command: 'classroom', description: 'Google Classroom overview' },
+      { command: 'assignments', description: 'Show Classroom assignments' },
+      { command: 'pending', description: 'Pending Classroom work' },
+      { command: 'grades', description: 'Show Classroom grades' },
+      { command: 'exams', description: 'Tracked exam dates' },
+      { command: 'examprep', description: 'Last-minute exam preparation' },
     ],
   });
 }
