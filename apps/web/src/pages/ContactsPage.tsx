@@ -27,7 +27,7 @@ export const ContactsPage: React.FC = () => {
       setGoogleContacts(res.data?.data ?? []);
       setNeedsReconnect(false);
     } catch (err: any) {
-      if (err?.response?.status === 403) {
+      if (err?.response?.status === 403 || err?.response?.status === 400) {
         setNeedsReconnect(true);
       }
       setError(err?.response?.data?.error || 'Could not load Google Contacts.');

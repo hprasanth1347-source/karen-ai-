@@ -208,18 +208,28 @@ export async function hasDriveFileScope(userId) {
     const scope = tokens.scope;
     return Boolean(scope && scope.includes('drive.file'));
 }
-export async function getGoogleAccessToken(userId) {
+export async function getGoogleAccessToken(userId, req) {
+    if (req) {
+        return getValidAccessToken(req);
+    }
     const { tokens, status } = await loadGoogleTokensWithStatus(userId);
     if (status !== 'connected' || !tokens?.accessToken)
         return null;
     if (tokens.expiresAt && Date.now() >= tokens.expiresAt - 5 * 60 * 1000) {
         const refreshed = await performGoogleTokenRefresh(userId || 'owner', tokens);
-        return refreshed || tokens.accessToken;
+        return refreshed || (tokens.expiresAt > Date.now() ? tokens.accessToken : null);
     }
     return tokens.accessToken;
 }
-export async function getGoogleConnectionStatus(userId) {
+export async function getGoogleConnectionStatus(userId, req) {
     const { status } = await loadGoogleTokensWithStatus(userId);
+    if (status === 'connected')
+        return status;
+    if (req) {
+        const cookieTokens = readGoogleTokensFromCookie(req);
+        if (cookieTokens?.accessToken)
+            return 'connected';
+    }
     return status;
 }
 export async function disconnectGoogleAccount(explicitUserId) {

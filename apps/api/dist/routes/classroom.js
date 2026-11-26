@@ -14,7 +14,7 @@ router.use('/classroom', requireAuth, requireOwner);
 router.get('/classroom/status', async (req, res) => {
     const [overview, googleStatus] = await Promise.all([
         getClassroomOverview(),
-        getGoogleConnectionStatus(req.user?.id),
+        getGoogleConnectionStatus(req.user?.id, req),
     ]);
     return success(res, {
         configured: isGoogleOAuthConfigured(),
@@ -52,7 +52,7 @@ router.get('/classroom/overview', async (req, res) => {
     const [overview, cache, googleStatus] = await Promise.all([
         getClassroomOverview(),
         getClassroomCache(),
-        getGoogleConnectionStatus(req.user?.id),
+        getGoogleConnectionStatus(req.user?.id, req),
     ]);
     return success(res, {
         ...overview,

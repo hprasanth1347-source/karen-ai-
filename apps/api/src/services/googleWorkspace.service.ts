@@ -1,3 +1,4 @@
+import type { Request } from 'express';
 import { getGoogleAccessToken } from '../routes/googleDrive.js';
 
 export interface CalendarEventItem {
@@ -9,12 +10,12 @@ export interface CalendarEventItem {
   htmlLink?: string;
 }
 
-export async function listCalendarEvents(daysAhead = 7, userId?: string): Promise<{
+export async function listCalendarEvents(daysAhead = 7, userId?: string, req?: Request): Promise<{
   ok: boolean;
   events: CalendarEventItem[];
   error?: string;
 }> {
-  const token = await getGoogleAccessToken(userId);
+  const token = await getGoogleAccessToken(userId, req);
   if (!token) return { ok: false, events: [], error: 'Google is not connected.' };
 
   const timeMin = new Date().toISOString();
@@ -56,8 +57,9 @@ export async function createCalendarEvent(input: {
   endIso?: string;
   description?: string;
   userId?: string;
+  req?: Request;
 }): Promise<{ ok: boolean; event?: CalendarEventItem; error?: string }> {
-  const token = await getGoogleAccessToken(input.userId);
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) return { ok: false, error: 'Google is not connected.' };
 
   const startMs = new Date(input.startIso).getTime();
@@ -106,12 +108,12 @@ export interface GoogleTaskItem {
   status: string;
 }
 
-export async function listGoogleTasks(userId?: string): Promise<{
+export async function listGoogleTasks(userId?: string, req?: Request): Promise<{
   ok: boolean;
   tasks: GoogleTaskItem[];
   error?: string;
 }> {
-  const token = await getGoogleAccessToken(userId);
+  const token = await getGoogleAccessToken(userId, req);
   if (!token) return { ok: false, tasks: [], error: 'Google is not connected.' };
 
   const res = await fetch('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=false&maxResults=20', {
@@ -143,8 +145,9 @@ export async function createGoogleTask(input: {
   notes?: string;
   dueIso?: string;
   userId?: string;
+  req?: Request;
 }): Promise<{ ok: boolean; task?: GoogleTaskItem; error?: string }> {
-  const token = await getGoogleAccessToken(input.userId);
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) return { ok: false, error: 'Google is not connected.' };
 
   const res = await fetch('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks', {
@@ -175,8 +178,9 @@ export async function createGoogleSheet(input: {
   headers?: string[];
   rows?: Array<Array<string | number | boolean>>;
   userId?: string;
+  req?: Request;
 }): Promise<{ ok: boolean; spreadsheetId?: string; spreadsheetUrl?: string; title?: string; error?: string }> {
-  const token = await getGoogleAccessToken(input.userId);
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) return { ok: false, error: 'Google is not connected.' };
 
   const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
@@ -205,6 +209,7 @@ export async function createGoogleSheet(input: {
       range: 'A1',
       rows: initialValues,
       userId: input.userId,
+      req: input.req,
     });
   }
   return {
@@ -219,8 +224,9 @@ export async function readGoogleSheet(input: {
   spreadsheetId: string;
   range?: string;
   userId?: string;
+  req?: Request;
 }): Promise<{ ok: boolean; values: unknown[][]; error?: string }> {
-  const token = await getGoogleAccessToken(input.userId);
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) return { ok: false, values: [], error: 'Google is not connected.' };
 
   const range = encodeURIComponent(input.range || 'A1:Z50');
@@ -238,8 +244,9 @@ export async function appendGoogleSheetRows(input: {
   range?: string;
   rows: Array<Array<string | number | boolean>>;
   userId?: string;
+  req?: Request;
 }): Promise<{ ok: boolean; updatedRange?: string; updatedRows?: number; error?: string }> {
-  const token = await getGoogleAccessToken(input.userId);
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) return { ok: false, error: 'Google is not connected.' };
 
   const range = encodeURIComponent(input.range || 'A1');
@@ -269,8 +276,9 @@ export async function updateGoogleSheetRange(input: {
   range: string;
   values: Array<Array<string | number | boolean>>;
   userId?: string;
+  req?: Request;
 }): Promise<{ ok: boolean; updatedCells?: number; error?: string }> {
-  const token = await getGoogleAccessToken(input.userId);
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) return { ok: false, error: 'Google is not connected.' };
 
   const range = encodeURIComponent(input.range);
@@ -298,13 +306,13 @@ export interface GoogleContactItem {
   phones: string[];
 }
 
-export async function listGoogleContacts(query?: string, userId?: string): Promise<{
+export async function listGoogleContacts(query?: string, userId?: string, req?: Request): Promise<{
   ok: boolean;
   contacts: GoogleContactItem[];
   needsReconnect?: boolean;
   error?: string;
 }> {
-  const token = await getGoogleAccessToken(userId);
+  const token = await getGoogleAccessToken(userId, req);
   if (!token) return { ok: false, contacts: [], needsReconnect: true, error: 'Google is not connected.' };
 
   const url = query?.trim()
@@ -327,7 +335,17 @@ export async function listGoogleContacts(query?: string, userId?: string): Promi
     };
   }
   const json = (await res.json()) as { connections?: any[]; results?: Array<{ person: any }> };
-  const people = json.connections || (json.results || []).map((r) => r.person) || [];
+  let people = json.connections || (json.results || []).map((r) => r.person) || [];
+  if (people.length === 0 && !query?.trim()) {
+    const otherRes = await fetch(
+      'https://people.googleapis.com/v1/otherContacts?readMask=names,emailAddresses,phoneNumbers&pageSize=100',
+      { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }
+    ).catch(() => null);
+    if (otherRes?.ok) {
+      const otherJson = (await otherRes.json().catch(() => ({}))) as { otherContacts?: any[] };
+      people = otherJson.otherContacts || [];
+    }
+  }
   const contacts: GoogleContactItem[] = people.map((p: any) => ({
     resourceName: p.resourceName || '',
     name: p.names?.[0]?.displayName || 'Unnamed',
@@ -343,8 +361,9 @@ export async function createGoogleContact(input: {
   email?: string;
   phone?: string;
   userId?: string;
+  req?: Request;
 }): Promise<{ ok: boolean; contact?: GoogleContactItem; error?: string }> {
-  const token = await getGoogleAccessToken(input.userId);
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) return { ok: false, error: 'Google is not connected.' };
 
   const res = await fetch('https://people.googleapis.com/v1/people:createContact', {
