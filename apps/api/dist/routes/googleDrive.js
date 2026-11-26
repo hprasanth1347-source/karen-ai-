@@ -245,7 +245,8 @@ router.get('/auth/google/callback', async (req, res) => {
     }
     catch (err) {
         logger.error('Google OAuth callback error:', err);
-        return res.redirect(`${targetPage}?error=oauth_callback_error`);
+        const reason = err instanceof Error ? err.message : 'oauth_callback_error';
+        return res.redirect(`${targetPage}?error=${encodeURIComponent(reason)}`);
     }
 });
 router.use('/drive', requireAuth, requireOwner);

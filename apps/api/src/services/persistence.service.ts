@@ -184,8 +184,22 @@ export async function saveGoogleTokensToDb(
     { onConflict: 'user_id,provider' }
   );
   if (upsertErr) {
-    logger.error('saveGoogleTokensToDb upsert failed', { userId, upsertErr });
-    throw new Error(`Failed to persist Google tokens: ${upsertErr.message}`);
+    logger.warn('saveGoogleTokensToDb provider_connections upsert failed, falling back to user_settings', {
+      userId,
+      upsertErr,
+    });
+    await saveUserSetting('google_oauth_tokens', {
+      payload: encrypted,
+      expiresAt: finalTokens.expiresAt,
+      updatedAt: new Date().toISOString(),
+    });
+  } else {
+    // Also mirror in user_settings for fast/resilient fallback
+    void saveUserSetting('google_oauth_tokens', {
+      payload: encrypted,
+      expiresAt: finalTokens.expiresAt,
+      updatedAt: new Date().toISOString(),
+    });
   }
 }
 
@@ -219,6 +233,14 @@ export async function loadGoogleTokensWithStatus(
     }
 
     if (!data || data.status === 'inactive') {
+      // Check user_settings fallback before returning disconnected
+      const fallbackSetting = await loadUserSetting<{ payload?: string }>('google_oauth_tokens');
+      if (fallbackSetting?.payload) {
+        const parsedFallback = decryptJson<StoredGoogleTokens>(fallbackSetting.payload);
+        if (parsedFallback?.accessToken) {
+          return { tokens: parsedFallback, status: 'connected' };
+        }
+      }
       return { tokens: null, status: 'disconnected' };
     }
     const payload = (data.config as { payload?: string } | null)?.payload;
@@ -231,6 +253,13 @@ export async function loadGoogleTokensWithStatus(
     }
   } catch (err) {
     logger.warn('loadGoogleTokensWithStatus failed', { err });
+  }
+  const fallbackSetting = await loadUserSetting<{ payload?: string }>('google_oauth_tokens');
+  if (fallbackSetting?.payload) {
+    const parsedFallback = decryptJson<StoredGoogleTokens>(fallbackSetting.payload);
+    if (parsedFallback?.accessToken) {
+      return { tokens: parsedFallback, status: 'connected' };
+    }
   }
   return { tokens: null, status: 'disconnected' };
 }
@@ -256,6 +285,7 @@ export async function markGoogleNeedsReauth(explicitUserId?: string): Promise<vo
 
 export async function clearGoogleTokensFromDb(explicitUserId?: string): Promise<void> {
   try {
+    await saveUserSetting('google_oauth_tokens', null);
     const userId = explicitUserId || (await getOwnerUserId());
     if (!userId) return;
     await supabaseAdmin

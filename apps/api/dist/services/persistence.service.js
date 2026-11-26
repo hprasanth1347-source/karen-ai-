@@ -150,8 +150,23 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
         updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id,provider' });
     if (upsertErr) {
-        logger.error('saveGoogleTokensToDb upsert failed', { userId, upsertErr });
-        throw new Error(`Failed to persist Google tokens: ${upsertErr.message}`);
+        logger.warn('saveGoogleTokensToDb provider_connections upsert failed, falling back to user_settings', {
+            userId,
+            upsertErr,
+        });
+        await saveUserSetting('google_oauth_tokens', {
+            payload: encrypted,
+            expiresAt: finalTokens.expiresAt,
+            updatedAt: new Date().toISOString(),
+        });
+    }
+    else {
+        // Also mirror in user_settings for fast/resilient fallback
+        void saveUserSetting('google_oauth_tokens', {
+            payload: encrypted,
+            expiresAt: finalTokens.expiresAt,
+            updatedAt: new Date().toISOString(),
+        });
     }
 }
 export async function loadGoogleTokensWithStatus(explicitUserId) {
@@ -179,6 +194,14 @@ export async function loadGoogleTokensWithStatus(explicitUserId) {
             data = fallback.data;
         }
         if (!data || data.status === 'inactive') {
+            // Check user_settings fallback before returning disconnected
+            const fallbackSetting = await loadUserSetting('google_oauth_tokens');
+            if (fallbackSetting?.payload) {
+                const parsedFallback = decryptJson(fallbackSetting.payload);
+                if (parsedFallback?.accessToken) {
+                    return { tokens: parsedFallback, status: 'connected' };
+                }
+            }
             return { tokens: null, status: 'disconnected' };
         }
         const payload = data.config?.payload;
@@ -192,6 +215,13 @@ export async function loadGoogleTokensWithStatus(explicitUserId) {
     }
     catch (err) {
         logger.warn('loadGoogleTokensWithStatus failed', { err });
+    }
+    const fallbackSetting = await loadUserSetting('google_oauth_tokens');
+    if (fallbackSetting?.payload) {
+        const parsedFallback = decryptJson(fallbackSetting.payload);
+        if (parsedFallback?.accessToken) {
+            return { tokens: parsedFallback, status: 'connected' };
+        }
     }
     return { tokens: null, status: 'disconnected' };
 }
@@ -216,6 +246,7 @@ export async function markGoogleNeedsReauth(explicitUserId) {
 }
 export async function clearGoogleTokensFromDb(explicitUserId) {
     try {
+        await saveUserSetting('google_oauth_tokens', null);
         const userId = explicitUserId || (await getOwnerUserId());
         if (!userId)
             return;
