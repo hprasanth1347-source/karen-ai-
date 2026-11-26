@@ -526,11 +526,10 @@ export default function ClassroomPage() {
             key={key}
             type="button"
             onClick={() => setTab(key)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-black border-2 border-ink transition-all ${
-              tab === key
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-black border-2 border-ink transition-all ${tab === key
                 ? 'bg-ink text-cream shadow-brutal-sm'
                 : 'bg-white text-ink hover:bg-cream-100'
-            }`}
+              }`}
           >
             <Icon className="w-3.5 h-3.5" />
             <span>{label}</span>
@@ -720,29 +719,29 @@ export default function ClassroomPage() {
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {(overview?.courses || []).map((c) => (
-              <div key={c.id} className="border-2 border-ink bg-white p-4 shadow-brutal-sm space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <h3 className="font-black text-sm">{c.name}</h3>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 border border-ink bg-cream-100">
-                    {c.courseState}
-                  </span>
+                <div key={c.id} className="border-2 border-ink bg-white p-4 shadow-brutal-sm space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-black text-sm">{c.name}</h3>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 border border-ink bg-cream-100">
+                      {c.courseState}
+                    </span>
+                  </div>
+                  {c.section && <p className="text-xs text-ink/60">{c.section}</p>}
+                  {c.teacherNames.length > 0 && (
+                    <p className="text-xs font-mono text-ink/70">👤 {c.teacherNames.join(', ')}</p>
+                  )}
+                  {c.alternateLink && (
+                    <a
+                      href={c.alternateLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-bold text-coral hover:underline"
+                    >
+                      Open in Classroom <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
                 </div>
-                {c.section && <p className="text-xs text-ink/60">{c.section}</p>}
-                {c.teacherNames.length > 0 && (
-                  <p className="text-xs font-mono text-ink/70">👤 {c.teacherNames.join(', ')}</p>
-                )}
-                {c.alternateLink && (
-                  <a
-                    href={c.alternateLink}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-bold text-coral hover:underline"
-                  >
-                    Open in Classroom <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
-              </div>
-            ))}
+              ))}
             </div>
           )}
 
@@ -793,9 +792,8 @@ export default function ClassroomPage() {
                   key={cat}
                   type="button"
                   onClick={() => setCategoryFilter(cat)}
-                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink uppercase ${
-                    categoryFilter === cat ? 'bg-coral text-white' : 'bg-white text-ink'
-                  }`}
+                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink uppercase ${categoryFilter === cat ? 'bg-coral text-white' : 'bg-white text-ink'
+                    }`}
                 >
                   {cat.replace('_', ' ')}
                 </button>
