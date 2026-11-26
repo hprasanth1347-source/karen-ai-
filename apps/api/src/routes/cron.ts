@@ -204,4 +204,23 @@ router.post('/cron/meta-token-refresh', verifyCronSecret, async (_req, res) => {
   return success(res, { ...result, purgedRuns });
 });
 
+/** 24/7 Headless Instagram Auto-DM Poller (for Uptime / Cron pings when owner is offline) */
+router.get('/cron/instagram-poll', verifyCronSecret, async (_req, res) => {
+  try {
+    const repliesSent = await instagramAutoReplyService.scanAndAutoReply();
+    return success(res, { ok: true, repliesSent, checkedAt: new Date().toISOString() });
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Instagram poll failed', 500);
+  }
+});
+
+router.post('/cron/instagram-poll', verifyCronSecret, async (_req, res) => {
+  try {
+    const repliesSent = await instagramAutoReplyService.scanAndAutoReply();
+    return success(res, { ok: true, repliesSent, checkedAt: new Date().toISOString() });
+  } catch (err) {
+    return error(res, err instanceof Error ? err.message : 'Instagram poll failed', 500);
+  }
+});
+
 export default router;

@@ -343,42 +343,74 @@ export async function listGoogleContacts(query, userId, req) {
     const token = await getGoogleAccessToken(userId, req);
     if (!token)
         return { ok: false, contacts: [], needsReconnect: true, error: 'Google is not connected.' };
-    const url = query?.trim()
+    const isSearch = Boolean(query?.trim());
+    const url = isSearch
         ? `https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(query.trim())}&readMask=names,emailAddresses,phoneNumbers&pageSize=30`
         : 'https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses,phoneNumbers&pageSize=100&sortOrder=FIRST_NAME_ASCENDING';
-    const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(8000),
-    });
+    const [res, otherRes] = await Promise.all([
+        fetch(url, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(8000),
+        }),
+        !isSearch
+            ? fetch('https://people.googleapis.com/v1/otherContacts?readMask=names,emailAddresses,phoneNumbers&pageSize=100', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }).catch(() => null)
+            : Promise.resolve(null),
+    ]);
     if (!res.ok) {
         const errJson = (await res.json().catch(() => ({})));
-        const apiMsg = errJson.error?.message;
+        const apiMsg = errJson.error?.message || '';
+        const isApiDisabled = /has not been used in project|is disabled|accessNotConfigured/i.test(apiMsg);
+        // If otherContacts worked even while connections errored cleanly, use it; otherwise surface real reason
+        if (otherRes?.ok) {
+            const otherJson = (await otherRes.json().catch(() => ({})));
+            const fallbackPeople = otherJson.otherContacts || [];
+            if (fallbackPeople.length > 0) {
+                return {
+                    ok: true,
+                    contacts: fallbackPeople.map((p) => ({
+                        resourceName: p.resourceName || '',
+                        name: p.names?.[0]?.displayName || p.emailAddresses?.[0]?.value || 'Unnamed',
+                        emails: (p.emailAddresses || []).map((e) => e.value).filter(Boolean),
+                        phones: (p.phoneNumbers || []).map((ph) => ph.value).filter(Boolean),
+                    })),
+                };
+            }
+        }
         return {
             ok: false,
             contacts: [],
-            needsReconnect: res.status === 401 || res.status === 403,
-            error: apiMsg ||
-                (res.status === 403
-                    ? 'Missing Google Contacts permission (People API). Reconnect Google once.'
-                    : `Google Contacts API error (${res.status})`),
+            needsReconnect: !isApiDisabled && (res.status === 401 || res.status === 403),
+            error: isApiDisabled
+                ? `Google People API is not enabled in your Google Cloud project yet. Enable "Google People API" in console.cloud.google.com (${apiMsg})`
+                : apiMsg ||
+                    (res.status === 403
+                        ? 'Missing Google Contacts permission (People API). Reconnect Google once.'
+                        : `Google Contacts API error (${res.status})`),
         };
     }
     const json = (await res.json());
-    let people = json.connections || (json.results || []).map((r) => r.person) || [];
-    if (people.length === 0 && !query?.trim()) {
-        const otherRes = await fetch('https://people.googleapis.com/v1/otherContacts?readMask=names,emailAddresses,phoneNumbers&pageSize=100', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) }).catch(() => null);
-        if (otherRes?.ok) {
-            const otherJson = (await otherRes.json().catch(() => ({})));
-            people = otherJson.otherContacts || [];
+    const primaryPeople = json.connections || (json.results || []).map((r) => r.person) || [];
+    let otherPeople = [];
+    if (otherRes?.ok) {
+        const otherJson = (await otherRes.json().catch(() => ({})));
+        otherPeople = otherJson.otherContacts || [];
+    }
+    const combined = new Map();
+    for (const p of [...primaryPeople, ...otherPeople]) {
+        if (!p)
+            continue;
+        const item = {
+            resourceName: p.resourceName || '',
+            name: p.names?.[0]?.displayName || p.emailAddresses?.[0]?.value || 'Unnamed',
+            emails: (p.emailAddresses || []).map((e) => e.value).filter(Boolean),
+            phones: (p.phoneNumbers || []).map((ph) => ph.value).filter(Boolean),
+        };
+        const dedupKey = item.resourceName || `${item.name.toLowerCase()}|${item.emails[0] || ''}|${item.phones[0] || ''}`;
+        if (!combined.has(dedupKey)) {
+            combined.set(dedupKey, item);
         }
     }
-    const contacts = people.map((p) => ({
-        resourceName: p.resourceName || '',
-        name: p.names?.[0]?.displayName || 'Unnamed',
-        emails: (p.emailAddresses || []).map((e) => e.value).filter(Boolean),
-        phones: (p.phoneNumbers || []).map((ph) => ph.value).filter(Boolean),
-    }));
-    return { ok: true, contacts };
+    return { ok: true, contacts: Array.from(combined.values()) };
 }
 export async function createGoogleContact(input) {
     const token = await getGoogleAccessToken(input.userId, input.req);

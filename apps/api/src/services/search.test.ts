@@ -146,6 +146,7 @@ test('searchWebWithGoogle handles success, 403, 429, and empty results with mock
 });
 
 test('custom search queries trigger shouldSearchWeb, clean fast rewrite, and fallback search', async () => {
+  assert.equal(shouldSearchWeb('how is cm of tamil nadu'), true);
   assert.equal(shouldSearchWeb('search custom data about Nvidia Blackwell Ultra 2026'), true);
   assert.equal(shouldSearchWeb('check current gold price in Chennai'), true);
 

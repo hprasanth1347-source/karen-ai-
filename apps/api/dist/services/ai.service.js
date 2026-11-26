@@ -252,8 +252,8 @@ export async function generateAIReply(prompt, history = [], preferredProvider, p
                 return searchWebWithFallback(rewritten.query, {
                     limit: 5,
                     freshness: rewritten.freshness,
-                    bypassCache: isFreshSearch,
-                    maxCacheAgeMs: 2 * 60 * 1000,
+                    bypassCache: true,
+                    maxCacheAgeMs: 0,
                     enrichTimeoutMs: 1200,
                 }, reqSignal);
             })(),
@@ -377,11 +377,15 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
             logger.warn('Groq call failed, trying fallback', { err });
         }
     }
-    // 2. Google Gemini API (supports built-in google_search grounding when needed)
+    // 2. Google Gemini API (supports built-in google_search grounding cleanly)
     if ((provider === 'gemini' || !preferredProvider || (needsSearch && searchResults.length === 0)) && config.GEMINI_API_KEY) {
         try {
-            const modelName = provider === 'gemini' && preferredModel ? preferredModel : getDefaultAIModel('gemini');
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${config.GEMINI_API_KEY}`;
+            const modelName = provider === 'gemini' && preferredModel
+                ? preferredModel
+                : needsSearch
+                    ? 'gemini-2.5-flash'
+                    : getDefaultAIModel('gemini');
+            const buildGeminiUrl = (m) => `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${config.GEMINI_API_KEY}`;
             const basePayload = {
                 systemInstruction: {
                     parts: [{ text: systemPrompt }],
@@ -394,14 +398,23 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
                     { role: 'user', parts: [{ text: userMessageWithSearch }] },
                 ],
             };
-            let res = await fetch(url, {
+            let res = await fetch(buildGeminiUrl(modelName), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(needsSearch ? { ...basePayload, tools: [{ google_search: {} }] } : basePayload),
                 signal: reqSignal,
             });
             if (!res.ok && needsSearch) {
-                res = await fetch(url, {
+                // Retry with gemini-2.0-flash WITH google_search before ever dropping live grounding
+                res = await fetch(buildGeminiUrl('gemini-2.0-flash'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...basePayload, tools: [{ google_search: {} }] }),
+                    signal: reqSignal,
+                });
+            }
+            if (!res.ok && needsSearch) {
+                res = await fetch(buildGeminiUrl(getDefaultAIModel('gemini')), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(basePayload),

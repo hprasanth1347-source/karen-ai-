@@ -28,6 +28,7 @@ function readGoogleTokensFromCookie(req) {
     }
     return null;
 }
+const VALID_TARGET_PAGES = new Set(['drive', 'gmail', 'classroom', 'contacts', 'sheets', 'tasks']);
 const router = Router();
 const refreshMutexes = new Map();
 function getStateSecret() {
@@ -60,7 +61,7 @@ export function verifySignedOAuthState(rawState) {
         const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
         if (!parsed.userId || !parsed.exp || Date.now() > parsed.exp)
             return null;
-        const target = parsed.target === 'gmail' || parsed.target === 'classroom' ? parsed.target : 'drive';
+        const target = parsed.target && VALID_TARGET_PAGES.has(parsed.target) ? parsed.target : 'drive';
         return { userId: parsed.userId, target };
     }
     catch {
@@ -97,9 +98,13 @@ function buildGoogleAuthUrl(redirectUri, stateTarget = 'drive', userId = 'owner'
         'https://www.googleapis.com/auth/tasks',
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/contacts',
+        'https://www.googleapis.com/auth/contacts.readonly',
+        'https://www.googleapis.com/auth/contacts.other.readonly',
     ];
     if (config.GOOGLE_CLASSROOM_ENABLED || stateTarget === 'classroom') {
-        for (const s of config.GOOGLE_CLASSROOM_SCOPES.split(/[\s,]+/).filter(Boolean)) {
+        const rawClassroomScopes = config.GOOGLE_CLASSROOM_SCOPES ||
+            'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly https://www.googleapis.com/auth/classroom.rosters';
+        for (const s of rawClassroomScopes.split(/[\s,]+/).filter(Boolean)) {
             if (!scopes.includes(s))
                 scopes.push(s);
         }
@@ -250,11 +255,7 @@ router.get('/auth/google/callback', async (req, res) => {
     if (!verifiedState) {
         return res.status(400).redirect('/drive?error=invalid_oauth_state');
     }
-    const targetPage = verifiedState.target === 'gmail'
-        ? '/gmail'
-        : verifiedState.target === 'classroom'
-            ? '/classroom'
-            : '/drive';
+    const targetPage = `/${verifiedState.target}`;
     if (oauthError || !code) {
         return res.redirect(`${targetPage}?error=${encodeURIComponent(oauthError || 'missing_code')}`);
     }
@@ -333,7 +334,8 @@ router.get('/drive/auth-url', async (req, res) => {
     }
     const userId = req.user?.id || (await getOwnerUserId()) || 'owner';
     const redirectUri = getRedirectUri(req);
-    const state = req.query.source === 'gmail' ? 'gmail' : 'drive';
+    const rawSource = typeof req.query.source === 'string' ? req.query.source : 'drive';
+    const state = VALID_TARGET_PAGES.has(rawSource) ? rawSource : 'drive';
     return success(res, {
         url: buildGoogleAuthUrl(redirectUri, state, userId),
         redirectUri,

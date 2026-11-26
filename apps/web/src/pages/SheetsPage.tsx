@@ -122,7 +122,7 @@ export const SheetsPage: React.FC = () => {
   }, [activeId]);
 
   const handleConnect = async () => {
-    const res = await api.get<{ data: { url: string } }>('/drive/auth-url', { params: { source: 'drive' } }).catch(() => null);
+    const res = await api.get<{ data: { url: string } }>('/drive/auth-url', { params: { source: 'sheets' } }).catch(() => null);
     if (res?.data?.data?.url) window.location.href = res.data.data.url;
   };
 

@@ -586,13 +586,13 @@ export default function ClassroomPage() {
       {(error || overview?.lastError) && (
         <div className="p-3 border-2 border-coral bg-coral/10 text-coral text-xs font-bold flex items-center justify-between gap-3">
           <span>{error || overview?.lastError}</span>
-          {overview?.connected && /scope|permission|reconnect/i.test(error || overview?.lastError || '') && (
+          {/scope|permission|reconnect|insufficient|403|restricted/i.test(error || overview?.lastError || '') && (
             <button
               type="button"
               onClick={handleConnect}
               className="px-2.5 py-1 border-2 border-ink bg-white text-ink text-[11px] font-black shrink-0"
             >
-              Reconnect Permissions
+              Reconnect Google Classroom
             </button>
           )}
         </div>

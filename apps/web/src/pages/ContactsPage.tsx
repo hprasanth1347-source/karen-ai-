@@ -41,11 +41,18 @@ export const ContactsPage: React.FC = () => {
   };
 
   useEffect(() => {
-    void loadContacts();
+    const params = new URLSearchParams(window.location.search);
+    const connectedParam = params.get('connected') === '1';
+    const oauthErr = params.get('error');
+    if (oauthErr) setError(`Google OAuth error: ${oauthErr}`);
+    if (connectedParam) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    void loadContacts('', connectedParam);
   }, []);
 
   const handleReconnect = async () => {
-    const res = await api.get<{ data: { url: string } }>('/drive/auth-url', { params: { source: 'drive' } }).catch(() => null);
+    const res = await api.get<{ data: { url: string } }>('/drive/auth-url', { params: { source: 'contacts' } }).catch(() => null);
     if (res?.data?.data?.url) window.location.href = res.data.data.url;
   };
 
@@ -94,7 +101,10 @@ export const ContactsPage: React.FC = () => {
 
       {needsReconnect && (
         <div className="bg-yellow/40 border-2 border-ink p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-          <span className="font-bold">Reconnect Google once to grant Google Contacts (People API) permission.</span>
+          <div>
+            <span className="font-bold">Reconnect Google once to grant Google Contacts (People API) permission.</span>
+            {error && <p className="text-[11px] font-mono text-ink-muted mt-1 break-words">{error}</p>}
+          </div>
           <button type="button" onClick={() => void handleReconnect()} className="btn-coral text-xs px-3 py-1">
             Reconnect Google
           </button>
@@ -102,7 +112,7 @@ export const ContactsPage: React.FC = () => {
       )}
 
       {error && !needsReconnect && (
-        <div className="bg-coral/20 border-2 border-ink p-3 text-xs font-bold">{error}</div>
+        <div className="bg-coral/20 border-2 border-ink p-3 text-xs font-bold break-words">{error}</div>
       )}
 
       <form onSubmit={handleAdd} className="bg-white border-3 border-ink p-4 shadow-brutal grid grid-cols-1 sm:grid-cols-4 gap-2">

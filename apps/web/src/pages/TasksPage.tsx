@@ -92,7 +92,7 @@ export const TasksPage: React.FC = () => {
   }, []);
 
   const handleConnect = async () => {
-    const res = await api.get<{ data: { url: string } }>('/drive/auth-url', { params: { source: 'drive' } }).catch(() => null);
+    const res = await api.get<{ data: { url: string } }>('/drive/auth-url', { params: { source: 'tasks' } }).catch(() => null);
     if (res?.data?.data?.url) window.location.href = res.data.data.url;
   };
 

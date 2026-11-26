@@ -163,7 +163,8 @@ const envData = parsed.success ? parsed.data : {
     GOOGLE_SEARCH_ENGINE_ID: process.env.GOOGLE_SEARCH_ENGINE_ID || '',
     SEARCH_DAILY_LIMIT: parseInt(process.env.SEARCH_DAILY_LIMIT || '90'),
     GOOGLE_CLASSROOM_ENABLED: true,
-    GOOGLE_CLASSROOM_SCOPES: process.env.GOOGLE_CLASSROOM_SCOPES || '',
+    GOOGLE_CLASSROOM_SCOPES: process.env.GOOGLE_CLASSROOM_SCOPES ||
+        'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly https://www.googleapis.com/auth/classroom.rosters',
     GOOGLE_TOKEN_ENCRYPTION_KEY: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY || '',
     GOOGLE_CLASSROOM_SYNC_ENABLED: true,
     GOOGLE_CLASSROOM_SYNC_INTERVAL: 900000,

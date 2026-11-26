@@ -87,7 +87,7 @@ async function generateFastDmReply(prompt, history = [], provider = 'groq', mode
                     temperature: 0.55,
                     max_tokens: 160,
                 }),
-                signal: AbortSignal.timeout(3500),
+                signal: AbortSignal.timeout(2800),
             });
             if (res.ok) {
                 const json = await res.json();
@@ -112,7 +112,7 @@ async function generateFastDmReply(prompt, history = [], provider = 'groq', mode
                         { role: 'user', parts: [{ text: prompt }] },
                     ],
                 }),
-                signal: AbortSignal.timeout(3500),
+                signal: AbortSignal.timeout(2800),
             });
             if (res.ok) {
                 const json = await res.json();
@@ -150,21 +150,31 @@ class InstagramAutoReplyService {
         if (this.hydrated)
             return;
         this.hydrated = true;
-        const savedConfig = await loadUserSetting('instagram_auto_reply_config');
-        if (savedConfig && typeof savedConfig === 'object') {
-            this.config = { ...this.config, ...savedConfig };
-        }
-        const savedLogs = await loadUserSetting('instagram_auto_reply_logs');
-        if (Array.isArray(savedLogs) && savedLogs.length > 0) {
-            this.logs = savedLogs.slice(0, 30);
-            for (const l of this.logs) {
-                if (l.status === 'SENT') {
-                    if (l.incomingMessageId)
-                        this.repliedMessageIds.add(l.incomingMessageId);
-                    if (l.id)
-                        this.repliedMessageIds.add(l.id);
+        try {
+            const [savedConfig, savedLogs] = await Promise.race([
+                Promise.all([
+                    loadUserSetting('instagram_auto_reply_config').catch(() => null),
+                    loadUserSetting('instagram_auto_reply_logs').catch(() => null),
+                ]),
+                new Promise((resolve) => setTimeout(() => resolve([null, null]), 900)),
+            ]);
+            if (savedConfig && typeof savedConfig === 'object') {
+                this.config = { ...this.config, ...savedConfig };
+            }
+            if (Array.isArray(savedLogs) && savedLogs.length > 0) {
+                this.logs = savedLogs.slice(0, 30);
+                for (const l of this.logs) {
+                    if (l.status === 'SENT') {
+                        if (l.incomingMessageId)
+                            this.repliedMessageIds.add(l.incomingMessageId);
+                        if (l.id)
+                            this.repliedMessageIds.add(l.id);
+                    }
                 }
             }
+        }
+        catch {
+            // Non-fatal hydration error — default enabled 24/7
         }
     }
     async getConfig() {

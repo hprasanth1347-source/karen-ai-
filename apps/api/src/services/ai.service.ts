@@ -335,22 +335,22 @@ export async function generateAIReply(
 
   const searchPromise: Promise<SearchResponse | null> = needsSearch
     ? Promise.race([
-        (async () => {
-          const rewritten = await rewriteSearchQuery(cleanPrompt, history);
-          return searchWebWithFallback(
-            rewritten.query,
-            {
-              limit: 5,
-              freshness: rewritten.freshness,
-              bypassCache: isFreshSearch,
-              maxCacheAgeMs: 2 * 60 * 1000,
-              enrichTimeoutMs: 1200,
-            },
-            reqSignal
-          );
-        })(),
-        new Promise<SearchResponse | null>((resolve) => setTimeout(() => resolve(null), 4200)),
-      ]).catch(() => null)
+      (async () => {
+        const rewritten = await rewriteSearchQuery(cleanPrompt, history);
+        return searchWebWithFallback(
+          rewritten.query,
+          {
+            limit: 5,
+            freshness: rewritten.freshness,
+            bypassCache: true,
+            maxCacheAgeMs: 0,
+            enrichTimeoutMs: 1200,
+          },
+          reqSignal
+        );
+      })(),
+      new Promise<SearchResponse | null>((resolve) => setTimeout(() => resolve(null), 4200)),
+    ]).catch(() => null)
     : Promise.resolve(null);
 
   const needsGoogleCtx =
@@ -488,11 +488,17 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
     }
   }
 
-  // 2. Google Gemini API (supports built-in google_search grounding when needed)
+  // 2. Google Gemini API (supports built-in google_search grounding cleanly)
   if ((provider === 'gemini' || !preferredProvider || (needsSearch && searchResults.length === 0)) && config.GEMINI_API_KEY) {
     try {
-      const modelName = provider === 'gemini' && preferredModel ? preferredModel : getDefaultAIModel('gemini');
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${config.GEMINI_API_KEY}`;
+      const modelName =
+        provider === 'gemini' && preferredModel
+          ? preferredModel
+          : needsSearch
+            ? 'gemini-2.5-flash'
+            : getDefaultAIModel('gemini');
+      const buildGeminiUrl = (m: string) =>
+        `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${config.GEMINI_API_KEY}`;
       const basePayload = {
         systemInstruction: {
           parts: [{ text: systemPrompt }],
@@ -506,7 +512,7 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
         ],
       };
 
-      let res = await fetch(url, {
+      let res = await fetch(buildGeminiUrl(modelName), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -516,7 +522,17 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
       });
 
       if (!res.ok && needsSearch) {
-        res = await fetch(url, {
+        // Retry with gemini-2.0-flash WITH google_search before ever dropping live grounding
+        res = await fetch(buildGeminiUrl('gemini-2.0-flash'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...basePayload, tools: [{ google_search: {} }] }),
+          signal: reqSignal,
+        });
+      }
+
+      if (!res.ok && needsSearch) {
+        res = await fetch(buildGeminiUrl(getDefaultAIModel('gemini')), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(basePayload),

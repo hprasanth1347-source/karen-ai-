@@ -16,7 +16,8 @@ import { generateAIReply } from './ai.service.js';
 import { addNotification } from './approval.service.js';
 import { loadUserSetting, saveUserSetting } from './persistence.service.js';
 import { sendTelegramMessage } from '../providers/telegram.js';
-import { getValidGoogleAccessToken } from '../routes/googleDrive.js';
+import type { Request } from 'express';
+import { getGoogleAccessToken } from '../routes/googleDrive.js';
 
 const CLASSROOM_BASE = 'https://classroom.googleapis.com/v1';
 const CACHE_KEY = 'google_classroom_cache_v1';
@@ -387,13 +388,13 @@ async function fetchAllPages<TItem>(
 
 // ─── Full Synchronization ─────────────────────────────────────────────────────
 
-export async function syncClassroomData(): Promise<{
+export async function syncClassroomData(req?: Request, userId?: string): Promise<{
   synced: boolean;
   cache: ClassroomCache;
   notificationsSent: number;
 }> {
   const existingCache = await getClassroomCache();
-  const token = await getValidGoogleAccessToken();
+  const token = await getGoogleAccessToken(userId, req);
 
   if (!token) {
     const updated = {
@@ -650,10 +651,11 @@ export interface JoinClassroomResult {
   message: string;
 }
 
-export async function listPendingClassroomInvitations(): Promise<
-  Array<{ id: string; courseId: string; role?: string }>
-> {
-  const token = await getValidGoogleAccessToken();
+export async function listPendingClassroomInvitations(
+  req?: Request,
+  userId?: string
+): Promise<Array<{ id: string; courseId: string; role?: string }>> {
+  const token = await getGoogleAccessToken(userId, req);
   if (!token) return [];
   try {
     const res = await fetch(`${CLASSROOM_BASE}/invitations?userId=me`, {
@@ -682,8 +684,9 @@ export async function joinClassroom(input: {
   invitationId?: string;
   codeOrLink?: string;
   userId?: string;
+  req?: Request;
 }): Promise<JoinClassroomResult> {
-  const token = await getValidGoogleAccessToken();
+  const token = await getGoogleAccessToken(input.userId, input.req);
   if (!token) {
     return {
       joined: false,
@@ -707,7 +710,7 @@ export async function joinClassroom(input: {
   }
 
   if (mode === 'invitation') {
-    const invitations = await listPendingClassroomInvitations();
+    const invitations = await listPendingClassroomInvitations(input.req, input.userId);
     const targetInv = input.invitationId
       ? invitations.find((i) => i.id === input.invitationId)
       : invitations.find((i) => i.role === 'STUDENT') || invitations[0];
@@ -1110,9 +1113,9 @@ async function evaluateClassroomNotifications(
 
 // ─── Overview, Filtering & Personal Tasks ─────────────────────────────────────
 
-export async function getClassroomOverview() {
+export async function getClassroomOverview(req?: Request, userId?: string) {
   const [cache, settings] = await Promise.all([getClassroomCache(), getClassroomSettings()]);
-  const token = await getValidGoogleAccessToken();
+  const token = await getGoogleAccessToken(userId, req);
   const activeCourses = cache.courses.filter((c) => c.courseState === 'ACTIVE');
 
   const stats = {

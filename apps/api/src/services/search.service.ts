@@ -128,7 +128,7 @@ export function shouldSearchWeb(prompt: string, options?: { loveMode?: boolean }
   }
 
   // Explicit web search, custom search queries, or factual/time-sensitive questions
-  return /\b(search|google|look\s*up|find(?:\s+online|\s+out|\s+about)?|check\s+(?:online|latest|live|current)|fetch|browse|latest|news|today|tomorrow|yesterday|current|recent|newest|fresh|update|live|happening|trending|price|cost|weather|forecast|score|match|won|winner|who\s+(is|was|won|are)|what\s+(is|are|was|were|happened)|when\s+(is|was|did|does|will)|where\s+(is|are)|which\s+(is|are)|how\s+(much|many|old)|release|version|spec|specs|stats|status|compare|vs|versus|law|act|rule|stock|rate|202\d)\b/i.test(
+  return /\b(search|google|look\s*up|find(?:\s+online|\s+out|\s+about)?|check\s+(?:online|latest|live|current)|fetch|browse|latest|news|today|tomorrow|yesterday|current|recent|newest|fresh|update|live|happening|trending|price|cost|weather|forecast|score|match|won|winner|who\s+(?:is|was|won|are)|what\s+(?:is|are|was|were|happened)|when\s+(?:is|was|did|does|will)|where\s+(?:is|are)|which\s+(?:is|are)|how\s+(?:is|are|was|were|did|does|do|much|many|old|long)|(?:cm|pm|chief\s+minister|prime\s+minister|president|governor|minister|ceo|founder|capital|population|winner|champion)\s+(?:of|for|in)|release|version|spec|specs|stats|status|compare|vs|versus|law|act|rule|stock|rate|202\d)\b/i.test(
     text
   );
 }
@@ -797,12 +797,47 @@ async function fetchDuckDuckGoHtmlResults(query: string, limit: number): Promise
   }
 }
 
-async function fetchGoogleNewsRssResults(query: string, limit: number): Promise<WebSearchResult[]> {
+async function fetchWikipediaSearchResults(query: string, limit: number): Promise<WebSearchResult[]> {
   try {
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query.slice(0, 200))}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const cleanQ = query
+      .replace(/^(?:who|how|what|when|where|which)\s+(?:is|are|was|were)\s+(?:the\s+)?/i, '')
+      .replace(/\bcm\b/gi, 'Chief Minister')
+      .replace(/\bpm\b/gi, 'Prime Minister')
+      .trim();
+    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(cleanQ)}&utf8=1&format=json&origin=*`;
     const res = await fetch(url, {
       headers: { 'User-Agent': 'KarenAI-SearchBot/1.0' },
-      signal: AbortSignal.timeout(2400),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return [];
+    const json = (await res.json()) as {
+      query?: { search?: Array<{ title?: string; snippet?: string }> };
+    };
+    const list = (json.query?.search || []).slice(0, limit);
+    return list
+      .filter((item) => item.title)
+      .map((item) => {
+        const title = stripActionTagsFromSearch(item.title!);
+        const rawSnippet = (item.snippet || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        return {
+          title: `${title} - Wikipedia`,
+          link: `https://en.wikipedia.org/wiki/${encodeURIComponent(item.title!.replace(/\s+/g, '_'))}`,
+          snippet: stripActionTagsFromSearch(rawSnippet || title),
+          displayLink: 'en.wikipedia.org',
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+async function fetchGoogleNewsRssResults(query: string, limit: number): Promise<WebSearchResult[]> {
+  try {
+    const cleanQ = query.replace(/\bcm\b/gi, 'Chief Minister').replace(/\bpm\b/gi, 'Prime Minister');
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(cleanQ.slice(0, 200))}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'KarenAI-SearchBot/1.0' },
+      signal: AbortSignal.timeout(2200),
     });
     if (!res.ok) return [];
     const xml = await res.text();
@@ -834,16 +869,15 @@ export async function searchWebLiveFallback(
   freshness: SearchFreshness = 'any'
 ): Promise<SearchResponse> {
   const normalized = normalizeSearchQuery(query);
-  const [ddgResults, newsResults] = await Promise.all([
+  const [newsResults, wikiResults, ddgResults] = await Promise.all([
+    fetchGoogleNewsRssResults(normalized, limit),
+    fetchWikipediaSearchResults(normalized, Math.min(3, limit)),
     fetchDuckDuckGoHtmlResults(normalized, limit),
-    freshness === 'breaking' || freshness === 'recent'
-      ? fetchGoogleNewsRssResults(normalized, limit)
-      : Promise.resolve([] as WebSearchResult[]),
   ]);
 
   const combined: WebSearchResult[] = [];
   const seen = new Set<string>();
-  for (const item of [...newsResults, ...ddgResults]) {
+  for (const item of [...newsResults, ...wikiResults, ...ddgResults]) {
     if (!seen.has(item.link)) {
       seen.add(item.link);
       combined.push(item);

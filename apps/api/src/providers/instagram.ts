@@ -20,6 +20,7 @@ async function resolveIgAuth(): Promise<{ token: string; accountId: string }> {
 
 let conversationsCache: { expiresAt: number; data: InstagramThread[] } | null = null;
 let preferredFieldVariantIdx = 0;
+let preferredSendEndpoint: string | null = null;
 let profileCache: { expiresAt: number; data: InstagramProfile } | null = null;
 let mediaCache: { expiresAt: number; data: InstagramMediaItem[] } | null = null;
 
@@ -345,9 +346,12 @@ export async function sendInstagramMessage(
     return { success: false, error: 'Instagram is not connected. Add a valid server-side access token first.' };
   }
 
-  const endpoints = token.startsWith('IG')
+  const rawEndpoints = token.startsWith('IG')
     ? ['https://graph.instagram.com/v21.0/me/messages', `${META_BASE_URL}/${accountId || 'me'}/messages`]
     : [`${META_BASE_URL}/${accountId || 'me'}/messages`, `${META_BASE_URL}/me/messages`, 'https://graph.instagram.com/v21.0/me/messages'];
+  const endpoints = preferredSendEndpoint
+    ? [preferredSendEndpoint, ...rawEndpoints.filter((e) => e !== preferredSendEndpoint)]
+    : rawEndpoints;
 
   let lastError = 'Meta API error';
   for (const endpoint of endpoints) {
@@ -365,11 +369,12 @@ export async function sendInstagramMessage(
             message: { text },
           }),
         },
-        7000
+        3500
       );
 
       const json = await res.json().catch(() => ({}));
       if (res.ok) {
+        preferredSendEndpoint = endpoint;
         conversationsCache = null;
         return { success: true, messageId: json.message_id };
       }

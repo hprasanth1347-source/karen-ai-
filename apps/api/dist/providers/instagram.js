@@ -17,6 +17,7 @@ async function resolveIgAuth() {
 }
 let conversationsCache = null;
 let preferredFieldVariantIdx = 0;
+let preferredSendEndpoint = null;
 let profileCache = null;
 let mediaCache = null;
 async function metaFetch(url, init, timeoutMs = 4500) {
@@ -272,9 +273,12 @@ export async function sendInstagramMessage(recipientId, text) {
     if (!token) {
         return { success: false, error: 'Instagram is not connected. Add a valid server-side access token first.' };
     }
-    const endpoints = token.startsWith('IG')
+    const rawEndpoints = token.startsWith('IG')
         ? ['https://graph.instagram.com/v21.0/me/messages', `${META_BASE_URL}/${accountId || 'me'}/messages`]
         : [`${META_BASE_URL}/${accountId || 'me'}/messages`, `${META_BASE_URL}/me/messages`, 'https://graph.instagram.com/v21.0/me/messages'];
+    const endpoints = preferredSendEndpoint
+        ? [preferredSendEndpoint, ...rawEndpoints.filter((e) => e !== preferredSendEndpoint)]
+        : rawEndpoints;
     let lastError = 'Meta API error';
     for (const endpoint of endpoints) {
         try {
@@ -288,9 +292,10 @@ export async function sendInstagramMessage(recipientId, text) {
                     recipient: { id: recipientId },
                     message: { text },
                 }),
-            }, 7000);
+            }, 3500);
             const json = await res.json().catch(() => ({}));
             if (res.ok) {
+                preferredSendEndpoint = endpoint;
                 conversationsCache = null;
                 return { success: true, messageId: json.message_id };
             }

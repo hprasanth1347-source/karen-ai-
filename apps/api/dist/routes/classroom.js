@@ -13,7 +13,7 @@ const router = Router();
 router.use('/classroom', requireAuth, requireOwner);
 router.get('/classroom/status', async (req, res) => {
     const [overview, googleStatus] = await Promise.all([
-        getClassroomOverview(),
+        getClassroomOverview(req, req.user?.id),
         getGoogleConnectionStatus(req.user?.id, req),
     ]);
     return success(res, {
@@ -39,9 +39,9 @@ router.post('/classroom/disconnect', async (req, res) => {
     await disconnectGoogleAccount(req.user?.id);
     return success(res, { disconnected: true });
 });
-router.post('/classroom/sync', async (_req, res) => {
-    const result = await syncClassroomData();
-    const overview = await getClassroomOverview();
+router.post('/classroom/sync', async (req, res) => {
+    const result = await syncClassroomData(req, req.user?.id);
+    const overview = await getClassroomOverview(req, req.user?.id);
     return success(res, {
         synced: result.synced,
         notificationsSent: result.notificationsSent,
@@ -50,7 +50,7 @@ router.post('/classroom/sync', async (_req, res) => {
 });
 router.get('/classroom/overview', async (req, res) => {
     const [overview, cache, googleStatus] = await Promise.all([
-        getClassroomOverview(),
+        getClassroomOverview(req, req.user?.id),
         getClassroomCache(),
         getGoogleConnectionStatus(req.user?.id, req),
     ]);
@@ -70,9 +70,18 @@ router.get('/classroom/bundle', async (req, res) => {
         ['deadline', 'subject', 'priority', 'status'].includes(req.query.sortBy)
         ? req.query.sortBy
         : 'deadline';
-    const [overview, cache, assignments, grades] = await Promise.all([
-        getClassroomOverview(),
+    let [overview, cache] = await Promise.all([
+        getClassroomOverview(req, req.user?.id),
         getClassroomCache(),
+    ]);
+    if (overview.connected && !cache.lastSyncedAt && cache.courses.length === 0) {
+        await syncClassroomData(req, req.user?.id).catch(() => { });
+        [overview, cache] = await Promise.all([
+            getClassroomOverview(req, req.user?.id),
+            getClassroomCache(),
+        ]);
+    }
+    const [assignments, grades] = await Promise.all([
         listClassroomAssignments({ category, sortBy }),
         getGradesOverview(),
     ]);
@@ -95,8 +104,8 @@ router.get('/classroom/courses', async (_req, res) => {
     const cache = await getClassroomCache();
     return success(res, cache.courses);
 });
-router.get('/classroom/invitations', async (_req, res) => {
-    const invitations = await listPendingClassroomInvitations();
+router.get('/classroom/invitations', async (req, res) => {
+    const invitations = await listPendingClassroomInvitations(req, req.user?.id);
     return success(res, invitations);
 });
 router.post('/classroom/join', validate(z.object({
@@ -111,6 +120,7 @@ router.post('/classroom/join', validate(z.object({
     const result = await joinClassroom({
         ...req.body,
         userId: req.user?.id,
+        req,
     });
     return success(res, result);
 });

@@ -136,7 +136,7 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
         return;
     }
     await ensureProfileRow(userId);
-    // Never overwrite an existing refreshToken with an empty one in DB either
+    // Never overwrite an existing refreshToken with an empty one
     if (!finalTokens.refreshToken) {
         const existing = await loadGoogleTokensWithStatus(userId);
         if (existing.tokens?.refreshToken) {

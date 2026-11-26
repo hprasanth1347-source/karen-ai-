@@ -142,7 +142,58 @@ async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit):
   return fetch(input, { ...init, headers });
 }
 
-// Module-level cache so switching away from Instagram and back renders instantly
+const IG_CACHE_KEY = 'karen_ig_hub_cache_v1';
+
+function readInitialIgCache() {
+  try {
+    const raw = sessionStorage.getItem(IG_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          profile: parsed.profile ?? null,
+          media: Array.isArray(parsed.media) ? parsed.media : [],
+          threads: Array.isArray(parsed.threads) ? parsed.threads : [],
+          selectedThread: parsed.selectedThread ?? parsed.threads?.[0] ?? null,
+          vipList: Array.isArray(parsed.vipList) ? parsed.vipList : [],
+          autoReplyConfig: parsed.autoReplyConfig ?? null,
+          autoReplyLogs: Array.isArray(parsed.autoReplyLogs) ? parsed.autoReplyLogs : [],
+          loaded: Boolean(parsed.loaded),
+        };
+      }
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return {
+    profile: null,
+    media: [] as InstagramMediaItem[],
+    threads: [] as InstagramThread[],
+    selectedThread: null as InstagramThread | null,
+    vipList: [] as string[],
+    autoReplyConfig: null as AutoReplyConfig | null,
+    autoReplyLogs: [] as AutoReplyLog[],
+    loaded: false,
+  };
+}
+
+function saveIgCacheSnapshot() {
+  try {
+    sessionStorage.setItem(
+      IG_CACHE_KEY,
+      JSON.stringify({
+        ...instagramPageCache,
+        threads: instagramPageCache.threads.slice(0, 15),
+        media: instagramPageCache.media.slice(0, 20),
+        autoReplyLogs: instagramPageCache.autoReplyLogs.slice(0, 20),
+      })
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+// Module-level + sessionStorage cache so Live Chat renders in 0ms on switch/reload
 const instagramPageCache: {
   profile: InstagramProfile | null;
   media: InstagramMediaItem[];
@@ -152,16 +203,7 @@ const instagramPageCache: {
   autoReplyConfig: AutoReplyConfig | null;
   autoReplyLogs: AutoReplyLog[];
   loaded: boolean;
-} = {
-  profile: null,
-  media: [],
-  threads: [],
-  selectedThread: null,
-  vipList: [],
-  autoReplyConfig: null,
-  autoReplyLogs: [],
-  loaded: false,
-};
+} = readInitialIgCache();
 
 export const InstagramPage: React.FC = () => {
   const [profile, setProfile] = useState<InstagramProfile | null>(instagramPageCache.profile);
@@ -278,6 +320,7 @@ export const InstagramPage: React.FC = () => {
           setSelectedThread(loadedThreads[0]);
           instagramPageCache.selectedThread = loadedThreads[0];
         }
+        saveIgCacheSnapshot();
       }
       setLoading(false);
 
@@ -316,6 +359,7 @@ export const InstagramPage: React.FC = () => {
           }
         }
         instagramPageCache.loaded = true;
+        saveIgCacheSnapshot();
       }).catch((err) => console.error('Error loading secondary Instagram data:', err));
     } catch (err) {
       console.error('Error loading Instagram data:', err);

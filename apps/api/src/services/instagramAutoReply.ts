@@ -139,7 +139,7 @@ async function generateFastDmReply(
           temperature: 0.55,
           max_tokens: 160,
         }),
-        signal: AbortSignal.timeout(3500),
+        signal: AbortSignal.timeout(2800),
       });
       if (res.ok) {
         const json = await res.json();
@@ -164,7 +164,7 @@ async function generateFastDmReply(
             { role: 'user', parts: [{ text: prompt }] },
           ],
         }),
-        signal: AbortSignal.timeout(3500),
+        signal: AbortSignal.timeout(2800),
       });
       if (res.ok) {
         const json = await res.json();
@@ -212,19 +212,28 @@ class InstagramAutoReplyService {
   private async ensureHydrated(): Promise<void> {
     if (this.hydrated) return;
     this.hydrated = true;
-    const savedConfig = await loadUserSetting<Partial<AutoReplyConfig>>('instagram_auto_reply_config');
-    if (savedConfig && typeof savedConfig === 'object') {
-      this.config = { ...this.config, ...savedConfig };
-    }
-    const savedLogs = await loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs');
-    if (Array.isArray(savedLogs) && savedLogs.length > 0) {
-      this.logs = savedLogs.slice(0, 30);
-      for (const l of this.logs) {
-        if (l.status === 'SENT') {
-          if (l.incomingMessageId) this.repliedMessageIds.add(l.incomingMessageId);
-          if (l.id) this.repliedMessageIds.add(l.id);
+    try {
+      const [savedConfig, savedLogs] = await Promise.race([
+        Promise.all([
+          loadUserSetting<Partial<AutoReplyConfig>>('instagram_auto_reply_config').catch(() => null),
+          loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs').catch(() => null),
+        ]),
+        new Promise<[null, null]>((resolve) => setTimeout(() => resolve([null, null]), 900)),
+      ]);
+      if (savedConfig && typeof savedConfig === 'object') {
+        this.config = { ...this.config, ...savedConfig };
+      }
+      if (Array.isArray(savedLogs) && savedLogs.length > 0) {
+        this.logs = savedLogs.slice(0, 30);
+        for (const l of this.logs) {
+          if (l.status === 'SENT') {
+            if (l.incomingMessageId) this.repliedMessageIds.add(l.incomingMessageId);
+            if (l.id) this.repliedMessageIds.add(l.id);
+          }
         }
       }
+    } catch {
+      // Non-fatal hydration error — default enabled 24/7
     }
   }
 
@@ -473,7 +482,7 @@ Thanglish Style Guide (CRITICAL):
 
     this.logs.unshift(logEntry);
     if (this.logs.length > 30) this.logs.length = 30;
-    const persistPromise = saveUserSetting('instagram_auto_reply_logs', this.logs).catch(() => {});
+    const persistPromise = saveUserSetting('instagram_auto_reply_logs', this.logs).catch(() => { });
 
     const badge =
       urgentInfo.category === 'MEDICAL_EMERGENCY'
@@ -495,14 +504,14 @@ Thanglish Style Guide (CRITICAL):
             `${(messageText || '[Media]').slice(0, 180)} — Replied: "${replyText.slice(0, 120)}"`,
             urgentInfo.critical ? 'critical' : 'high',
             'instagram'
-          ).catch(() => {}),
+          ).catch(() => { }),
           sendTelegramMessage(
             `${badge}\n\n` +
-              `👤 From: *@${senderUsername}*\n` +
-              `🕒 Time: ${istTime} IST\n` +
-              `💬 Message: "${(messageText || '[Media]').slice(0, 260)}"\n` +
-              `🤖 Auto-Reply Sent: "${replyText.slice(0, 220)}"`
-          ).catch(() => {}),
+            `👤 From: *@${senderUsername}*\n` +
+            `🕒 Time: ${istTime} IST\n` +
+            `💬 Message: "${(messageText || '[Media]').slice(0, 260)}"\n` +
+            `🤖 Auto-Reply Sent: "${replyText.slice(0, 220)}"`
+          ).catch(() => { }),
         ]);
       } else {
         await persistPromise;
@@ -515,7 +524,7 @@ Thanglish Style Guide (CRITICAL):
           persistPromise,
           sendTelegramMessage(
             `${badge} (AUTO-REPLY FAILED)\n\n👤 From: *@${senderUsername}*\n🕒 Time: ${istTime} IST\n💬 Message: "${(messageText || '[Media]').slice(0, 260)}"\n❌ Error: ${sendRes.error || 'Meta send failed'}`
-          ).catch(() => {}),
+          ).catch(() => { }),
         ]);
       } else {
         await persistPromise;
@@ -579,7 +588,7 @@ Thanglish Style Guide (CRITICAL):
               .map((m) => ({
                 role: (
                   (ownerUsername && m.from?.username === ownerUsername) ||
-                  (ownerId && m.from?.id === ownerId)
+                    (ownerId && m.from?.id === ownerId)
                     ? 'assistant'
                     : 'user'
                 ) as 'user' | 'assistant',
@@ -588,11 +597,11 @@ Thanglish Style Guide (CRITICAL):
             const mediaMeta = {
               ...(Array.isArray(latestMsg.attachments) && latestMsg.attachments.length > 0
                 ? {
-                    attachments: latestMsg.attachments.map((att) => ({
-                      type: att.type,
-                      payload: { url: att.url, title: att.title },
-                    })),
-                  }
+                  attachments: latestMsg.attachments.map((att) => ({
+                    type: att.type,
+                    payload: { url: att.url, title: att.title },
+                  })),
+                }
                 : {}),
               history,
             };
