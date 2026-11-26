@@ -110,6 +110,41 @@ interface SavedConversation {
   last_message_at: string;
 }
 
+const LOCAL_LIBRARY_KEY = 'karen_chat_library_v1';
+
+interface LocalLibraryStore {
+  conversations: SavedConversation[];
+  messages: Record<string, ChatMessage[]>;
+}
+
+function readLocalLibrary(): LocalLibraryStore {
+  try {
+    const raw = localStorage.getItem(LOCAL_LIBRARY_KEY);
+    if (!raw) return { conversations: [], messages: {} };
+    const parsed = JSON.parse(raw) as LocalLibraryStore;
+    return {
+      conversations: Array.isArray(parsed?.conversations) ? parsed.conversations : [],
+      messages: parsed?.messages && typeof parsed.messages === 'object' ? parsed.messages : {},
+    };
+  } catch {
+    return { conversations: [], messages: {} };
+  }
+}
+
+function writeLocalLibrary(store: LocalLibraryStore): void {
+  try {
+    localStorage.setItem(
+      LOCAL_LIBRARY_KEY,
+      JSON.stringify({
+        conversations: store.conversations.slice(0, 50),
+        messages: store.messages,
+      })
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 export const AIChatPage: React.FC = () => {
   const initialGreeting: ChatMessage = {
     id: '1',
@@ -119,8 +154,19 @@ export const AIChatPage: React.FC = () => {
     timestamp: 'Just now',
     provider: 'Karen Brain',
   };
-  const [messages, setMessages] = useState<ChatMessage[]>([initialGreeting]);
-  const [conversations, setConversations] = useState<SavedConversation[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const savedId = sessionStorage.getItem('karen_active_conversation_id');
+      if (savedId) {
+        const local = readLocalLibrary();
+        if (local.messages[savedId]?.length) return local.messages[savedId];
+      }
+    } catch {
+      // Ignore
+    }
+    return [initialGreeting];
+  });
+  const [conversations, setConversations] = useState<SavedConversation[]>(() => readLocalLibrary().conversations);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
     try {
       return sessionStorage.getItem('karen_active_conversation_id');
@@ -175,6 +221,11 @@ export const AIChatPage: React.FC = () => {
   };
 
   const handleSelectConversation = async (id: string) => {
+    const localMsgs = readLocalLibrary().messages[id];
+    if (localMsgs?.length) {
+      persistActiveId(id);
+      setMessages(localMsgs);
+    }
     try {
       const res = await api.get<{
         ok: boolean;
@@ -182,21 +233,25 @@ export const AIChatPage: React.FC = () => {
       }>(`/ai/conversations/${id}/messages`);
       const rows = res.data?.data || [];
       persistActiveId(id);
-      setMessages(
-        rows.length > 0
-          ? rows
-            .filter((r) => r.role === 'user' || r.role === 'assistant')
-            .map((r) => ({
-              id: r.id,
-              role: r.role as 'user' | 'assistant',
-              content: r.content,
-              timestamp: new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              provider: r.ai_provider ? `${r.ai_provider.toUpperCase()}${r.ai_model ? ` · ${r.ai_model}` : ''}` : undefined,
-            }))
-          : [initialGreeting]
-      );
+      if (rows.length > 0) {
+        const mapped: ChatMessage[] = rows
+          .filter((r) => r.role === 'user' || r.role === 'assistant')
+          .map((r) => ({
+            id: r.id,
+            role: r.role as 'user' | 'assistant',
+            content: r.content,
+            timestamp: new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            provider: r.ai_provider ? `${r.ai_provider.toUpperCase()}${r.ai_model ? ` · ${r.ai_model}` : ''}` : undefined,
+          }));
+        setMessages(mapped);
+        const store = readLocalLibrary();
+        store.messages[id] = mapped;
+        writeLocalLibrary(store);
+      } else if (!localMsgs?.length) {
+        setMessages([initialGreeting]);
+      }
     } catch {
-      // Keep current messages if fetch fails
+      // Keep current/local messages if fetch fails
     }
   };
 
@@ -205,22 +260,30 @@ export const AIChatPage: React.FC = () => {
     setLibraryError('');
     try {
       const res = await api.get<{ ok: boolean; data: SavedConversation[] }>('/ai/conversations');
-      if (Array.isArray(res.data?.data)) {
-        const list = res.data.data;
-        setConversations(list);
-        if (restoreActive) {
-          const savedId = (() => {
-            try {
-              return sessionStorage.getItem('karen_active_conversation_id');
-            } catch {
-              return null;
-            }
-          })();
-          if (savedId && list.some((c) => c.id === savedId)) {
-            await handleSelectConversation(savedId);
-          } else if (savedId && list.length > 0) {
-            persistActiveId(null);
+      const serverList = Array.isArray(res.data?.data) ? res.data.data : [];
+      const localStore = readLocalLibrary();
+      const mergedMap = new Map<string, SavedConversation>();
+      for (const c of serverList) mergedMap.set(c.id, c);
+      for (const c of localStore.conversations) {
+        if (!mergedMap.has(c.id)) mergedMap.set(c.id, c);
+      }
+      const list = Array.from(mergedMap.values()).sort(
+        (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
+      );
+      setConversations(list);
+      localStore.conversations = list;
+      writeLocalLibrary(localStore);
+
+      if (restoreActive) {
+        const savedId = (() => {
+          try {
+            return sessionStorage.getItem('karen_active_conversation_id');
+          } catch {
+            return null;
           }
+        })();
+        if (savedId && list.some((c) => c.id === savedId)) {
+          await handleSelectConversation(savedId);
         }
       }
     } catch (err: any) {
@@ -241,12 +304,16 @@ export const AIChatPage: React.FC = () => {
 
   const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    const store = readLocalLibrary();
+    store.conversations = store.conversations.filter((c) => c.id !== id);
+    delete store.messages[id];
+    writeLocalLibrary(store);
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    if (activeConversationId === id) {
+      handleNewChat();
+    }
     try {
       await api.delete(`/ai/conversations/${id}`);
-      setConversations((prev) => prev.filter((c) => c.id !== id));
-      if (activeConversationId === id) {
-        handleNewChat();
-      }
     } catch {
       // Ignore error
     }
@@ -612,7 +679,15 @@ export const AIChatPage: React.FC = () => {
           }
           : undefined,
       };
-      setMessages((prev) => [...prev, botMsg]);
+      setMessages((prev) => {
+        const nextMsgs = [...prev, botMsg];
+        if (result.conversationId) {
+          const store = readLocalLibrary();
+          store.messages[result.conversationId] = nextMsgs;
+          writeLocalLibrary(store);
+        }
+        return nextMsgs;
+      });
     } catch (err: any) {
       const msg = err?.response?.data?.error || (err instanceof Error ? err.message : 'AI request failed.');
       const errorMsg: ChatMessage = {

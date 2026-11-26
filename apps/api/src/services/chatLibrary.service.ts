@@ -77,6 +77,15 @@ export async function listConversations(
   userId?: string,
   channel?: ChatConversation['channel']
 ): Promise<ChatConversation[]> {
+  const byId = new Map<string, ChatConversation>();
+  const addItems = (items: ChatConversation[]) => {
+    for (const c of items) {
+      if (!channel || c.channel === channel) {
+        if (!byId.has(c.id)) byId.set(c.id, c);
+      }
+    }
+  };
+
   const uid = await resolveUserId(userId);
   if (uid) {
     try {
@@ -91,40 +100,36 @@ export async function listConversations(
       if (channel) query = query.eq('channel', channel);
 
       const { data, error } = await query;
-      if (!error && data && data.length > 0) {
-        return data.map((row: Record<string, unknown>) => ({
-          id: String(row.id),
-          title: String(row.title || 'New Chat'),
-          channel: (row.channel as ChatConversation['channel']) || 'web',
-          message_count: Number(row.message_count || 0),
-          last_message_at: String(row.last_message_at || row.created_at || new Date().toISOString()),
-          created_at: String(row.created_at || new Date().toISOString()),
-        }));
-      }
-
-      const backup = await readSettingsLibrary();
-      const backupList = channel
-        ? backup.conversations.filter((c) => c.channel === channel)
-        : backup.conversations;
-      if (backupList.length > 0) {
-        return backupList;
-      }
-      if (error) {
+      if (!error && data) {
+        addItems(
+          data.map((row: Record<string, unknown>) => ({
+            id: String(row.id),
+            title: String(row.title || 'New Chat'),
+            channel: (row.channel as ChatConversation['channel']) || 'web',
+            message_count: Number(row.message_count || 0),
+            last_message_at: String(row.last_message_at || row.created_at || new Date().toISOString()),
+            created_at: String(row.created_at || new Date().toISOString()),
+          }))
+        );
+      } else if (error) {
         logger.warn('Supabase conversations read failed, using user_settings/memory backup', { error });
       }
     } catch (err) {
       logger.warn('Supabase conversations read error', { err });
-      const backup = await readSettingsLibrary().catch(() => ({ conversations: [], messages: {} }));
-      const backupList = channel
-        ? backup.conversations.filter((c) => c.channel === channel)
-        : backup.conversations;
-      if (backupList.length > 0) return backupList;
     }
   }
 
-  return channel
-    ? memoryConversations.filter((c) => c.channel === channel)
-    : [...memoryConversations];
+  try {
+    const backup = await readSettingsLibrary();
+    addItems(backup.conversations);
+  } catch {
+    // Ignore backup read errors
+  }
+  addItems(memoryConversations);
+
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
+  );
 }
 
 export async function createConversation(
