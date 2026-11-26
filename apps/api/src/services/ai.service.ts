@@ -17,6 +17,13 @@ import {
   type ApprovalItem,
 } from './approval.service.js';
 import { getLoveModeSystemPrompt } from './loveMode.service.js';
+import {
+  addManualExam,
+  getClassroomContextPrompt,
+  joinClassroomByCodeOrLink,
+  syncClassroomData,
+} from './classroom.service.js';
+import { sendTelegramMessage } from '../providers/telegram.js';
 
 export type AIProvider = 'groq' | 'gemini' | 'copilot';
 
@@ -172,6 +179,53 @@ async function finalizeAIReply(
     cleaned = cleaned.replace(match[0], '').trim();
   }
 
+  // Google Classroom: Sync
+  if (/\[\[CLASSROOM_SYNC\]\]/i.test(rawReply)) {
+    const syncRes = await syncClassroomData().catch(() => null);
+    if (syncRes?.synced) {
+      cleaned += `\n\n✅ Synced Google Classroom (${syncRes.cache.courses.length} courses, ${syncRes.cache.assignments.length} assignments).`;
+    } else {
+      cleaned += `\n\n(Note: ${syncRes?.cache.lastError || 'Could not sync Google Classroom.'})`;
+    }
+    cleaned = cleaned.replace(/\[\[CLASSROOM_SYNC\]\]/gi, '').trim();
+  }
+
+  // Google Classroom: Join Class
+  const joinClassRegex = /\[\[JOIN_CLASS:\s*([^|\]]+?)(?:\s*\|\s*([^\]]*?))?\s*\]\]/gi;
+  for (const match of rawReply.matchAll(joinClassRegex)) {
+    const codeOrLink = match[1]?.trim();
+    const courseId = match[2]?.trim() || undefined;
+    if (codeOrLink) {
+      const res = await joinClassroomByCodeOrLink({ codeOrLink, courseId });
+      cleaned += res.joined ? `\n\n✅ ${res.message}` : `\n\n⚠️ ${res.message}`;
+    }
+    cleaned = cleaned.replace(match[0], '').trim();
+  }
+
+  // Google Classroom: Add Exam
+  const addExamRegex = /\[\[ADD_EXAM:\s*([^|\]]+?)\s*\|\s*(\d{4}-\d{2}-\d{2})(?:\s*\|\s*([^\]]*?))?\s*\]\]/gi;
+  for (const match of rawReply.matchAll(addExamRegex)) {
+    const subject = match[1]?.trim();
+    const examDateIso = match[2]?.trim();
+    const examTime = match[3]?.trim() || undefined;
+    if (subject && examDateIso) {
+      await addManualExam({ subject, examDateIso, examTime });
+      cleaned += `\n\n📅 Exam added: ${subject} on ${examDateIso}${examTime ? ` (${examTime})` : ''}.`;
+    }
+    cleaned = cleaned.replace(match[0], '').trim();
+  }
+
+  // Telegram: Send message to owner's Telegram
+  const tgRegex = /\[\[SEND_TELEGRAM:\s*([^\]]+?)\s*\]\]/gi;
+  for (const match of rawReply.matchAll(tgRegex)) {
+    const msg = match[1]?.trim();
+    if (msg) {
+      const ok = await sendTelegramMessage(msg);
+      cleaned += ok ? `\n\n✅ Sent to your Telegram.` : `\n\n(Note: Telegram message could not be sent.)`;
+    }
+    cleaned = cleaned.replace(match[0], '').trim();
+  }
+
   return { reply: cleaned.trim(), provider, model, pendingApproval };
 }
 
@@ -189,13 +243,14 @@ export async function generateAIReply(
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
   const reqSignal = signal ?? AbortSignal.timeout(15000);
   const needsSearch = !isLoveMode && shouldSearchWeb(cleanPrompt);
-  const [searchResults, googleContext, memoryContext, tasksContext] = await Promise.all([
+  const [searchResults, googleContext, memoryContext, tasksContext, classroomContext] = await Promise.all([
     needsSearch && isWebSearchConfigured()
       ? searchWebWithGoogle(cleanPrompt, 5, reqSignal)
       : Promise.resolve([]),
     isLoveMode ? Promise.resolve('') : getGoogleContextForPrompt(cleanPrompt),
     getMemoryContextPrompt(),
     isLoveMode ? Promise.resolve('') : getTasksContextPrompt(),
+    isLoveMode ? Promise.resolve('') : getClassroomContextPrompt(cleanPrompt),
   ]);
   const docsContext = isLoveMode ? '' : getDocumentsContextPrompt();
 
@@ -220,11 +275,16 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
 - Auto-Learn Rule: Whenever the user shares a useful, durable personal detail, preference, business rule, contact, or instruction (not already in Personal Details above, and not transient small talk), automatically save it by appending [[MEMORY: <concise standalone fact> | <personal|work|preference|fact|instruction|other>]].
 - Schedule/create a task: [[TASK: <title> | <YYYY-MM-DD> | <low|medium|high|urgent>]]
 - Send an email (or share/attach a Google Drive file like "aadhar" by email): [[SEND_EMAIL: <recipient_email(s)> | <subject> | <body with Drive link if found> | <optional_drive_filename_to_attach>]]
-- Send an Instagram DM (or share a Drive file link via Instagram): [[SEND_INSTA: <instagram_username> | <message with Drive link if applicable>]]` +
+- Send an Instagram DM (or share a Drive file link via Instagram): [[SEND_INSTA: <instagram_username> | <message with Drive link if applicable>]]
+- Send a message/reminder to the owner's Telegram: [[SEND_TELEGRAM: <message>]]
+- Sync Google Classroom courses/assignments: [[CLASSROOM_SYNC]]
+- Join a Google Classroom by invite link or courseId+code: [[JOIN_CLASS: <invite_link_or_code> | <optional_course_id>]]
+- Track an exam date: [[ADD_EXAM: <subject> | <YYYY-MM-DD> | <optional_time>]]` +
     memoryContext +
     tasksContext +
     docsContext +
     googleContext +
+    classroomContext +
     formatSearchContext(searchResults);
 
   // Use cleaned prompt (strips [LOVE_MODE] prefix if present)

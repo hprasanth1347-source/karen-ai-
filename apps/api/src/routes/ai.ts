@@ -20,6 +20,13 @@ import {
   listConversations,
 } from '../services/chatLibrary.service.js';
 import { success, error } from '../utils/response.js';
+import { config } from '../config/env.js';
+import {
+  detectLoveModeActivation,
+  detectLoveModeDeactivation,
+  getLoveModeState,
+  setLoveModeActive,
+} from '../services/loveMode.service.js';
 
 const router = Router();
 const providerSchema = z.enum(['groq', 'gemini', 'copilot']);
@@ -65,8 +72,24 @@ router.get('/ai/models', aiLimit, async (req, res) => {
 router.post('/ai/chat', requireAuth, aiLimit, validate(chatSchema), async (req, res) => {
   await hydrateGoogleTokensFromRequest(req);
   try {
+    const ownerChatKey = config.TELEGRAM_OWNER_CHAT_ID || req.user?.id || 'owner';
+    let promptText: string = req.body.message;
+
+    if (detectLoveModeDeactivation(promptText)) {
+      await setLoveModeActive(ownerChatKey, false);
+    } else {
+      const loveState = await getLoveModeState(ownerChatKey);
+      const shouldActivate = !loveState.active && detectLoveModeActivation(promptText);
+      if (shouldActivate) {
+        await setLoveModeActive(ownerChatKey, true);
+      }
+      if (loveState.active || shouldActivate) {
+        promptText = `[LOVE_MODE] ${promptText}`;
+      }
+    }
+
     const result = await generateAIReply(
-      req.body.message,
+      promptText,
       req.body.history,
       req.body.provider,
       req.body.model

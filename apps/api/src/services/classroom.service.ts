@@ -1271,3 +1271,31 @@ ${mode === 'plan' ? '- Realistic hour-by-hour cram plan for the available hours\
     plan: ai.reply,
   };
 }
+
+
+export async function getClassroomContextPrompt(query = ''): Promise<string> {
+  const cache = await getClassroomCache();
+  if (!cache.courses.length && !cache.assignments.length && !cache.exams.length) {
+    return '\n\n[Google Classroom]: No courses cached yet (user can sync or share a Classroom invite link).';
+  }
+  const coursesList = cache.courses
+    .slice(0, 15)
+    .map((c) => `- ${c.name} (${c.courseState}, id: ${c.id})`)
+    .join('\n');
+  const pending = cache.assignments
+    .filter((a) => a.category !== 'submitted' && a.category !== 'graded')
+    .slice(0, 12)
+    .map((a) => `- [${a.category.toUpperCase()}] ${a.title} (${a.courseName}) | Due: ${a.dueIstDisplay}`)
+    .join('\n');
+  const exams = cache.exams
+    .slice(0, 8)
+    .map((e) => `- ${e.subject} on ${e.examDateIso}${e.examTime ? ` (${e.examTime})` : ''}`)
+    .join('\n');
+
+  const isAcademicQuery = /\b(class|course|classroom|assignment|homework|due|deadline|grade|exam|announcement|study|prep)\b/i.test(query);
+  if (!isAcademicQuery) {
+    return `\n\n[Google Classroom Summary]: ${cache.courses.length} courses, ${cache.assignments.filter((a) => a.category !== 'submitted' && a.category !== 'graded').length} pending assignments, ${cache.exams.length} exams.`;
+  }
+
+  return `\n\n[Google Classroom Live Data]:\nCourses (${cache.courses.length}):\n${coursesList || 'None'}\n\nPending/Overdue Assignments:\n${pending || 'None'}\n\nTracked Exams:\n${exams || 'None'}`;
+}
