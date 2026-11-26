@@ -102,7 +102,7 @@ api.interceptors.response.use(
         // Ignore storage errors
       }
       if (supabase) {
-        await supabase.auth.signOut().catch(() => {});
+        await supabase.auth.signOut().catch(() => { });
       }
       if (!window.location.pathname.startsWith('/auth')) {
         window.location.assign('/auth?expired=1');

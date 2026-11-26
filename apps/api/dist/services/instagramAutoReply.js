@@ -277,7 +277,7 @@ Thanglish Style Guide (CRITICAL):
         this.logs.unshift(logEntry);
         if (this.logs.length > 30)
             this.logs.length = 30;
-        void saveUserSetting('instagram_auto_reply_logs', this.logs);
+        await saveUserSetting('instagram_auto_reply_logs', this.logs);
         if (sendRes.success) {
             logger.info(`Auto-reply sent successfully to @${senderUsername}: "${replyText}"`);
             return { autoReplied: true, replyText };

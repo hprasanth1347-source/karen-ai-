@@ -6,8 +6,28 @@ import { aiLimit } from '../middleware/rateLimit.js';
 import { generateAIReply } from '../services/ai.service.js';
 import { clearGoogleTokensFromDb, getOwnerUserId, loadGoogleTokensWithStatus, markGoogleNeedsReauth, saveGoogleTokensToDb, } from '../services/persistence.service.js';
 import { extractTextFromBuffer } from '../utils/docParser.js';
+import { encryptJson, decryptJson } from '../utils/crypto.js';
 import { logger } from '../config/logger.js';
 import { success, error } from '../utils/response.js';
+const GOOGLE_COOKIE_NAME = 'karen_google_tokens';
+function readGoogleTokensFromCookie(req) {
+    const rawCookie = req?.headers?.cookie;
+    if (!rawCookie)
+        return null;
+    for (const part of rawCookie.split(';')) {
+        const idx = part.indexOf('=');
+        if (idx === -1)
+            continue;
+        const name = part.slice(0, idx).trim();
+        if (name === GOOGLE_COOKIE_NAME) {
+            const val = decodeURIComponent(part.slice(idx + 1).trim());
+            const parsed = decryptJson(val);
+            if (parsed?.accessToken)
+                return parsed;
+        }
+    }
+    return null;
+}
 const router = Router();
 const refreshMutexes = new Map();
 function getStateSecret() {
@@ -146,9 +166,21 @@ async function performGoogleTokenRefresh(userId, stored) {
 }
 async function getValidAccessToken(req) {
     const userId = req?.user?.id || (await getOwnerUserId()) || '';
-    if (!userId)
-        return null;
-    const { tokens, status } = await loadGoogleTokensWithStatus(userId);
+    let tokens = null;
+    let status = 'disconnected';
+    if (userId) {
+        const dbRes = await loadGoogleTokensWithStatus(userId);
+        tokens = dbRes.tokens;
+        status = dbRes.status;
+    }
+    // Fallback to encrypted HttpOnly cookie if DB persistence was unavailable
+    if ((!tokens || status !== 'connected') && req) {
+        const cookieTokens = readGoogleTokensFromCookie(req);
+        if (cookieTokens?.accessToken) {
+            tokens = cookieTokens;
+            status = 'connected';
+        }
+    }
     if (!tokens || status !== 'connected')
         return null;
     // Refresh 5 minutes before expiry
@@ -239,11 +271,31 @@ router.get('/auth/google/callback', async (req, res) => {
             logger.warn('Google OAuth token exchange failed', json);
             return res.redirect(`${targetPage}?error=${encodeURIComponent(json.error_description || json.error || 'token_exchange_failed')}`);
         }
-        await saveGoogleTokensToDb({
+        const tokenPayload = {
             accessToken: json.access_token,
             refreshToken: json.refresh_token || '',
             expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
-        }, verifiedState.userId);
+        };
+        try {
+            await saveGoogleTokensToDb(tokenPayload, verifiedState.userId);
+        }
+        catch (dbErr) {
+            logger.warn('saveGoogleTokensToDb threw, continuing with encrypted HttpOnly cookie', { dbErr });
+        }
+        // Also persist encrypted tokens in an HttpOnly cookie so Google features work even if DB is unavailable
+        try {
+            const encryptedCookie = encryptJson(tokenPayload);
+            res.cookie(GOOGLE_COOKIE_NAME, encryptedCookie, {
+                httpOnly: true,
+                secure: config.NODE_ENV === 'production',
+                sameSite: 'lax',
+                path: '/',
+                maxAge: 30 * 24 * 60 * 60 * 1000,
+            });
+        }
+        catch (cookieErr) {
+            logger.warn('Failed to set Google tokens cookie', { cookieErr });
+        }
         return res.redirect(`${targetPage}?connected=1`);
     }
     catch (err) {
@@ -254,7 +306,13 @@ router.get('/auth/google/callback', async (req, res) => {
 });
 router.use('/drive', requireAuth, requireOwner);
 router.get('/drive/status', async (req, res) => {
-    const status = await getGoogleConnectionStatus(req.user?.id);
+    let status = await getGoogleConnectionStatus(req.user?.id);
+    if (status !== 'connected') {
+        const cookieTokens = readGoogleTokensFromCookie(req);
+        if (cookieTokens?.accessToken) {
+            status = 'connected';
+        }
+    }
     return success(res, {
         configured: isGoogleConfigured(),
         connected: status === 'connected',
@@ -274,6 +332,7 @@ router.get('/drive/auth-url', async (req, res) => {
     });
 });
 router.post('/drive/disconnect', async (req, res) => {
+    res.clearCookie(GOOGLE_COOKIE_NAME, { path: '/' });
     await disconnectGoogleAccount(req.user?.id);
     return success(res, { disconnected: true });
 });

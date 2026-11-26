@@ -41,7 +41,7 @@ export const ContactsPage: React.FC = () => {
   }, []);
 
   const handleReconnect = async () => {
-    const res = await api.get<{ data: { url: string } }>('/auth/google/url?target=drive').catch(() => null);
+    const res = await api.get<{ data: { url: string } }>('/drive/auth-url', { params: { source: 'drive' } }).catch(() => null);
     if (res?.data?.data?.url) window.location.href = res.data.data.url;
   };
 

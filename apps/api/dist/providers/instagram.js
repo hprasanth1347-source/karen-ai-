@@ -261,32 +261,39 @@ export async function getThreadDetails(threadId) {
 }
 export async function sendInstagramMessage(recipientId, text) {
     const { token, accountId } = await resolveIgAuth();
-    if (!token || !accountId) {
+    if (!token) {
         return { success: false, error: 'Instagram is not connected. Add a valid server-side access token first.' };
     }
-    try {
-        const res = await metaFetch(`${META_BASE_URL}/${accountId}/messages`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-                recipient: { id: recipientId },
-                message: { text },
-            }),
-        }, 7000);
-        const json = await res.json();
-        if (!res.ok) {
-            return { success: false, error: json.error?.message || 'Meta API error' };
+    const endpoints = token.startsWith('IG')
+        ? ['https://graph.instagram.com/v21.0/me/messages', `${META_BASE_URL}/${accountId || 'me'}/messages`]
+        : [`${META_BASE_URL}/${accountId || 'me'}/messages`, `${META_BASE_URL}/me/messages`, 'https://graph.instagram.com/v21.0/me/messages'];
+    let lastError = 'Meta API error';
+    for (const endpoint of endpoints) {
+        try {
+            const res = await metaFetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    recipient: { id: recipientId },
+                    message: { text },
+                }),
+            }, 7000);
+            const json = await res.json().catch(() => ({}));
+            if (res.ok) {
+                conversationsCache = null;
+                return { success: true, messageId: json.message_id };
+            }
+            lastError = json.error?.message || `Meta API error (${res.status})`;
+            logger.warn('Instagram send attempt failed, trying fallback endpoint if available', { endpoint, lastError });
         }
-        conversationsCache = null;
-        return { success: true, messageId: json.message_id };
+        catch (err) {
+            lastError = err.message || 'Network error';
+        }
     }
-    catch (err) {
-        logger.error('Error sending Instagram message:', err);
-        return { success: false, error: err.message };
-    }
+    return { success: false, error: lastError };
 }
 export async function draftInstagramReply(incomingMessage, senderUsername, preferredProvider, preferredModel) {
     const prompt = `User @${senderUsername || 'friend'} sent this Instagram DM to Hari: "${incomingMessage}".

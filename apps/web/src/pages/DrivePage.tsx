@@ -86,7 +86,7 @@ export const DrivePage: React.FC = () => {
   const refreshStatus = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/drive/status');
+      const res = await api.get('/drive/status', { skipCache: true } as any);
       const status = res.data?.data;
       setConfigured(Boolean(status?.configured));
       setConnected(Boolean(status?.connected));

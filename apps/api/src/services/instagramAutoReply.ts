@@ -232,7 +232,7 @@ class InstagramAutoReplyService {
     if (/\b(otp|password|pin\b|cvv|bank\s+account|upi\s+pin|send\s+money|transfer\s+\d+)\b/i.test(messageText)) {
       await sendTelegramMessage(
         `KAREN AI - INSTAGRAM SAFETY HOLD\n\nSender: @${senderUsername}\nReason: Sensitive request (OTP/password/financial) — auto-reply paused for human review.`
-      ).catch(() => {});
+      ).catch(() => { });
       return { autoReplied: false };
     }
 
@@ -338,7 +338,7 @@ Thanglish Style Guide (CRITICAL):
 
     this.logs.unshift(logEntry);
     if (this.logs.length > 30) this.logs.length = 30;
-    void saveUserSetting('instagram_auto_reply_logs', this.logs);
+    await saveUserSetting('instagram_auto_reply_logs', this.logs);
 
     if (sendRes.success) {
       logger.info(`Auto-reply sent successfully to @${senderUsername}: "${replyText}"`);
@@ -392,11 +392,11 @@ Thanglish Style Guide (CRITICAL):
             const mediaMeta =
               Array.isArray(latestMsg.attachments) && latestMsg.attachments.length > 0
                 ? {
-                    attachments: latestMsg.attachments.map((att) => ({
-                      type: att.type,
-                      payload: { url: att.url, title: att.title },
-                    })),
-                  }
+                  attachments: latestMsg.attachments.map((att) => ({
+                    type: att.type,
+                    payload: { url: att.url, title: att.title },
+                  })),
+                }
                 : undefined;
             const res = await this.handleIncomingMessage(
               t.participant.id,
