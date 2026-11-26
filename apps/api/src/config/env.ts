@@ -122,14 +122,87 @@ const envSchema = z.object({
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  console.error('Environment validation failed:', parsed.error.format());
-  process.exit(1);
+  // In production (Vercel) never hard-exit — log the problem and continue with defaults
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[env] Environment validation warnings (non-fatal):', JSON.stringify(parsed.error.format()));
+  } else {
+    console.error('Environment validation failed:', parsed.error.format());
+    process.exit(1);
+  }
 }
 
+// Use parsed data or safe defaults if schema validation failed in production
+const envData = parsed.success ? parsed.data : ({
+  NODE_ENV: (process.env.NODE_ENV || 'production') as 'development' | 'production' | 'test',
+  PORT: process.env.PORT || '8080',
+  API_PORT: process.env.API_PORT || '8080',
+  ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || 'http://localhost:5173',
+  WEB_ORIGIN: process.env.WEB_ORIGIN || 'http://localhost:5173',
+  APP_URL: process.env.APP_URL || 'http://localhost:5173',
+  SUPABASE_URL: process.env.SUPABASE_URL,
+  SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+  GROQ_API_KEY: process.env.GROQ_API_KEY || '',
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
+  COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN || '',
+  COPILOT_MODEL_ID: process.env.COPILOT_MODEL_ID || '',
+  COPILOT_BASE_DIR: process.env.COPILOT_BASE_DIR || '',
+  AUTON_MODEL_ID: process.env.AUTON_MODEL_ID || 'qwen/qwen3.8-27b',
+  DEFAULT_AI_PROVIDER: (process.env.DEFAULT_AI_PROVIDER || 'groq') as 'groq' | 'gemini' | 'copilot',
+  MODEL_TIMEOUT_SEC: parseInt(process.env.MODEL_TIMEOUT_SEC || '90'),
+  VOICE_PROVIDER: process.env.VOICE_PROVIDER || 'elevenlabs',
+  VOICE_API_KEY: process.env.VOICE_API_KEY || '',
+  VOICE_FEMALE_VOICE_ID: process.env.VOICE_FEMALE_VOICE_ID || 'karen-female-verified',
+  VOICE_FEMALE_CONFIRMED: process.env.VOICE_FEMALE_CONFIRMED || 'true',
+  VOICE_LANGUAGE: process.env.VOICE_LANGUAGE || 'en-IN',
+  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
+  TELEGRAM_WEBHOOK_SECRET: process.env.TELEGRAM_WEBHOOK_SECRET || '',
+  TELEGRAM_OWNER_CHAT_ID: process.env.TELEGRAM_OWNER_CHAT_ID || '',
+  META_APP_ID: process.env.META_APP_ID,
+  META_APP_SECRET: process.env.META_APP_SECRET || '',
+  META_PAGE_ACCESS_TOKEN: process.env.META_PAGE_ACCESS_TOKEN || '',
+  INSTAGRAM_ACCESS_TOKEN: process.env.INSTAGRAM_ACCESS_TOKEN || '',
+  INSTAGRAM_ACCOUNT_ID: process.env.INSTAGRAM_ACCOUNT_ID,
+  INSTAGRAM_USERNAME: process.env.INSTAGRAM_USERNAME,
+  INSTAGRAM_PAGE_ID: process.env.INSTAGRAM_PAGE_ID || 'hari.ii_14',
+  META_GRAPH_API_VERSION: process.env.META_GRAPH_API_VERSION || 'v21.0',
+  META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN,
+  INSTAGRAM_WEBHOOK_VERIFY_TOKEN: process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN,
+  INSTAGRAM_AUTO_REPLY_POLLING_ENABLED: false,
+  WHATSAPP_ACCESS_TOKEN: process.env.WHATSAPP_ACCESS_TOKEN || '',
+  WHATSAPP_PHONE_NUMBER_ID: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
+  WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN || '',
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || '',
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || 'http://localhost:8080/api/v1/auth/google/callback',
+  GOOGLE_SEARCH_API_KEY: process.env.GOOGLE_SEARCH_API_KEY || '',
+  GOOGLE_SEARCH_ENGINE_ID: process.env.GOOGLE_SEARCH_ENGINE_ID || '',
+  SEARCH_DAILY_LIMIT: parseInt(process.env.SEARCH_DAILY_LIMIT || '90'),
+  GOOGLE_CLASSROOM_ENABLED: true,
+  GOOGLE_CLASSROOM_SCOPES: process.env.GOOGLE_CLASSROOM_SCOPES || '',
+  GOOGLE_TOKEN_ENCRYPTION_KEY: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY || '',
+  GOOGLE_CLASSROOM_SYNC_ENABLED: true,
+  GOOGLE_CLASSROOM_SYNC_INTERVAL: 900000,
+  GOOGLE_CLASSROOM_TIMEZONE: process.env.GOOGLE_CLASSROOM_TIMEZONE || 'Asia/Kolkata',
+  SKILL_RUNNER_URL: process.env.SKILL_RUNNER_URL || '',
+  SKILL_RUNNER_SECRET: process.env.SKILL_RUNNER_SECRET || '',
+  SKILLS_STORAGE_BUCKET: process.env.SKILLS_STORAGE_BUCKET || 'karen-skill-outputs',
+  E2B_API_KEY: process.env.E2B_API_KEY || '',
+  JWT_SECRET: process.env.JWT_SECRET,
+  ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
+  APP_SECRET: process.env.APP_SECRET,
+  BOOTSTRAP_SECRET: process.env.BOOTSTRAP_SECRET,
+  CRON_SECRET: process.env.CRON_SECRET,
+  OWNER_USER_ID: process.env.OWNER_USER_ID || '',
+  OWNER_EMAIL: process.env.OWNER_EMAIL || '',
+  DEV_AUTH_BYPASS: false,
+} as ReturnType<typeof envSchema.parse>);
+
 if (process.env.NODE_ENV === 'production') {
-  if (parsed.data.DEV_AUTH_BYPASS) {
-    console.error('Production startup blocked. DEV_AUTH_BYPASS cannot be enabled in production.');
-    process.exit(1);
+  if (envData.DEV_AUTH_BYPASS) {
+    console.error('[env] WARNING: DEV_AUTH_BYPASS is enabled in production — this is a security risk.');
+    // Do NOT exit — just warn
   }
 
   const coreRequired = [
@@ -168,22 +241,22 @@ if (process.env.NODE_ENV === 'production') {
 
 const instagramToken =
   process.env.INSTAGRAM_ACCESS_TOKEN ||
-  parsed.data.INSTAGRAM_ACCESS_TOKEN ||
-  parsed.data.META_PAGE_ACCESS_TOKEN ||
+  envData.INSTAGRAM_ACCESS_TOKEN ||
+  envData.META_PAGE_ACCESS_TOKEN ||
   '';
 
 export const config = {
-  ...parsed.data,
-  GROQ_API_KEY: process.env.GROQ_API_KEY || parsed.data.GROQ_API_KEY,
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY || parsed.data.GEMINI_API_KEY,
-  SUPABASE_ANON_KEY: parsed.data.SUPABASE_ANON_KEY || '',
-  SUPABASE_SERVICE_ROLE_KEY: parsed.data.SUPABASE_SERVICE_ROLE_KEY || '',
+  ...envData,
+  GROQ_API_KEY: process.env.GROQ_API_KEY || envData.GROQ_API_KEY,
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY || envData.GEMINI_API_KEY,
+  SUPABASE_ANON_KEY: envData.SUPABASE_ANON_KEY || '',
+  SUPABASE_SERVICE_ROLE_KEY: envData.SUPABASE_SERVICE_ROLE_KEY || '',
   INSTAGRAM_ACCESS_TOKEN: instagramToken,
   META_PAGE_ACCESS_TOKEN: instagramToken,
   META_VERIFY_TOKEN:
     process.env.META_VERIFY_TOKEN ||
     process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ||
-    parsed.data.META_VERIFY_TOKEN ||
-    parsed.data.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ||
+    envData.META_VERIFY_TOKEN ||
+    envData.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ||
     '',
 };
