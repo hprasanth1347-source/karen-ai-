@@ -32,6 +32,42 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+const prefetchedRoutes = new Set<string>();
+const routePrefetchMap: Record<string, () => Promise<unknown>> = {
+  '/': () => import('../../pages/OverviewPage'),
+  '/ai-chat': () => import('../../pages/AIChatPage'),
+  '/love-mode': () => import('../../pages/LoveModePage'),
+  '/whatsapp': () => import('../../pages/WhatsAppPage'),
+  '/instagram': () => import('../../pages/InstagramPage'),
+  '/gmail': () => import('../../pages/GmailPage'),
+  '/drive': () => import('../../pages/DrivePage'),
+  '/classroom': () => import('../../pages/ClassroomPage'),
+  '/memory': () => import('../../pages/MemoryPage'),
+  '/documents': () => import('../../pages/DocumentsPage'),
+  '/voice': () => import('../../pages/VoicePage'),
+  '/telegram': () => import('../../pages/TelegramPage'),
+  '/notifications': () => import('../../pages/NotificationsPage'),
+  '/contacts': () => import('../../pages/ContactsPage'),
+  '/automation': () => import('../../pages/AutomationPage'),
+  '/tasks': () => import('../../pages/TasksPage'),
+  '/reminders': () => import('../../pages/RemindersPage'),
+  '/security': () => import('../../pages/SecurityPage'),
+  '/api-management': () => import('../../pages/ApiManagementPage'),
+  '/database': () => import('../../pages/DatabasePage'),
+  '/monitor': () => import('../../pages/MonitorPage'),
+  '/activity': () => import('../../pages/ActivityPage'),
+  '/settings': () => import('../../pages/SettingsPage'),
+};
+
+function prefetchRoute(path: string) {
+  if (prefetchedRoutes.has(path)) return;
+  const loader = routePrefetchMap[path];
+  if (loader) {
+    prefetchedRoutes.add(path);
+    void loader().catch(() => prefetchedRoutes.delete(path));
+  }
+}
+
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const navSections = [
     {
@@ -126,6 +162,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                     <NavLink
                       key={item.path}
                       to={item.path}
+                      onMouseEnter={() => prefetchRoute(item.path)}
+                      onFocus={() => prefetchRoute(item.path)}
                       onClick={() => {
                         if (window.innerWidth < 1024) onClose();
                       }}
