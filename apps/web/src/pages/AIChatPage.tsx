@@ -246,16 +246,11 @@ export const AIChatPage: React.FC = () => {
   };
 
   const handleSelectConversation = async (id: string) => {
-    const localMsgs = readLocalLibrary().messages[id];
-    if (localMsgs?.length) {
-      persistActiveId(id);
-      setMessages(localMsgs);
-    }
     try {
       const res = await api.get<{
         ok: boolean;
         data: Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; created_at: string; ai_provider?: string; ai_model?: string }>;
-      }>(`/ai/conversations/${id}/messages`);
+      }>(`/ai/conversations/${id}/messages`, { skipCache: true } as any);
       const rows = res.data?.data || [];
       persistActiveId(id);
       if (rows.length > 0) {
@@ -272,11 +267,15 @@ export const AIChatPage: React.FC = () => {
         const store = readLocalLibrary();
         store.messages[id] = mapped;
         writeLocalLibrary(store);
-      } else if (!localMsgs?.length) {
+      } else {
         setMessages([initialGreeting]);
       }
     } catch {
-      // Keep current/local messages if fetch fails
+      const localMsgs = readLocalLibrary().messages[id];
+      if (localMsgs?.length) {
+        persistActiveId(id);
+        setMessages(localMsgs);
+      }
     }
   };
 
@@ -286,22 +285,17 @@ export const AIChatPage: React.FC = () => {
     try {
       const qVal = (qOverride !== undefined ? qOverride : searchQuery).trim();
       const queryUrl = qVal ? `/ai/conversations?q=${encodeURIComponent(qVal)}` : '/ai/conversations';
-      const res = await api.get<{ ok: boolean; data: SavedConversation[] }>(queryUrl);
+      const res = await api.get<{ ok: boolean; data: SavedConversation[] }>(queryUrl, { skipCache: true } as any);
       const serverList = Array.isArray(res.data?.data) ? res.data.data : [];
       if (qVal) {
         setConversations(serverList);
         return;
       }
-      const localStore = readLocalLibrary();
-      const mergedMap = new Map<string, SavedConversation>();
-      for (const c of serverList) mergedMap.set(c.id, c);
-      for (const c of localStore.conversations) {
-        if (!mergedMap.has(c.id)) mergedMap.set(c.id, c);
-      }
-      const list = Array.from(mergedMap.values()).sort(
+      const list = [...serverList].sort(
         (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
       );
       setConversations(list);
+      const localStore = readLocalLibrary();
       localStore.conversations = list;
       writeLocalLibrary(localStore);
 

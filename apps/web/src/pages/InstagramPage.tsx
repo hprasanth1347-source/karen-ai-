@@ -142,14 +142,35 @@ async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit):
   return fetch(input, { ...init, headers });
 }
 
+// Module-level cache so switching away from Instagram and back renders instantly
+const instagramPageCache: {
+  profile: InstagramProfile | null;
+  media: InstagramMediaItem[];
+  threads: InstagramThread[];
+  selectedThread: InstagramThread | null;
+  vipList: string[];
+  autoReplyConfig: AutoReplyConfig | null;
+  autoReplyLogs: AutoReplyLog[];
+  loaded: boolean;
+} = {
+  profile: null,
+  media: [],
+  threads: [],
+  selectedThread: null,
+  vipList: [],
+  autoReplyConfig: null,
+  autoReplyLogs: [],
+  loaded: false,
+};
+
 export const InstagramPage: React.FC = () => {
-  const [profile, setProfile] = useState<InstagramProfile | null>(null);
-  const [media, setMedia] = useState<InstagramMediaItem[]>([]);
-  const [threads, setThreads] = useState<InstagramThread[]>([]);
-  const [selectedThread, setSelectedThread] = useState<InstagramThread | null>(null);
-  const [threadMessages, setThreadMessages] = useState<InstagramMessage[]>([]);
+  const [profile, setProfile] = useState<InstagramProfile | null>(instagramPageCache.profile);
+  const [media, setMedia] = useState<InstagramMediaItem[]>(instagramPageCache.media);
+  const [threads, setThreads] = useState<InstagramThread[]>(instagramPageCache.threads);
+  const [selectedThread, setSelectedThread] = useState<InstagramThread | null>(instagramPageCache.selectedThread);
+  const [threadMessages, setThreadMessages] = useState<InstagramMessage[]>(instagramPageCache.selectedThread?.messages || []);
   const [loadingThread, setLoadingThread] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!instagramPageCache.loaded);
 
   // AI & Voice State
   const [aiProvider, setAiProvider] = useState<'groq' | 'gemini' | 'copilot'>('groq');
@@ -167,11 +188,7 @@ export const InstagramPage: React.FC = () => {
   const [sending, setSending] = useState(false);
 
   // VIP Contacts
-  const [vipList, setVipList] = useState<string[]>([
-    '_.raghul._.15',
-    'pranav._prvt_',
-    '_buvanesh____',
-  ]);
+  const [vipList, setVipList] = useState<string[]>(instagramPageCache.vipList);
   const [newVip, setNewVip] = useState('');
 
   // Auto-Reply Engine State
@@ -246,17 +263,20 @@ export const InstagramPage: React.FC = () => {
     return () => clearInterval(timer);
   }, [autoReplyConfig.enabled]);
 
-  // Load live data from backend
+  // Load live data from backend (background-refresh if already cached)
   const loadData = async () => {
-    setLoading(true);
+    if (!instagramPageCache.loaded) setLoading(true);
     try {
       const tRes = await authenticatedFetch('/api/v1/instagram/conversations');
       if (tRes.ok) {
         const tData = await tRes.json();
         const loadedThreads = tData.data || [];
         setThreads(loadedThreads);
+        instagramPageCache.threads = loadedThreads;
+        instagramPageCache.loaded = true;
         if (loadedThreads.length > 0 && !selectedThread) {
           setSelectedThread(loadedThreads[0]);
+          instagramPageCache.selectedThread = loadedThreads[0];
         }
       }
       setLoading(false);
@@ -267,17 +287,35 @@ export const InstagramPage: React.FC = () => {
         authenticatedFetch('/api/v1/instagram/favourites'),
         authenticatedFetch('/api/v1/instagram/auto-reply'),
       ]).then(async ([pRes, mRes, vRes, aRes]) => {
-        if (pRes.ok) setProfile((await pRes.json()).data);
-        if (mRes.ok) setMedia((await mRes.json()).data || []);
+        if (pRes.ok) {
+          const p = (await pRes.json()).data;
+          setProfile(p);
+          instagramPageCache.profile = p;
+        }
+        if (mRes.ok) {
+          const m = (await mRes.json()).data || [];
+          setMedia(m);
+          instagramPageCache.media = m;
+        }
         if (vRes.ok) {
           const vData = await vRes.json();
-          if (vData.data?.length) setVipList(vData.data);
+          if (Array.isArray(vData.data)) {
+            setVipList(vData.data);
+            instagramPageCache.vipList = vData.data;
+          }
         }
         if (aRes.ok) {
           const aData = await aRes.json();
-          if (aData.data?.config) setAutoReplyConfig(aData.data.config);
-          if (aData.data?.logs) setAutoReplyLogs(aData.data.logs);
+          if (aData.data?.config) {
+            setAutoReplyConfig(aData.data.config);
+            instagramPageCache.autoReplyConfig = aData.data.config;
+          }
+          if (aData.data?.logs) {
+            setAutoReplyLogs(aData.data.logs);
+            instagramPageCache.autoReplyLogs = aData.data.logs;
+          }
         }
+        instagramPageCache.loaded = true;
       }).catch((err) => console.error('Error loading secondary Instagram data:', err));
     } catch (err) {
       console.error('Error loading Instagram data:', err);

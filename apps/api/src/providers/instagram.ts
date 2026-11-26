@@ -207,7 +207,6 @@ export async function getInstagramConversations(): Promise<InstagramThread[]> {
     return conversationsCache.data;
   }
   const { token, accountId } = await resolveIgAuth();
-  const ownerUsername = config.INSTAGRAM_USERNAME || '';
 
   if (!token || !accountId) {
     throw new Error('Instagram is not connected. Add a server-side Instagram access token first.');
@@ -244,6 +243,11 @@ export async function getInstagramConversations(): Promise<InstagramThread[]> {
     const json = await res.json();
     const rawThreads = Array.isArray(json.data) ? json.data : [];
 
+    let ownerUsername = config.INSTAGRAM_USERNAME || '';
+    if (!ownerUsername) {
+      const profile = await getInstagramProfile().catch(() => null);
+      ownerUsername = profile?.username || '';
+    }
     const threads: InstagramThread[] = rawThreads.map((t: any): InstagramThread => {
       const rawMsgs = t.messages?.data || [];
       const msgs: InstagramMessage[] = rawMsgs.map((m: any) => ({

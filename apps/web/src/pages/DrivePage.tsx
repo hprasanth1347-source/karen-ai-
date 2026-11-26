@@ -51,6 +51,55 @@ export const DrivePage: React.FC = () => {
   const [selectedEmail, setSelectedEmail] = useState<ImportantEmail | null>(null);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [sheetTitle, setSheetTitle] = useState('');
+  const [sheetHeaders, setSheetHeaders] = useState('');
+  const [sheetIdInput, setSheetIdInput] = useState('');
+  const [sheetValues, setSheetValues] = useState<unknown[][]>([]);
+  const [sheetCreatedUrl, setSheetCreatedUrl] = useState<string | null>(null);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [sheetError, setSheetError] = useState<string | null>(null);
+
+  const handleCreateSheet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sheetTitle.trim()) return;
+    setSheetLoading(true);
+    setSheetError(null);
+    try {
+      const headers = sheetHeaders
+        .split(',')
+        .map((h) => h.trim())
+        .filter(Boolean);
+      const res = await api.post('/sheets/create', {
+        title: sheetTitle.trim(),
+        headers: headers.length > 0 ? headers : undefined,
+      });
+      const created = res.data?.data;
+      if (created?.spreadsheetId) setSheetIdInput(created.spreadsheetId);
+      if (created?.spreadsheetUrl) setSheetCreatedUrl(created.spreadsheetUrl);
+      setSheetTitle('');
+      setSheetHeaders('');
+    } catch (err: any) {
+      setSheetError(err?.response?.data?.error || 'Could not create Google Sheet.');
+    } finally {
+      setSheetLoading(false);
+    }
+  };
+
+  const handleReadSheet = async () => {
+    if (!sheetIdInput.trim()) return;
+    setSheetLoading(true);
+    setSheetError(null);
+    try {
+      const res = await api.get(`/sheets/${encodeURIComponent(sheetIdInput.trim())}`, {
+        params: { range: 'A1:Z20' },
+      });
+      setSheetValues(res.data?.data ?? []);
+    } catch (err: any) {
+      setSheetError(err?.response?.data?.error || 'Could not read Google Sheet.');
+    } finally {
+      setSheetLoading(false);
+    }
+  };
 
   const closeFileModal = useCallback(() => {
     setSelectedFile(null);
@@ -441,6 +490,72 @@ export const DrivePage: React.FC = () => {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
+        <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2 flex items-center gap-2">
+          <FileText className="w-4 h-4 text-teal" />
+          GOOGLE SHEETS
+        </h3>
+        {sheetError && (
+          <div className="p-2.5 border-2 border-ink bg-coral/15 text-xs font-semibold text-coral">
+            {sheetError}
+          </div>
+        )}
+        {sheetCreatedUrl && (
+          <div className="p-2.5 border-2 border-ink bg-mint/30 text-xs flex items-center justify-between gap-2">
+            <span>Sheet created! ID: <code className="font-mono">{sheetIdInput}</code></span>
+            <a href={sheetCreatedUrl} target="_blank" rel="noreferrer" className="underline font-bold">
+              Open Sheet
+            </a>
+          </div>
+        )}
+        <form onSubmit={handleCreateSheet} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input
+            type="text"
+            value={sheetTitle}
+            onChange={(e) => setSheetTitle(e.target.value)}
+            placeholder="New Sheet Title"
+            className="border-2 border-ink px-2.5 py-1.5 text-xs bg-cream-50"
+          />
+          <input
+            type="text"
+            value={sheetHeaders}
+            onChange={(e) => setSheetHeaders(e.target.value)}
+            placeholder="Headers (comma separated, optional)"
+            className="border-2 border-ink px-2.5 py-1.5 text-xs bg-cream-50"
+          />
+          <button type="submit" disabled={sheetLoading || !connected} className="btn-coral text-xs">
+            {sheetLoading ? 'Working...' : '+ Create Google Sheet'}
+          </button>
+        </form>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={sheetIdInput}
+            onChange={(e) => setSheetIdInput(e.target.value)}
+            placeholder="Paste Spreadsheet ID to read A1:Z20..."
+            className="flex-1 border-2 border-ink px-2.5 py-1.5 text-xs bg-cream-50 font-mono"
+          />
+          <button type="button" onClick={handleReadSheet} disabled={sheetLoading || !connected} className="btn-ghost text-xs">
+            Read Sheet
+          </button>
+        </div>
+        {sheetValues.length > 0 && (
+          <div className="overflow-x-auto border-2 border-ink">
+            <table className="w-full text-xs text-left">
+              <tbody>
+                {sheetValues.map((row, rIdx) => (
+                  <tr key={rIdx} className={rIdx === 0 ? 'bg-yellow/30 font-bold border-b border-ink' : 'border-b border-ink/20'}>
+                    {(Array.isArray(row) ? row : []).map((cell, cIdx) => (
+                      <td key={cIdx} className="px-2 py-1 border-r border-ink/20">{String(cell ?? '')}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">

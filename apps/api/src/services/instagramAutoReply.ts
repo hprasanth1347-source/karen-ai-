@@ -7,7 +7,7 @@ import { loadUserSetting, saveUserSetting } from './persistence.service.js';
 import {
   sendInstagramMessage,
   getInstagramConversations,
-  getThreadDetails,
+  getInstagramProfile,
   type InstagramThread,
 } from '../providers/instagram.js';
 
@@ -369,12 +369,17 @@ Thanglish Style Guide (CRITICAL):
     this.scanInProgress = true;
     let repliesCount = 0;
     try {
-      const threads: InstagramThread[] = await getInstagramConversations();
-      const ownerUsername = config.INSTAGRAM_USERNAME;
+      const [threads, profile] = await Promise.all([
+        getInstagramConversations(),
+        getInstagramProfile().catch(() => null),
+      ]);
+      const ownerUsername = config.INSTAGRAM_USERNAME || profile?.username || '';
+      const ownerId = config.INSTAGRAM_ACCOUNT_ID || profile?.id || '';
 
       for (const t of threads) {
         if (!t.participant?.id || !t.participant?.username) continue;
-        if (t.participant.username === ownerUsername) continue;
+        if (ownerUsername && t.participant.username === ownerUsername) continue;
+        if (ownerId && t.participant.id === ownerId) continue;
 
         // Use messages already fetched in the single-call query
         const msgs = t.messages || [];
@@ -385,8 +390,8 @@ Thanglish Style Guide (CRITICAL):
 
         // Only reply if the latest message is FROM the external user (not from Hari)
         if (
-          latestMsg.from.username !== ownerUsername &&
-          latestMsg.from.id !== config.INSTAGRAM_ACCOUNT_ID
+          (!ownerUsername || latestMsg.from.username !== ownerUsername) &&
+          (!ownerId || latestMsg.from.id !== ownerId)
         ) {
           if (!this.repliedMessageIds.has(latestMsg.id)) {
             const mediaMeta =

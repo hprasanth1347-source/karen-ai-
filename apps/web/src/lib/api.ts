@@ -7,8 +7,8 @@ export const api = axios.create({
   withCredentials: true,
 })
 
-// Short-TTL in-memory GET cache for instant menu switching (invalidated on any mutation)
-const GET_CACHE_TTL_MS = 15_000;
+// In-memory GET cache for instant menu switching (invalidated on any mutation)
+const GET_CACHE_TTL_MS = 120_000;
 const getCache = new Map<string, { expiresAt: number; response: AxiosResponse }>();
 
 const rawGet = api.get.bind(api);

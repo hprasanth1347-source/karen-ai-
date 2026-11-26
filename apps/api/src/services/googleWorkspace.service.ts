@@ -324,14 +324,17 @@ export async function listGoogleContacts(query?: string, userId?: string, req?: 
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) {
+    const errJson = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    const apiMsg = errJson.error?.message;
     return {
       ok: false,
       contacts: [],
       needsReconnect: res.status === 401 || res.status === 403,
       error:
-        res.status === 403
+        apiMsg ||
+        (res.status === 403
           ? 'Missing Google Contacts permission (People API). Reconnect Google once.'
-          : `Google Contacts API error (${res.status})`,
+          : `Google Contacts API error (${res.status})`),
     };
   }
   const json = (await res.json()) as { connections?: any[]; results?: Array<{ person: any }> };

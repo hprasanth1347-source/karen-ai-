@@ -257,7 +257,7 @@ export async function generateAIReply(prompt, history = [], preferredProvider, p
     const needsClassroomCtx = !isLoveMode &&
         (/\b(classroom|assignment|homework|exam|grade|course|syllabus|due|study|cram)\b/i.test(cleanPrompt) ||
             options?.currentPage === '/classroom');
-    const withFastTimeout = (p, fallback, ms = 1200) => Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]).catch(() => fallback);
+    const withFastTimeout = (p, fallback, ms = 700) => Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]).catch(() => fallback);
     const [searchRes, googleContext, memoryContext, tasksContext, classroomContext, routeResult] = await Promise.all([
         searchPromise,
         needsGoogleCtx ? withFastTimeout(getGoogleContextForPrompt(cleanPrompt), '', 2500) : Promise.resolve(''),

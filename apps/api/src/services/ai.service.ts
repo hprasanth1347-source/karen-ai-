@@ -349,7 +349,7 @@ export async function generateAIReply(
     (/\b(classroom|assignment|homework|exam|grade|course|syllabus|due|study|cram)\b/i.test(cleanPrompt) ||
       options?.currentPage === '/classroom');
 
-  const withFastTimeout = <T,>(p: Promise<T>, fallback: T, ms = 1200): Promise<T> =>
+  const withFastTimeout = <T,>(p: Promise<T>, fallback: T, ms = 700): Promise<T> =>
     Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]).catch(() => fallback);
 
   const [searchRes, googleContext, memoryContext, tasksContext, classroomContext, routeResult] =
