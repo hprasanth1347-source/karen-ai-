@@ -265,7 +265,7 @@ export function planDeterministicCommand(
     return [{ tool: 'calendar_list_events', args: { daysAhead: 7 } }];
   }
 
-  // 10. Google Sheets (create, read, edit/append)
+  // 10. Google Sheets (list, create, read, edit/append)
   if (/\b(google\s+sheet|spreadsheet|sheets?)\b/i.test(lower)) {
     const idMatch = clean.match(/\b([a-zA-Z0-9_-]{25,})\b/);
     if (/\b(create|new|make)\b/i.test(lower)) {
@@ -282,14 +282,31 @@ export function planDeterministicCommand(
     if (idMatch) {
       return [{ tool: 'sheets_read', args: { spreadsheetId: idMatch[1] } }];
     }
+    if (/\b(list|show|all|my|open|find)\b/i.test(lower)) {
+      const nameMatch = clean.match(/\b(?:open|read|show)\s+(?:sheet|spreadsheet)\s+(.+)$/i);
+      if (nameMatch?.[1]) {
+        return [{ tool: 'sheets_read', args: { spreadsheetId: nameMatch[1].trim() } }];
+      }
+      return [{ tool: 'sheets_list', args: {} }];
+    }
   }
 
-  // 11. Personal Memory & Tasks
+  // 10b. Google Drive list / search
+  if (/\b(drive|gdrive|google\s+drive)\b/i.test(lower) && /\b(list|show|find|search|files?|my)\b/i.test(lower)) {
+    const qMatch = clean.match(/\b(?:find|search)\s+(?:file\s+)?([a-z0-9 ._@-]{2,40}?)(?:\s+in\s+(?:google\s+)?drive)?$/i);
+    return [{ tool: 'drive_list', args: { query: qMatch?.[1]?.trim() } }];
+  }
+
+  // 11. Personal Memory & Live Google Tasks
   if (/\b(my\s+memor(y|ies)|show\s+memor(y|ies))\b/i.test(lower)) {
     return [{ tool: 'memory_list', args: {} }];
   }
   if (/\b(remember\s+that|save\s+memory)\b/i.test(lower)) {
     return [{ tool: 'memory_save', args: { content: clean.replace(/^(remember\s+that|save\s+memory)\s*/i, '').trim() || clean } }];
+  }
+  if (/\b(complete|done|finish)\b.*\btask\b/i.test(lower)) {
+    const taskQuery = clean.replace(/^(?:mark|complete|finish|set)\s+(?:google\s+)?task\s+/i, '').replace(/\s+(?:as\s+)?(?:done|completed|finished)$/i, '').trim();
+    if (taskQuery) return [{ tool: 'google_tasks_complete', args: { query: taskQuery } }];
   }
   if (/\b(my\s+tasks|google\s+tasks|show\s+tasks|list\s+tasks)\b/i.test(lower)) {
     return [{ tool: 'google_tasks_list', args: {} }];
@@ -447,9 +464,13 @@ export async function runCommandEngine(input: {
     effectiveText = macro.steps.map((s) => s.instruction).join(' and ');
   }
 
-  // Plan tool calls (deterministic first, LLM function calling fallback)
+  // Plan tool calls (deterministic first; skip slow LLM planner on casual chat or web/custom search queries)
   let planned = planDeterministicCommand(effectiveText, lastResults, Boolean(lastUploadedFile));
-  if (!planned && input.useLlmFallback !== false) {
+  const looksLikeWorkspaceCommand =
+    /\b(mail|email|emial|gmail|inbox|class|classroom|assignment|assigment|homework|exam|grade|course|drive|gdrive|sheet|spreadsheet|calendar|event|schedule|meeting|insta|instagram|dm|contact|phone|task|todo|memory|remember|remind|upload|join|send|reply|mark|macro|file|pdf|doc|telegram|approve|confirm|cancel|sollu|anuppu|pannu|kaattu|enaku)\b/i.test(
+      effectiveText
+    );
+  if (!planned && looksLikeWorkspaceCommand && input.useLlmFallback !== false) {
     planned = await planWithLlmFunctionCalling(effectiveText, input.history || [], lastResults);
   }
 

@@ -1,6 +1,47 @@
 import { z } from 'zod';
+import { getGoogleAccessToken } from '../../routes/googleDrive.js';
 import { downloadTelegramFileSafe, uploadFileToDrive } from '../../services/driveUpload.service.js';
 import type { CommandToolDef } from '../types.js';
+
+export const driveListTool: CommandToolDef<{ query?: string }> = {
+  name: 'drive_list',
+  category: 'drive',
+  description: 'List or search live files in Google Drive.',
+  requiresConfirmation: false,
+  inputSchema: z.object({ query: z.string().optional() }),
+  jsonSchema: { type: 'object', properties: { query: { type: 'string' } } },
+  async execute(args, ctx) {
+    const token = await getGoogleAccessToken(ctx.userId);
+    if (!token) {
+      return {
+        ok: false,
+        summary: 'Google Drive is not connected yet.',
+        fixButton: { label: 'Connect Google Drive', url: '/drive' },
+      };
+    }
+    const qStr = args.query?.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'") || '';
+    const params = new URLSearchParams({
+      q: qStr ? `trashed = false and name contains '${qStr}'` : 'trashed = false',
+      pageSize: '10',
+      orderBy: 'modifiedTime desc',
+      fields: 'files(id,name,mimeType,size,webViewLink)',
+    });
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return { ok: false, summary: `Drive error (${res.status}).` };
+    const json = (await res.json()) as { files?: Array<{ id: string; name: string; webViewLink?: string }> };
+    const files = json.files || [];
+    if (!files.length) return { ok: true, summary: 'No matching Google Drive files found.' };
+    return {
+      ok: true,
+      summary: `📁 *Google Drive Files (${files.length}):*\n${files
+        .map((f, i) => `${i + 1}. *${f.name}*${f.webViewLink ? ` — ${f.webViewLink}` : ''}`)
+        .join('\n')}`,
+    };
+  },
+};
 
 export const driveUploadTool: CommandToolDef<{
   fileName?: string;

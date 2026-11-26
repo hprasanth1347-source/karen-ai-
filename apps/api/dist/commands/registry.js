@@ -1,9 +1,9 @@
 import { classroomExamPrepTool, classroomExplainTool, classroomGradesTool, classroomJoinTool, classroomListAssignmentsTool, classroomSetPersonalStatusTool, } from './tools/classroom.tools.js';
 import { gmailListTool, gmailReadTool, gmailSendTool } from './tools/gmail.tools.js';
-import { driveUploadTool } from './tools/drive.tools.js';
+import { driveListTool, driveUploadTool } from './tools/drive.tools.js';
 import { instagramReadDmsTool, instagramSendDmTool } from './tools/instagram.tools.js';
 import { macroDeleteTool, macroListTool, macroSaveTool } from './tools/macros.tools.js';
-import { calendarCreateEventTool, calendarListEventsTool, googleContactsCreateTool, googleContactsSearchTool, googleTasksCreateTool, googleTasksListTool, memoryListTool, memorySaveTool, sheetsCreateTool, sheetsEditTool, sheetsReadTool, } from './tools/workspace.tools.js';
+import { calendarCreateEventTool, calendarListEventsTool, googleContactsCreateTool, googleContactsSearchTool, googleTasksCompleteTool, googleTasksCreateTool, googleTasksListTool, memoryListTool, memorySaveTool, sheetsCreateTool, sheetsEditTool, sheetsListTool, sheetsReadTool, } from './tools/workspace.tools.js';
 export const COMMAND_TOOLS = [
     classroomListAssignmentsTool,
     classroomGradesTool,
@@ -14,6 +14,7 @@ export const COMMAND_TOOLS = [
     gmailListTool,
     gmailReadTool,
     gmailSendTool,
+    driveListTool,
     driveUploadTool,
     instagramReadDmsTool,
     instagramSendDmTool,
@@ -24,6 +25,8 @@ export const COMMAND_TOOLS = [
     calendarCreateEventTool,
     googleTasksListTool,
     googleTasksCreateTool,
+    googleTasksCompleteTool,
+    sheetsListTool,
     sheetsCreateTool,
     sheetsReadTool,
     sheetsEditTool,

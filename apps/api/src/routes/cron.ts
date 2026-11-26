@@ -5,6 +5,7 @@ import { addNotification } from '../services/approval.service.js';
 import { listTasks } from '../services/task.service.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
 import { getGoogleContextForPrompt, hydrateGoogleTokensFromRequest } from './googleDrive.js';
+import { syncAndNotifyLiveWorkspaceAlerts } from '../services/notificationEngine.service.js';
 import { sendTelegramMessage } from '../providers/telegram.js';
 import {
   generateAndSendGreeting,
@@ -127,11 +128,14 @@ router.post('/cron/morning-briefing', verifyCronSecret, async (_req, res) => {
   }
 });
 
-/** Evaluate IST time and send any due Daily Companion greeting (idempotent) */
+/** Evaluate IST time and send any due Daily Companion greeting + live Workspace alerts (idempotent) */
 router.get('/cron/companion-tick', verifyCronSecret, async (_req, res) => {
   try {
-    const result = await runCompanionTick();
-    return success(res, result);
+    const [result, liveAlerts] = await Promise.all([
+      runCompanionTick(),
+      syncAndNotifyLiveWorkspaceAlerts().catch(() => ({ alertsSent: 0, checkedTasks: 0, checkedEvents: 0 })),
+    ]);
+    return success(res, { ...result, liveAlerts });
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Companion tick failed', 500);
   }
@@ -139,8 +143,11 @@ router.get('/cron/companion-tick', verifyCronSecret, async (_req, res) => {
 
 router.post('/cron/companion-tick', verifyCronSecret, async (_req, res) => {
   try {
-    const result = await runCompanionTick();
-    return success(res, result);
+    const [result, liveAlerts] = await Promise.all([
+      runCompanionTick(),
+      syncAndNotifyLiveWorkspaceAlerts().catch(() => ({ alertsSent: 0, checkedTasks: 0, checkedEvents: 0 })),
+    ]);
+    return success(res, { ...result, liveAlerts });
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Companion tick failed', 500);
   }

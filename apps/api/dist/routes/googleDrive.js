@@ -168,11 +168,9 @@ async function getValidAccessToken(req) {
     const userId = req?.user?.id || (await getOwnerUserId()) || '';
     let tokens = null;
     let status = 'disconnected';
-    if (userId) {
-        const dbRes = await loadGoogleTokensWithStatus(userId);
-        tokens = dbRes.tokens;
-        status = dbRes.status;
-    }
+    const dbRes = await loadGoogleTokensWithStatus(userId || undefined);
+    tokens = dbRes.tokens;
+    status = dbRes.status;
     // Fallback to encrypted HttpOnly cookie if DB persistence was unavailable
     if ((!tokens || status !== 'connected') && req) {
         const cookieTokens = readGoogleTokensFromCookie(req);

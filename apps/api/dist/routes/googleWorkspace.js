@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { appendGoogleSheetRows, createCalendarEvent, createGoogleContact, createGoogleSheet, createGoogleTask, listCalendarEvents, listGoogleContacts, listGoogleTasks, readGoogleSheet, updateGoogleSheetRange, } from '../services/googleWorkspace.service.js';
+import { appendGoogleSheetRows, createCalendarEvent, createGoogleContact, createGoogleSheet, createGoogleTask, deleteCalendarEvent, deleteGoogleTask, getGoogleSheetMeta, listCalendarEvents, listGoogleContacts, listGoogleSheets, listGoogleTasks, readGoogleSheet, updateGoogleSheetRange, updateGoogleTask, } from '../services/googleWorkspace.service.js';
+import { sendTelegramMessage } from '../providers/telegram.js';
+import { addNotification } from '../services/approval.service.js';
 import { success, error } from '../utils/response.js';
 const router = Router();
 router.use(requireAuth, requireOwner);
@@ -22,7 +24,18 @@ router.post('/calendar/events', validate(z.object({
     const result = await createCalendarEvent({ ...req.body, userId: req.user?.id, req });
     if (!result.ok)
         return error(res, result.error || 'Calendar create failed', 400);
+    if (result.event) {
+        const startIst = new Date(result.event.start).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+        void addNotification('calendar', 'New Calendar Event', `${result.event.summary} at ${startIst}`, 'normal', 'web').catch(() => { });
+        void sendTelegramMessage(`📅 *New Google Calendar Event*\n\n• *${result.event.summary}*\n• 🕒 ${startIst} IST`).catch(() => { });
+    }
     return success(res, result.event, 201);
+});
+router.delete('/calendar/events/:id', async (req, res) => {
+    const result = await deleteCalendarEvent({ eventId: String(req.params.id), userId: req.user?.id, req });
+    if (!result.ok)
+        return error(res, result.error || 'Calendar delete failed', 400);
+    return success(res, { deleted: true });
 });
 router.get('/google-tasks', async (req, res) => {
     const result = await listGoogleTasks(req.user?.id, req);
@@ -38,7 +51,47 @@ router.post('/google-tasks', validate(z.object({
     const result = await createGoogleTask({ ...req.body, userId: req.user?.id, req });
     if (!result.ok)
         return error(res, result.error || 'Google Task create failed', 400);
+    if (result.task) {
+        const dueStr = result.task.due ? String(result.task.due).slice(0, 10) : 'Today';
+        void addNotification('tasks', 'New Google Task', `${result.task.title} (Due: ${dueStr})`, 'normal', 'web').catch(() => { });
+        void sendTelegramMessage(`📋 *New Live Google Task*\n\n• *${result.task.title}*\n• Due: ${dueStr}`).catch(() => { });
+    }
     return success(res, result.task, 201);
+});
+router.patch('/google-tasks/:id', validate(z.object({
+    status: z.enum(['needsAction', 'completed']).optional(),
+    title: z.string().min(1).max(200).optional(),
+    notes: z.string().max(1000).optional(),
+    dueIso: z.string().optional(),
+})), async (req, res) => {
+    const result = await updateGoogleTask({
+        taskId: String(req.params.id),
+        ...req.body,
+        userId: req.user?.id,
+        req,
+    });
+    if (!result.ok)
+        return error(res, result.error || 'Google Task update failed', 400);
+    return success(res, result.task);
+});
+router.delete('/google-tasks/:id', async (req, res) => {
+    const result = await deleteGoogleTask({ taskId: String(req.params.id), userId: req.user?.id, req });
+    if (!result.ok)
+        return error(res, result.error || 'Google Task delete failed', 400);
+    return success(res, { deleted: true });
+});
+router.get('/sheets', async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    const result = await listGoogleSheets(q, req.user?.id, req);
+    if (!result.ok)
+        return error(res, result.error || 'Google Sheets list failed', 400);
+    return success(res, result.sheets);
+});
+router.get('/sheets/:id/meta', async (req, res) => {
+    const result = await getGoogleSheetMeta({ spreadsheetId: String(req.params.id), userId: req.user?.id, req });
+    if (!result.ok)
+        return error(res, result.error || 'Sheet metadata failed', 400);
+    return success(res, result);
 });
 router.post('/sheets/create', validate(z.object({
     title: z.string().min(1).max(160),

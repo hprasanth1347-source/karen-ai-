@@ -1,8 +1,8 @@
 import { logger } from '../config/logger.js';
 import { config } from '../config/env.js';
-import { generateAIReply } from './ai.service.js';
 import { analyzeInstagramMediaWithGemini } from './geminiMultimodal.service.js';
 import { sendTelegramMessage } from '../providers/telegram.js';
+import { addNotification } from './approval.service.js';
 import { loadUserSetting, saveUserSetting } from './persistence.service.js';
 import { sendInstagramMessage, getInstagramConversations, getInstagramProfile, } from '../providers/instagram.js';
 function getThanglishFallback(senderUsername, intent) {
@@ -50,10 +50,82 @@ function isUnwantedOrNoisyDm(text) {
     }
     return false;
 }
-function isImportantDm(text, hasMedia, isStoryReply) {
-    if (hasMedia || isStoryReply)
-        return true;
-    return /\b(urgent|important|asap|emergency|call\s+me|meeting|schedule|project|deadline|exam|interview|job|offer|payment|invoice|help|problem|issue|sir|boss)\b/i.test(text);
+export function classifyUrgentDm(text, hasMedia, isStoryReply) {
+    const clean = (text || '').trim();
+    if (/\b(medical|hospital|ambulance|accident|injured|bleeding|chest\s*pain|breathing|icu|doctor|emergency|blood|clinic|unconscious|stroke|heart\s*attack|poison|burn|fracture|health\s+emergency|medicine\s+urgent)\b/i.test(clean)) {
+        return { important: true, category: 'MEDICAL_EMERGENCY', critical: true };
+    }
+    if (/(?:your|ur|hari'?s?|owner'?s?|his)\s*(?:no|num|number|phone|mobile|cell|whatsapp|contact)|\b(?:phone|mobile|contact|whatsapp)\s*(?:no|num|number|id)\b|(?:give|send|share|drop|tell)\s+(?:me\s+)?(?:your|hari'?s?|his)?\s*(?:no|num|number)\b|\bcall\s+(?:me|now|urgently|asap)\b/i.test(clean)) {
+        return { important: true, category: 'PHONE_REQUEST', critical: true };
+    }
+    if (/\b(urgent|important|asap|help\s+me|need\s+help|please\s+help|problem|issue|trouble|stuck|crisis|payment|invoice|deadline|exam|interview|job|offer|sir|boss|immediately)\b/i.test(clean)) {
+        return { important: true, category: 'URGENT_HELP', critical: false };
+    }
+    if (hasMedia || isStoryReply) {
+        return { important: true, category: 'MEDIA_OR_STORY', critical: false };
+    }
+    return { important: false, category: 'NORMAL', critical: false };
+}
+async function generateFastDmReply(prompt, history = [], provider = 'groq', model) {
+    const systemMsg = 'You are Karen AI, Hari Prasath’s personal female assistant handling his Instagram DMs in natural Chennai Thanglish. ' +
+        'Never share phone numbers, OTPs, passwords, or make financial promises. Keep replies under 2 short, warm sentences.';
+    try {
+        if (provider !== 'gemini' && config.GROQ_API_KEY) {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${config.GROQ_API_KEY}`,
+                },
+                body: JSON.stringify({
+                    model: model || config.AUTON_MODEL_ID || 'qwen/qwen3.8-27b',
+                    messages: [
+                        { role: 'system', content: systemMsg },
+                        ...history.slice(-5).map((h) => ({ role: h.role, content: h.content.slice(0, 300) })),
+                        { role: 'user', content: prompt },
+                    ],
+                    temperature: 0.55,
+                    max_tokens: 160,
+                }),
+                signal: AbortSignal.timeout(3500),
+            });
+            if (res.ok) {
+                const json = await res.json();
+                const txt = json.choices?.[0]?.message?.content?.trim();
+                if (txt)
+                    return txt;
+            }
+        }
+        if (config.GEMINI_API_KEY) {
+            const modelName = provider === 'gemini' && model ? model : 'gemini-flash-lite-latest';
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${config.GEMINI_API_KEY}`;
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    systemInstruction: { parts: [{ text: systemMsg }] },
+                    contents: [
+                        ...history.slice(-5).map((h) => ({
+                            role: h.role === 'assistant' ? 'model' : 'user',
+                            parts: [{ text: h.content.slice(0, 300) }],
+                        })),
+                        { role: 'user', parts: [{ text: prompt }] },
+                    ],
+                }),
+                signal: AbortSignal.timeout(3500),
+            });
+            if (res.ok) {
+                const json = await res.json();
+                const txt = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                if (txt)
+                    return txt;
+            }
+        }
+    }
+    catch (err) {
+        logger.warn('Fast DM AI reply error', { err });
+    }
+    return null;
 }
 class InstagramAutoReplyService {
     config = {
@@ -192,12 +264,15 @@ class InstagramAutoReplyService {
                             ? 'ig_post'
                             : 'image';
             detectedType = kind;
-            const analysis = await analyzeInstagramMediaWithGemini({
-                mediaUrl: firstAtt.payload?.url,
-                kind,
-                caption: firstAtt.payload?.title,
-                senderUsername,
-            });
+            const analysis = await Promise.race([
+                analyzeInstagramMediaWithGemini({
+                    mediaUrl: firstAtt.payload?.url,
+                    kind,
+                    caption: firstAtt.payload?.title,
+                    senderUsername,
+                }),
+                new Promise((resolve) => setTimeout(() => resolve({ accessible: false, summary: '' }), 1800)),
+            ]);
             if (analysis.accessible && analysis.summary) {
                 mediaContextNote = `\n[Accessible ${kind} analysis]: ${analysis.summary}`;
             }
@@ -225,6 +300,12 @@ class InstagramAutoReplyService {
         let replyText = '';
         const provider = this.config.aiProvider || 'groq';
         const intent = classifyIncomingIntent(messageText || detectedType);
+        const urgentInfo = classifyUrgentDm(messageText, Boolean(firstAtt), Boolean(mediaMeta?.replyToStoryId));
+        const urgentInstruction = urgentInfo.category === 'MEDICAL_EMERGENCY'
+            ? '\nURGENT: Sender describes a medical/health emergency. Respond urgently & empathetically in natural Thanglish confirming Hari is being alerted RIGHT NOW and will contact them immediately.'
+            : urgentInfo.category === 'PHONE_REQUEST'
+                ? '\nPRIVACY RULE: Sender is asking for Hari’s phone/contact number. NEVER invent or share any phone number! Tell them warmly in Thanglish that you have passed their message urgently to Hari and he will reach out personally.'
+                : '';
         if (this.config.customTemplate && this.config.customTemplate.trim()) {
             replyText = this.config.customTemplate.replace('{name}', senderUsername);
         }
@@ -243,39 +324,15 @@ class InstagramAutoReplyService {
             const prompt = `User @${senderUsername} sent this Instagram DM (${detectedType}) to Hari: "${effectiveText}".
 Hari is currently away. You are Karen AI, Hari's personal female AI assistant.
 Detected intent: ${intent}.
-Goal: ${intentInstructions[intent]}
+Goal: ${intentInstructions[intent]}${urgentInstruction}
 ${customTraining}
 Thanglish Style Guide (CRITICAL):
 - Reply in natural, everyday Chennai/Tamil conversational Thanglish (Tamil written in Latin script mixed naturally with English).
-- Use natural spoken connectors like: "sollunga", "irukaaru", "panniduren", "venumna", "konjam", "kitta", "eppo", "udane", "check panni solren".
-- Do NOT use stiff/bookish Tamil or robotic phrasing like "Unga request-a alert panniten".
-- Examples of good natural Thanglish:
-  * "Hey @${senderUsername}! Hari ippo konjam busy-a irukaaru, enna vishayam nu sollunga naan kitta pass panniduren."
-  * "Sure! Ungalukku entha time convenient-a irukum nu sollunga, naan Hari kitta check panni solren."
-- Keep it warm, friendly, and under 2 sentences. Do not invent facts or claim Hari already confirmed anything.`;
-            try {
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 5000);
-                let aiRes;
-                try {
-                    aiRes = await generateAIReply(prompt, mediaMeta?.history || [], provider, this.config.aiModel, controller.signal, { skipSkills: true });
-                }
-                finally {
-                    clearTimeout(timeout);
-                }
-                if (aiRes.provider === 'local-karen') {
-                    replyText = getThanglishFallback(senderUsername, intent);
-                }
-                else {
-                    replyText = aiRes.reply;
-                }
-            }
-            catch (err) {
-                logger.warn('AI reply generation failed, using default Thanglish template:', err);
-                replyText = getThanglishFallback(senderUsername, intent);
-            }
+- Keep it warm, friendly, and under 2 sentences. Do not invent facts or share private phone numbers/details.`;
+            const fastReply = await generateFastDmReply(prompt, mediaMeta?.history || [], provider, this.config.aiModel);
+            replyText = fastReply || getThanglishFallback(senderUsername, intent);
         }
-        // 6. Send message live to Instagram via Meta Graph API
+        // 6. Send message live to Instagram via Meta Graph API (fast <10s SLA)
         let sendRes;
         try {
             sendRes = await sendInstagramMessage(senderId, replyText);
@@ -292,6 +349,12 @@ Thanglish Style Guide (CRITICAL):
         finally {
             this.processingMessageIds.delete(messageId);
         }
+        const istTime = new Date().toLocaleTimeString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+        });
         const logEntry = {
             id: `reply-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
             incomingMessageId: messageId,
@@ -302,25 +365,49 @@ Thanglish Style Guide (CRITICAL):
             intent,
             metaMessageId: sendRes.messageId,
             status: sendRes.success ? 'SENT' : 'FAILED',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            timestamp: istTime,
             provider,
             error: sendRes.error,
         };
         this.logs.unshift(logEntry);
         if (this.logs.length > 30)
             this.logs.length = 30;
-        await saveUserSetting('instagram_auto_reply_logs', this.logs);
+        const persistPromise = saveUserSetting('instagram_auto_reply_logs', this.logs).catch(() => { });
+        const badge = urgentInfo.category === 'MEDICAL_EMERGENCY'
+            ? '🚨 MEDICAL EMERGENCY (INSTAGRAM DM)'
+            : urgentInfo.category === 'PHONE_REQUEST'
+                ? '📞 PHONE NUMBER REQUEST (INSTAGRAM DM)'
+                : urgentInfo.category === 'URGENT_HELP'
+                    ? '⚠️ URGENT HELP REQUEST (INSTAGRAM DM)'
+                    : '⚡ IMPORTANT INSTAGRAM DM';
         if (sendRes.success) {
             logger.info(`Auto-reply sent successfully to @${senderUsername}: "${replyText}"`);
-            if (isImportantDm(messageText, Boolean(firstAtt), Boolean(mediaMeta?.replyToStoryId))) {
-                void sendTelegramMessage(`KAREN AI - IMPORTANT INSTAGRAM DM\n\nFrom: @${senderUsername}\nType: ${detectedType}\nMessage: "${(messageText || '[Media]').slice(0, 220)}"\nAuto-Reply Sent: "${replyText.slice(0, 220)}"`).catch(() => { });
+            if (urgentInfo.important) {
+                await Promise.all([
+                    persistPromise,
+                    addNotification('instagram', `${badge}: @${senderUsername}`, `${(messageText || '[Media]').slice(0, 180)} — Replied: "${replyText.slice(0, 120)}"`, urgentInfo.critical ? 'critical' : 'high', 'instagram').catch(() => { }),
+                    sendTelegramMessage(`${badge}\n\n` +
+                        `👤 From: *@${senderUsername}*\n` +
+                        `🕒 Time: ${istTime} IST\n` +
+                        `💬 Message: "${(messageText || '[Media]').slice(0, 260)}"\n` +
+                        `🤖 Auto-Reply Sent: "${replyText.slice(0, 220)}"`).catch(() => { }),
+                ]);
+            }
+            else {
+                await persistPromise;
             }
             return { autoReplied: true, replyText };
         }
         else {
             logger.error(`Failed to send auto-reply to @${senderUsername}:`, sendRes.error);
-            if (isImportantDm(messageText, Boolean(firstAtt), Boolean(mediaMeta?.replyToStoryId))) {
-                void sendTelegramMessage(`KAREN AI - IMPORTANT INSTAGRAM DM (REPLY FAILED)\n\nFrom: @${senderUsername}\nMessage: "${(messageText || '[Media]').slice(0, 220)}"\nError: ${sendRes.error || 'Meta send failed'}`).catch(() => { });
+            if (urgentInfo.important) {
+                await Promise.all([
+                    persistPromise,
+                    sendTelegramMessage(`${badge} (AUTO-REPLY FAILED)\n\n👤 From: *@${senderUsername}*\n🕒 Time: ${istTime} IST\n💬 Message: "${(messageText || '[Media]').slice(0, 260)}"\n❌ Error: ${sendRes.error || 'Meta send failed'}`).catch(() => { }),
+                ]);
+            }
+            else {
+                await persistPromise;
             }
             return { autoReplied: false, replyText, error: sendRes.error };
         }

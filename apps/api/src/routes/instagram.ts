@@ -289,8 +289,9 @@ router.post('/webhook', async (req, res) => {
   logger.info('Received and authenticated Instagram Webhook Event');
   const body = req.body;
 
-  // Process webhook messages before acknowledging so serverless runtimes can finish the work.
+  // Process webhook events concurrently so serverless runtimes reply well under 10s
   if (body.object === 'instagram' && Array.isArray(body.entry)) {
+    const tasks: Promise<unknown>[] = [];
     for (const entry of body.entry) {
       if (Array.isArray(entry.messaging)) {
         for (const event of entry.messaging) {
@@ -302,55 +303,66 @@ router.post('/webhook', async (req, res) => {
 
             logger.info(`Instagram webhook received message for sender ${senderId}`);
 
-            try {
-              if (event.message.reply_to?.note) {
-                await handleInstagramNoteActivityEvent({
-                  eventKey: `note_reply:${messageId}`,
-                  activityType: 'note_reply',
-                  noteId: event.message.reply_to.note.id,
-                  noteText: event.message.reply_to.note.text,
-                  actorId: senderId,
-                  actorUsername: senderUsername,
-                  replyText: messageText,
-                });
-              }
-              await instagramAutoReplyService.handleIncomingMessage(
-                senderId,
-                senderUsername,
-                messageId,
-                messageText,
-                false,
-                {
-                  attachments: event.message.attachments,
-                  replyToStoryId: event.message.reply_to?.story?.id,
+            tasks.push(
+              (async () => {
+                try {
+                  if (event.message.reply_to?.note) {
+                    await handleInstagramNoteActivityEvent({
+                      eventKey: `note_reply:${messageId}`,
+                      activityType: 'note_reply',
+                      noteId: event.message.reply_to.note.id,
+                      noteText: event.message.reply_to.note.text,
+                      actorId: senderId,
+                      actorUsername: senderUsername,
+                      replyText: messageText,
+                    });
+                  }
+                  await instagramAutoReplyService.handleIncomingMessage(
+                    senderId,
+                    senderUsername,
+                    messageId,
+                    messageText,
+                    false,
+                    {
+                      attachments: event.message.attachments,
+                      replyToStoryId: event.message.reply_to?.story?.id,
+                    }
+                  );
+                } catch (err) {
+                  logger.error('Error handling webhook auto-reply:', err);
                 }
-              );
-            } catch (err) {
-              logger.error('Error handling webhook auto-reply:', err);
-            }
+              })()
+            );
           }
         }
       }
       if (Array.isArray(entry.changes)) {
         for (const change of entry.changes) {
           if (change.field === 'comments' && change.value?.id) {
-            await handleInstagramCommentEvent({
-              commentId: String(change.value.id),
-              mediaId: String(change.value.media?.id || ''),
-              username: String(change.value.from?.username || 'user'),
-              text: String(change.value.text || ''),
-            }).catch(() => {});
+            tasks.push(
+              handleInstagramCommentEvent({
+                commentId: String(change.value.id),
+                mediaId: String(change.value.media?.id || ''),
+                username: String(change.value.from?.username || 'user'),
+                text: String(change.value.text || ''),
+              }).catch(() => {})
+            );
           } else if (change.field === 'mentions' && (change.value?.media_id || change.value?.comment_id)) {
-            await handleInstagramMentionEvent({
-              id: String(change.value.comment_id || change.value.media_id),
-              mediaId: change.value.media_id ? String(change.value.media_id) : undefined,
-              creatorUsername: String(change.value.username || 'creator'),
-              permalink: change.value.permalink,
-              caption: change.value.caption,
-            }).catch(() => {});
+            tasks.push(
+              handleInstagramMentionEvent({
+                id: String(change.value.comment_id || change.value.media_id),
+                mediaId: change.value.media_id ? String(change.value.media_id) : undefined,
+                creatorUsername: String(change.value.username || 'creator'),
+                permalink: change.value.permalink,
+                caption: change.value.caption,
+              }).catch(() => {})
+            );
           }
         }
       }
+    }
+    if (tasks.length > 0) {
+      await Promise.allSettled(tasks);
     }
   }
 

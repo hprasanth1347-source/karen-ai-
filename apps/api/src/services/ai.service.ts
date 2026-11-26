@@ -5,7 +5,7 @@ import {
   formatSearchContext,
   isWebSearchConfigured,
   rewriteSearchQuery,
-  searchWebWithGoogle,
+  searchWebWithFallback,
   shouldSearchWeb,
   type SearchResponse,
   type SearchSource,
@@ -328,12 +328,29 @@ export async function generateAIReply(
   const provider = preferredProvider || (config.DEFAULT_AI_PROVIDER as AIProvider) || 'groq';
   const reqSignal = signal ?? AbortSignal.timeout(15000);
   const needsSearch = shouldSearchWeb(cleanPrompt, { loveMode: isLoveMode });
+  const isFreshSearch =
+    /\b(search|google|look\s*up|find|latest|news|live|current|fresh|today|now|custom|update|recent|price|score|weather|stock|rate)\b/i.test(
+      cleanPrompt
+    );
 
   const searchPromise: Promise<SearchResponse | null> = needsSearch
-    ? (async () => {
-      const rewritten = await rewriteSearchQuery(cleanPrompt, history);
-      return searchWebWithGoogle(rewritten.query, { limit: 5, freshness: rewritten.freshness }, reqSignal);
-    })()
+    ? Promise.race([
+        (async () => {
+          const rewritten = await rewriteSearchQuery(cleanPrompt, history);
+          return searchWebWithFallback(
+            rewritten.query,
+            {
+              limit: 5,
+              freshness: rewritten.freshness,
+              bypassCache: isFreshSearch,
+              maxCacheAgeMs: 2 * 60 * 1000,
+              enrichTimeoutMs: 1200,
+            },
+            reqSignal
+          );
+        })(),
+        new Promise<SearchResponse | null>((resolve) => setTimeout(() => resolve(null), 4200)),
+      ]).catch(() => null)
     : Promise.resolve(null);
 
   const needsGoogleCtx =
@@ -349,16 +366,16 @@ export async function generateAIReply(
     (/\b(classroom|assignment|homework|exam|grade|course|syllabus|due|study|cram)\b/i.test(cleanPrompt) ||
       options?.currentPage === '/classroom');
 
-  const withFastTimeout = <T,>(p: Promise<T>, fallback: T, ms = 700): Promise<T> =>
+  const withFastTimeout = <T,>(p: Promise<T>, fallback: T, ms = 450): Promise<T> =>
     Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]).catch(() => fallback);
 
   const [searchRes, googleContext, memoryContext, tasksContext, classroomContext, routeResult] =
     await Promise.all([
       searchPromise,
-      needsGoogleCtx ? withFastTimeout(getGoogleContextForPrompt(cleanPrompt), '', 2500) : Promise.resolve(''),
-      withFastTimeout(getMemoryContextPrompt(), ''),
-      isLoveMode ? Promise.resolve('') : withFastTimeout(getTasksContextPrompt(), ''),
-      needsClassroomCtx ? withFastTimeout(getClassroomContextPrompt(cleanPrompt), '', 2000) : Promise.resolve(''),
+      needsGoogleCtx ? withFastTimeout(getGoogleContextForPrompt(cleanPrompt), '', 1500) : Promise.resolve(''),
+      withFastTimeout(getMemoryContextPrompt(), '', 450),
+      isLoveMode ? Promise.resolve('') : withFastTimeout(getTasksContextPrompt(), '', 450),
+      needsClassroomCtx ? withFastTimeout(getClassroomContextPrompt(cleanPrompt), '', 1500) : Promise.resolve(''),
       options?.skipSkills
         ? Promise.resolve({ skills: [], skillNames: [], confidence: 1, latencyMs: 0, lowConfidence: false })
         : routeSkills(cleanPrompt, { currentPage: options?.currentPage, loveMode: isLoveMode, useLlmFallback: false }),
@@ -427,8 +444,8 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
     ? `${formattedSearch}\n\nUser message: ${effectivePrompt}`
     : effectivePrompt;
 
-  // 1. Groq Cloud (Qwen 3.8 27B) - Verified & Operational
-  if (provider === 'groq' && config.GROQ_API_KEY) {
+  // 1. Groq Cloud (fast inference; if web search returned 0 live sources and Gemini grounding is available, let Gemini google_search handle it)
+  if (provider === 'groq' && config.GROQ_API_KEY && !(needsSearch && searchResults.length === 0 && config.GEMINI_API_KEY)) {
     try {
       const messages = [
         {
@@ -471,10 +488,10 @@ Live Actions & Auto-Learning (append tags silently at the very end when applicab
     }
   }
 
-  // 2. Google Gemini API (gemini-flash-lite-latest) - Verified & Operational
-  if ((provider === 'gemini' || !preferredProvider) && config.GEMINI_API_KEY) {
+  // 2. Google Gemini API (supports built-in google_search grounding when needed)
+  if ((provider === 'gemini' || !preferredProvider || (needsSearch && searchResults.length === 0)) && config.GEMINI_API_KEY) {
     try {
-      const modelName = preferredModel || getDefaultAIModel('gemini');
+      const modelName = provider === 'gemini' && preferredModel ? preferredModel : getDefaultAIModel('gemini');
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${config.GEMINI_API_KEY}`;
       const basePayload = {
         systemInstruction: {

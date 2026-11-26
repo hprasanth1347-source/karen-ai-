@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Users, Plus, RefreshCw } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, readCachedGet } from '../lib/api';
 
 interface GoogleContact {
   resourceName: string;
@@ -10,20 +10,24 @@ interface GoogleContact {
 }
 
 export const ContactsPage: React.FC = () => {
-  const [googleContacts, setGoogleContacts] = useState<GoogleContact[]>([]);
+  const cachedContacts = readCachedGet<{ data?: GoogleContact[] }>('/google-contacts')?.data;
+  const [googleContacts, setGoogleContacts] = useState<GoogleContact[]>(() => cachedContacts ?? []);
   const [needsReconnect, setNeedsReconnect] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !(cachedContacts && cachedContacts.length > 0));
   const [error, setError] = useState<string | null>(null);
 
-  const loadContacts = async (q = '') => {
-    setLoading(true);
+  const loadContacts = async (q = '', force = false) => {
+    if (!googleContacts.length || force) setLoading(true);
     setError(null);
     try {
-      const res = await api.get<{ data: GoogleContact[] }>(`/google-contacts${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+      const res = await api.get<{ data: GoogleContact[] }>(
+        `/google-contacts${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+        force ? ({ skipCache: true } as any) : undefined
+      );
       setGoogleContacts(res.data?.data ?? []);
       setNeedsReconnect(false);
     } catch (err: any) {
@@ -82,7 +86,7 @@ export const ContactsPage: React.FC = () => {
           <h1 className="text-xl md:text-2xl font-black">Contacts</h1>
           <p className="text-xs text-ink-muted mt-1">Synced directly with your Google Contacts for Gmail, WhatsApp &amp; Karen commands.</p>
         </div>
-        <button type="button" onClick={() => void loadContacts(search)} className="btn-ghost text-xs flex items-center gap-1.5">
+        <button type="button" onClick={() => void loadContacts(search, true)} className="btn-ghost text-xs flex items-center gap-1.5">
           <RefreshCw className="w-3.5 h-3.5" />
           Refresh
         </button>

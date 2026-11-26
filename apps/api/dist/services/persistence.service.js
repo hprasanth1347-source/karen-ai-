@@ -5,6 +5,8 @@ import { encryptJson, decryptJson } from '../utils/crypto.js';
 export { encryptJson, decryptJson };
 let cachedOwnerId = null;
 const ensuredProfiles = new Set();
+let memoryGoogleTokens = null;
+let memoryGoogleStatus = 'disconnected';
 export async function ensureProfileRow(userId, email) {
     if (!userId)
         return false;
@@ -51,6 +53,9 @@ export async function ensureProfileRow(userId, email) {
 export async function getOwnerUserId() {
     if (cachedOwnerId)
         return cachedOwnerId;
+    if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('example.supabase.co')) {
+        return null;
+    }
     try {
         const { data } = await supabaseAdmin.from('profiles').select('id').limit(1).maybeSingle();
         if (data?.id) {
@@ -118,19 +123,25 @@ export async function loadUserSetting(key) {
 }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function saveGoogleTokensToDb(tokens, explicitUserId) {
+    let finalTokens = tokens;
+    if (!tokens.refreshToken && memoryGoogleTokens?.refreshToken) {
+        finalTokens = { ...tokens, refreshToken: memoryGoogleTokens.refreshToken };
+    }
+    memoryGoogleTokens = finalTokens;
+    memoryGoogleStatus = 'connected';
     const validExplicit = explicitUserId && UUID_RE.test(explicitUserId) ? explicitUserId : undefined;
     const userId = validExplicit || (await getOwnerUserId());
     if (!userId) {
-        logger.warn('saveGoogleTokensToDb: no valid owner userId available');
+        logger.warn('saveGoogleTokensToDb: no valid owner userId available (cached in memory)');
         return;
     }
     await ensureProfileRow(userId);
-    // Never overwrite an existing refreshToken with an empty one
-    let finalTokens = tokens;
-    if (!tokens.refreshToken) {
+    // Never overwrite an existing refreshToken with an empty one in DB either
+    if (!finalTokens.refreshToken) {
         const existing = await loadGoogleTokensWithStatus(userId);
         if (existing.tokens?.refreshToken) {
-            finalTokens = { ...tokens, refreshToken: existing.tokens.refreshToken };
+            finalTokens = { ...finalTokens, refreshToken: existing.tokens.refreshToken };
+            memoryGoogleTokens = finalTokens;
         }
     }
     const encrypted = encryptJson(finalTokens);
@@ -170,6 +181,12 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
     }
 }
 export async function loadGoogleTokensWithStatus(explicitUserId) {
+    if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('example.supabase.co')) {
+        if (memoryGoogleTokens?.accessToken && memoryGoogleStatus === 'connected') {
+            return { tokens: memoryGoogleTokens, status: 'connected' };
+        }
+        return { tokens: null, status: memoryGoogleStatus === 'needs_reauth' ? 'needs_reauth' : 'disconnected' };
+    }
     try {
         const userId = explicitUserId || (await getOwnerUserId());
         let data = null;
@@ -223,13 +240,17 @@ export async function loadGoogleTokensWithStatus(explicitUserId) {
             return { tokens: parsedFallback, status: 'connected' };
         }
     }
-    return { tokens: null, status: 'disconnected' };
+    if (memoryGoogleTokens?.accessToken && memoryGoogleStatus === 'connected') {
+        return { tokens: memoryGoogleTokens, status: 'connected' };
+    }
+    return { tokens: null, status: memoryGoogleStatus === 'needs_reauth' ? 'needs_reauth' : 'disconnected' };
 }
 export async function loadGoogleTokensFromDb(explicitUserId) {
     const res = await loadGoogleTokensWithStatus(explicitUserId);
     return res.status === 'connected' ? res.tokens : null;
 }
 export async function markGoogleNeedsReauth(explicitUserId) {
+    memoryGoogleStatus = 'needs_reauth';
     try {
         const userId = explicitUserId || (await getOwnerUserId());
         if (!userId)
@@ -245,6 +266,8 @@ export async function markGoogleNeedsReauth(explicitUserId) {
     }
 }
 export async function clearGoogleTokensFromDb(explicitUserId) {
+    memoryGoogleTokens = null;
+    memoryGoogleStatus = 'disconnected';
     try {
         await saveUserSetting('google_oauth_tokens', null);
         const userId = explicitUserId || (await getOwnerUserId());

@@ -7,6 +7,7 @@ import {
   Instagram,
   Mail,
   HardDrive,
+  FileSpreadsheet,
   Brain,
   FileText,
   Mic,
@@ -41,6 +42,7 @@ const routePrefetchMap: Record<string, () => Promise<unknown>> = {
   '/instagram': () => import('../../pages/InstagramPage'),
   '/gmail': () => import('../../pages/GmailPage'),
   '/drive': () => import('../../pages/DrivePage'),
+  '/sheets': () => import('../../pages/SheetsPage'),
   '/classroom': () => import('../../pages/ClassroomPage'),
   '/memory': () => import('../../pages/MemoryPage'),
   '/documents': () => import('../../pages/DocumentsPage'),
@@ -70,7 +72,7 @@ function prefetchRoute(path: string) {
 
 if (typeof window !== 'undefined') {
   setTimeout(() => {
-    for (const p of ['/', '/ai-chat', '/gmail', '/drive', '/classroom', '/instagram', '/tasks', '/memory', '/contacts', '/reminders']) {
+    for (const p of ['/', '/ai-chat', '/gmail', '/drive', '/sheets', '/classroom', '/instagram', '/tasks', '/memory', '/contacts', '/reminders']) {
       prefetchRoute(p);
     }
   }, 800);
@@ -93,6 +95,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         { path: '/instagram', label: 'Instagram', icon: Instagram },
         { path: '/gmail', label: 'Gmail', icon: Mail },
         { path: '/drive', label: 'Google Drive', icon: HardDrive },
+        { path: '/sheets', label: 'Google Sheets', icon: FileSpreadsheet },
         { path: '/classroom', label: 'Google Classroom', icon: GraduationCap },
       ],
     },
@@ -111,7 +114,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         { path: '/notifications', label: 'Notifications', icon: Bell },
         { path: '/contacts', label: 'Contact Manager', icon: Users },
         { path: '/automation', label: 'Automation Centre', icon: Cpu },
-        { path: '/tasks', label: 'Tasks & Reminders', icon: CheckSquare },
+        { path: '/tasks', label: 'Tasks & Calendar', icon: CheckSquare },
         { path: '/reminders', label: 'Scheduled Alarms', icon: Clock },
       ],
     },
@@ -176,10 +179,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                         if (window.innerWidth < 1024) onClose();
                       }}
                       className={({ isActive }) =>
-                        `flex items-center gap-2.5 px-3 py-1.5 text-xs font-bold border-2 transition-all duration-100 ${
-                          isActive
-                            ? 'bg-coral text-white border-ink shadow-brutal-sm translate-x-1'
-                            : 'bg-transparent text-ink border-transparent hover:border-ink hover:bg-white hover:shadow-brutal-sm'
+                        `flex items-center gap-2.5 px-3 py-1.5 text-xs font-bold border-2 transition-all duration-100 ${isActive
+                          ? 'bg-coral text-white border-ink shadow-brutal-sm translate-x-1'
+                          : 'bg-transparent text-ink border-transparent hover:border-ink hover:bg-white hover:shadow-brutal-sm'
                         }`
                       }
                     >

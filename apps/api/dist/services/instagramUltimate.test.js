@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeInstagramMediaWithGemini } from './geminiMultimodal.service.js';
-import { instagramAutoReplyService } from './instagramAutoReply.js';
+import { classifyUrgentDm, instagramAutoReplyService } from './instagramAutoReply.js';
 import { getInstagramNotesActivity, getStoryInsights, handleInstagramNoteActivityEvent } from './instagramHub.service.js';
 test('Gemini Multimodal never pretends to see unavailable media', async () => {
     const res = await analyzeInstagramMediaWithGemini({
@@ -61,4 +61,17 @@ test('Instagram Notes Activity deduplicates events and marks Note likes as unava
     assert.equal(activity.noteLikesSupported, false);
     assert.equal(activity.noteRepliesSupported, true);
     assert.ok(activity.events.some((e) => e.eventKey === 'note_reply_test_1'));
+});
+test('classifyUrgentDm flags medical emergencies, phone number requests, and urgent help for Telegram alerts', () => {
+    const med = classifyUrgentDm('Urgent medical emergency at hospital, need ambulance help!', false, false);
+    assert.equal(med.important, true);
+    assert.equal(med.critical, true);
+    assert.equal(med.category, 'MEDICAL_EMERGENCY');
+    const phone = classifyUrgentDm('Bro please send Hari phone number urgent', false, false);
+    assert.equal(phone.important, true);
+    assert.equal(phone.critical, true);
+    assert.equal(phone.category, 'PHONE_REQUEST');
+    const casual = classifyUrgentDm('Hey just checking in', false, false);
+    assert.equal(casual.important, false);
+    assert.equal(casual.category, 'NORMAL');
 });

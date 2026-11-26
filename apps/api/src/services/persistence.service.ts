@@ -7,6 +7,8 @@ export { encryptJson, decryptJson };
 
 let cachedOwnerId: string | null = null;
 const ensuredProfiles = new Set<string>();
+let memoryGoogleTokens: StoredGoogleTokens | null = null;
+let memoryGoogleStatus: ConnectionStatus = 'disconnected';
 
 export async function ensureProfileRow(userId: string, email?: string): Promise<boolean> {
   if (!userId) return false;
@@ -75,6 +77,9 @@ export interface StoredInstagramTokens {
 
 export async function getOwnerUserId(): Promise<string | null> {
   if (cachedOwnerId) return cachedOwnerId;
+  if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('example.supabase.co')) {
+    return null;
+  }
   try {
     const { data } = await supabaseAdmin.from('profiles').select('id').limit(1).maybeSingle();
     if (data?.id) {
@@ -147,20 +152,27 @@ export async function saveGoogleTokensToDb(
   tokens: StoredGoogleTokens,
   explicitUserId?: string
 ): Promise<void> {
+  let finalTokens = tokens;
+  if (!tokens.refreshToken && memoryGoogleTokens?.refreshToken) {
+    finalTokens = { ...tokens, refreshToken: memoryGoogleTokens.refreshToken };
+  }
+  memoryGoogleTokens = finalTokens;
+  memoryGoogleStatus = 'connected';
+
   const validExplicit = explicitUserId && UUID_RE.test(explicitUserId) ? explicitUserId : undefined;
   const userId = validExplicit || (await getOwnerUserId());
   if (!userId) {
-    logger.warn('saveGoogleTokensToDb: no valid owner userId available');
+    logger.warn('saveGoogleTokensToDb: no valid owner userId available (cached in memory)');
     return;
   }
   await ensureProfileRow(userId);
 
-  // Never overwrite an existing refreshToken with an empty one
-  let finalTokens = tokens;
-  if (!tokens.refreshToken) {
+  // Never overwrite an existing refreshToken with an empty one in DB either
+  if (!finalTokens.refreshToken) {
     const existing = await loadGoogleTokensWithStatus(userId);
     if (existing.tokens?.refreshToken) {
-      finalTokens = { ...tokens, refreshToken: existing.tokens.refreshToken };
+      finalTokens = { ...finalTokens, refreshToken: existing.tokens.refreshToken };
+      memoryGoogleTokens = finalTokens;
     }
   }
 
@@ -206,6 +218,12 @@ export async function saveGoogleTokensToDb(
 export async function loadGoogleTokensWithStatus(
   explicitUserId?: string
 ): Promise<{ tokens: StoredGoogleTokens | null; status: ConnectionStatus }> {
+  if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('example.supabase.co')) {
+    if (memoryGoogleTokens?.accessToken && memoryGoogleStatus === 'connected') {
+      return { tokens: memoryGoogleTokens, status: 'connected' };
+    }
+    return { tokens: null, status: memoryGoogleStatus === 'needs_reauth' ? 'needs_reauth' : 'disconnected' };
+  }
   try {
     const userId = explicitUserId || (await getOwnerUserId());
     let data: { config: unknown; status: string } | null = null;
@@ -261,7 +279,10 @@ export async function loadGoogleTokensWithStatus(
       return { tokens: parsedFallback, status: 'connected' };
     }
   }
-  return { tokens: null, status: 'disconnected' };
+  if (memoryGoogleTokens?.accessToken && memoryGoogleStatus === 'connected') {
+    return { tokens: memoryGoogleTokens, status: 'connected' };
+  }
+  return { tokens: null, status: memoryGoogleStatus === 'needs_reauth' ? 'needs_reauth' : 'disconnected' };
 }
 
 export async function loadGoogleTokensFromDb(explicitUserId?: string): Promise<StoredGoogleTokens | null> {
@@ -270,6 +291,7 @@ export async function loadGoogleTokensFromDb(explicitUserId?: string): Promise<S
 }
 
 export async function markGoogleNeedsReauth(explicitUserId?: string): Promise<void> {
+  memoryGoogleStatus = 'needs_reauth';
   try {
     const userId = explicitUserId || (await getOwnerUserId());
     if (!userId) return;
@@ -284,6 +306,8 @@ export async function markGoogleNeedsReauth(explicitUserId?: string): Promise<vo
 }
 
 export async function clearGoogleTokensFromDb(explicitUserId?: string): Promise<void> {
+  memoryGoogleTokens = null;
+  memoryGoogleStatus = 'disconnected';
   try {
     await saveUserSetting('google_oauth_tokens', null);
     const userId = explicitUserId || (await getOwnerUserId());

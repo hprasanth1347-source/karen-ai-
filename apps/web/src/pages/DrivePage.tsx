@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { HardDrive, Search, Lock, FileText, ExternalLink, RefreshCw, Unplug, Loader2, Mail, X } from 'lucide-react';
-import { api } from '../lib/api';
+import { Link } from 'react-router-dom';
+import { HardDrive, Search, Lock, FileText, ExternalLink, RefreshCw, Unplug, Loader2, Mail, X, FileSpreadsheet } from 'lucide-react';
+import { api, readCachedGet } from '../lib/api';
 
 interface DriveFile {
   id: string;
@@ -39,11 +40,15 @@ function formatSize(bytes?: string): string {
 }
 
 export const DrivePage: React.FC = () => {
-  const [configured, setConfigured] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [files, setFiles] = useState<DriveFile[]>([]);
-  const [importantEmails, setImportantEmails] = useState<ImportantEmail[]>([]);
+  const cachedStatus = readCachedGet<{ data?: { configured?: boolean; connected?: boolean } }>('/drive/status')?.data;
+  const cachedFiles = readCachedGet<{ data?: DriveFile[] }>('/drive/files')?.data;
+  const cachedImpEmails = readCachedGet<{ data?: ImportantEmail[] }>('/gmail/messages', { important: '1' })?.data;
+
+  const [configured, setConfigured] = useState(() => Boolean(cachedStatus?.configured));
+  const [connected, setConnected] = useState(() => Boolean(cachedStatus?.connected));
+  const [loading, setLoading] = useState(() => !(cachedFiles && cachedFiles.length > 0));
+  const [files, setFiles] = useState<DriveFile[]>(() => cachedFiles ?? []);
+  const [importantEmails, setImportantEmails] = useState<ImportantEmail[]>(() => cachedImpEmails ?? []);
   const [selectedFile, setSelectedFile] = useState<DrivePreview | null>(null);
   const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -51,55 +56,6 @@ export const DrivePage: React.FC = () => {
   const [selectedEmail, setSelectedEmail] = useState<ImportantEmail | null>(null);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [sheetTitle, setSheetTitle] = useState('');
-  const [sheetHeaders, setSheetHeaders] = useState('');
-  const [sheetIdInput, setSheetIdInput] = useState('');
-  const [sheetValues, setSheetValues] = useState<unknown[][]>([]);
-  const [sheetCreatedUrl, setSheetCreatedUrl] = useState<string | null>(null);
-  const [sheetLoading, setSheetLoading] = useState(false);
-  const [sheetError, setSheetError] = useState<string | null>(null);
-
-  const handleCreateSheet = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!sheetTitle.trim()) return;
-    setSheetLoading(true);
-    setSheetError(null);
-    try {
-      const headers = sheetHeaders
-        .split(',')
-        .map((h) => h.trim())
-        .filter(Boolean);
-      const res = await api.post('/sheets/create', {
-        title: sheetTitle.trim(),
-        headers: headers.length > 0 ? headers : undefined,
-      });
-      const created = res.data?.data;
-      if (created?.spreadsheetId) setSheetIdInput(created.spreadsheetId);
-      if (created?.spreadsheetUrl) setSheetCreatedUrl(created.spreadsheetUrl);
-      setSheetTitle('');
-      setSheetHeaders('');
-    } catch (err: any) {
-      setSheetError(err?.response?.data?.error || 'Could not create Google Sheet.');
-    } finally {
-      setSheetLoading(false);
-    }
-  };
-
-  const handleReadSheet = async () => {
-    if (!sheetIdInput.trim()) return;
-    setSheetLoading(true);
-    setSheetError(null);
-    try {
-      const res = await api.get(`/sheets/${encodeURIComponent(sheetIdInput.trim())}`, {
-        params: { range: 'A1:Z20' },
-      });
-      setSheetValues(res.data?.data ?? []);
-    } catch (err: any) {
-      setSheetError(err?.response?.data?.error || 'Could not read Google Sheet.');
-    } finally {
-      setSheetLoading(false);
-    }
-  };
 
   const closeFileModal = useCallback(() => {
     setSelectedFile(null);
@@ -115,13 +71,13 @@ export const DrivePage: React.FC = () => {
     };
   }, [previewBlobUrl]);
 
-  const loadFiles = useCallback(async (q = '') => {
-    setLoading(true);
+  const loadFiles = useCallback(async (q = '', force = false) => {
+    if (!files.length || force || q) setLoading(true);
     setError(null);
     try {
       const [driveRes, gmailRes] = await Promise.all([
-        api.get('/drive/files', { params: q ? { q } : undefined }),
-        api.get('/gmail/messages', { params: { important: '1' } }).catch(() => ({ data: { data: [] } })),
+        api.get('/drive/files', { params: q ? { q } : undefined, ...(force ? { skipCache: true } : {}) } as any),
+        api.get('/gmail/messages', { params: { important: '1' }, ...(force ? { skipCache: true } : {}) } as any).catch(() => ({ data: { data: [] } })),
       ]);
       setFiles(driveRes.data?.data ?? []);
       setImportantEmails(gmailRes.data?.data ?? []);
@@ -130,17 +86,17 @@ export const DrivePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [files.length]);
 
-  const refreshStatus = useCallback(async () => {
-    setLoading(true);
+  const refreshStatus = useCallback(async (force = false) => {
+    if (!files.length || force) setLoading(true);
     try {
-      const res = await api.get('/drive/status', { skipCache: true } as any);
+      const res = await api.get('/drive/status', force ? ({ skipCache: true } as any) : undefined);
       const status = res.data?.data;
       setConfigured(Boolean(status?.configured));
       setConnected(Boolean(status?.connected));
       if (status?.connected) {
-        await loadFiles();
+        await loadFiles('', force);
       } else {
         setLoading(false);
       }
@@ -152,7 +108,7 @@ export const DrivePage: React.FC = () => {
       );
       setLoading(false);
     }
-  }, [loadFiles]);
+  }, [loadFiles, files.length]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -250,7 +206,7 @@ export const DrivePage: React.FC = () => {
             <>
               <button
                 type="button"
-                onClick={() => loadFiles(search)}
+                onClick={() => void loadFiles(search, true)}
                 className="btn-teal text-xs flex items-center gap-1.5"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -492,70 +448,14 @@ export const DrivePage: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
-        <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2 flex items-center gap-2">
-          <FileText className="w-4 h-4 text-teal" />
-          GOOGLE SHEETS
-        </h3>
-        {sheetError && (
-          <div className="p-2.5 border-2 border-ink bg-coral/15 text-xs font-semibold text-coral">
-            {sheetError}
-          </div>
-        )}
-        {sheetCreatedUrl && (
-          <div className="p-2.5 border-2 border-ink bg-mint/30 text-xs flex items-center justify-between gap-2">
-            <span>Sheet created! ID: <code className="font-mono">{sheetIdInput}</code></span>
-            <a href={sheetCreatedUrl} target="_blank" rel="noreferrer" className="underline font-bold">
-              Open Sheet
-            </a>
-          </div>
-        )}
-        <form onSubmit={handleCreateSheet} className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <input
-            type="text"
-            value={sheetTitle}
-            onChange={(e) => setSheetTitle(e.target.value)}
-            placeholder="New Sheet Title"
-            className="border-2 border-ink px-2.5 py-1.5 text-xs bg-cream-50"
-          />
-          <input
-            type="text"
-            value={sheetHeaders}
-            onChange={(e) => setSheetHeaders(e.target.value)}
-            placeholder="Headers (comma separated, optional)"
-            className="border-2 border-ink px-2.5 py-1.5 text-xs bg-cream-50"
-          />
-          <button type="submit" disabled={sheetLoading || !connected} className="btn-coral text-xs">
-            {sheetLoading ? 'Working...' : '+ Create Google Sheet'}
-          </button>
-        </form>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={sheetIdInput}
-            onChange={(e) => setSheetIdInput(e.target.value)}
-            placeholder="Paste Spreadsheet ID to read A1:Z20..."
-            className="flex-1 border-2 border-ink px-2.5 py-1.5 text-xs bg-cream-50 font-mono"
-          />
-          <button type="button" onClick={handleReadSheet} disabled={sheetLoading || !connected} className="btn-ghost text-xs">
-            Read Sheet
-          </button>
+      <div className="bg-white border-3 border-ink p-4 shadow-brutal flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs">
+          <FileSpreadsheet className="w-4 h-4 text-teal shrink-0" />
+          <span className="font-bold">Google Sheets now has a dedicated live spreadsheet workspace.</span>
         </div>
-        {sheetValues.length > 0 && (
-          <div className="overflow-x-auto border-2 border-ink">
-            <table className="w-full text-xs text-left">
-              <tbody>
-                {sheetValues.map((row, rIdx) => (
-                  <tr key={rIdx} className={rIdx === 0 ? 'bg-yellow/30 font-bold border-b border-ink' : 'border-b border-ink/20'}>
-                    {(Array.isArray(row) ? row : []).map((cell, cIdx) => (
-                      <td key={cIdx} className="px-2 py-1 border-r border-ink/20">{String(cell ?? '')}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <Link to="/sheets" className="btn-teal text-xs">
+          Open Google Sheets Menu →
+        </Link>
       </div>
 
       <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">

@@ -8,7 +8,7 @@ import {
   classroomSetPersonalStatusTool,
 } from './tools/classroom.tools.js';
 import { gmailListTool, gmailReadTool, gmailSendTool } from './tools/gmail.tools.js';
-import { driveUploadTool } from './tools/drive.tools.js';
+import { driveListTool, driveUploadTool } from './tools/drive.tools.js';
 import { instagramReadDmsTool, instagramSendDmTool } from './tools/instagram.tools.js';
 import { macroDeleteTool, macroListTool, macroSaveTool } from './tools/macros.tools.js';
 import {
@@ -16,12 +16,14 @@ import {
   calendarListEventsTool,
   googleContactsCreateTool,
   googleContactsSearchTool,
+  googleTasksCompleteTool,
   googleTasksCreateTool,
   googleTasksListTool,
   memoryListTool,
   memorySaveTool,
   sheetsCreateTool,
   sheetsEditTool,
+  sheetsListTool,
   sheetsReadTool,
 } from './tools/workspace.tools.js';
 
@@ -35,6 +37,7 @@ export const COMMAND_TOOLS: Array<CommandToolDef<any>> = [
   gmailListTool,
   gmailReadTool,
   gmailSendTool,
+  driveListTool,
   driveUploadTool,
   instagramReadDmsTool,
   instagramSendDmTool,
@@ -45,6 +48,8 @@ export const COMMAND_TOOLS: Array<CommandToolDef<any>> = [
   calendarCreateEventTool,
   googleTasksListTool,
   googleTasksCreateTool,
+  googleTasksCompleteTool,
+  sheetsListTool,
   sheetsCreateTool,
   sheetsReadTool,
   sheetsEditTool,

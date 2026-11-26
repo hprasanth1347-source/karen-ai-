@@ -52,24 +52,40 @@ export function shouldSearchWeb(prompt, options) {
     if (text.length < 6)
         return false;
     // Skip greetings / pure small talk
-    if (/^(hi|hello|hey|vanakkam|gm|good morning|good night|thanks|thank you|ok|okay|bye|cool|nice)[!.\s]*$/i.test(text)) {
+    if (/^(hi|hello|hey|vanakkam|gm|good morning|good night|thanks|thank you|ok|okay|bye|cool|nice)[!.\s]*$/i.test(text) ||
+        /^(?:how\s+are\s+you|how\s+r\s+u|how'?s\s+it\s+going|what'?s\s+up)\b/i.test(text)) {
         return false;
     }
-    // Skip personal-data commands, outbound sends, and pure text rewriting/translation
-    const personalOrActionPattern = /\b(my\s+(tasks?|emails?|inbox|mails?|gmail|drive|files?|documents?|vault|classroom|assignments?|exams?|memories?|reminders?|instagram|dms?|comments?|whatsapp|contacts?)|send\s+(an?\s+)?(email|dm|message|whatsapp)|reply\s+to|join\s+class|translate\s+this|rewrite\s+this|summarize\s+this\s+text|make\s+(this|my\s+notes)\s+into\s+(a\s+)?(pdf|docx|pptx|slides|xlsx))\b/i;
-    if (personalOrActionPattern.test(text) && !/\b(latest|news|price|weather|score|online|google|search)\b/i.test(text)) {
+    // Personal-data commands, outbound sends, and pure text rewriting/translation stay local unless web/search is explicit
+    const personalOrActionPattern = /\b(my\s+(?:[a-z0-9_-]+\s+){0,2}(?:tasks?|emails?|inbox|mails?|gmail|drive|files?|documents?|vault|classroom|assignments?|exams?|memories?|reminders?|instagram|dms?|comments?|whatsapp|contacts?)|in\s+(?:google\s+)?drive|in\s+gmail|send\s+(?:an?\s+)?(?:email|dm|message|whatsapp)|reply\s+to|join\s+class|translate\s+this|rewrite\s+this|summarize\s+this\s+text|make\s+(?:this|my\s+notes)\s+into\s+(?:a\s+)?(?:pdf|docx|pptx|slides|xlsx))\b/i;
+    if (personalOrActionPattern.test(text) && !/\b(latest|news|price|weather|score|online|google|search|web\s+search|live\s+search)\b/i.test(text)) {
         return false;
     }
-    // Explicit search or factual/time-sensitive questions
-    return /\b(search|google|look\s+up|find\s+online|latest|news|today|tomorrow|yesterday|current|recent|update|live|happening|price|cost|weather|forecast|score|match|won|winner|who\s+(is|was|won)|what\s+(is|are|was)|when\s+(is|was|did)|where\s+is|how\s+(much|many|old)|release|version|law|act|rule|stock|rate|202\d)\b/i.test(text);
+    // Explicit web search, custom search queries, or factual/time-sensitive questions
+    return /\b(search|google|look\s*up|find(?:\s+online|\s+out|\s+about)?|check\s+(?:online|latest|live|current)|fetch|browse|latest|news|today|tomorrow|yesterday|current|recent|newest|fresh|update|live|happening|trending|price|cost|weather|forecast|score|match|won|winner|who\s+(is|was|won|are)|what\s+(is|are|was|were|happened)|when\s+(is|was|did|does|will)|where\s+(is|are)|which\s+(is|are)|how\s+(much|many|old)|release|version|spec|specs|stats|status|compare|vs|versus|law|act|rule|stock|rate|202\d)\b/i.test(text);
+}
+function cleanStandaloneSearchQuery(prompt) {
+    const stripped = prompt
+        .trim()
+        .replace(/^(?:please\s+)?(?:can\s+you\s+)?(?:web\s+search|custom\s+search|live\s+search|search(?:\s+(?:the\s+web|the\s+data|data))?(?:\s+(?:for|about|on))?|google|look\s*up|find\s+online)\s*[:,-]?\s*/i, '')
+        .trim();
+    return (stripped || prompt.trim()).slice(0, 120);
 }
 // ─── History-Aware Query Rewrite ──────────────────────────────────────────────
 export async function rewriteSearchQuery(prompt, history = []) {
-    const fallbackFreshness = /\b(today|tomorrow|yesterday|now|live|latest|breaking|tonight|match|score|weather|price)\b/i.test(prompt)
+    const cleanedQuery = cleanStandaloneSearchQuery(prompt);
+    const fallbackFreshness = /\b(today|tomorrow|yesterday|now|live|latest|breaking|tonight|match|score|weather|price|fresh)\b/i.test(prompt)
         ? 'breaking'
-        : /\b(recent|this\s+month|this\s+year|202\d|new|current|version|release)\b/i.test(prompt)
+        : /\b(recent|this\s+month|this\s+year|202\d|new|newest|current|version|release|update)\b/i.test(prompt)
             ? 'recent'
             : 'any';
+    // Fast path: skip slow LLM rewrite unless prior turns exist AND the message is a short/pronoun follow-up
+    const wordCount = cleanedQuery.split(/\s+/).filter(Boolean).length;
+    const hasFollowUpReference = wordCount <= 3 ||
+        /\b(it|that|this|they|them|he|she|his|her|their|those|these|same|more|above|previous)\b/i.test(prompt);
+    if (history.length === 0 || !hasFollowUpReference) {
+        return { query: cleanedQuery, freshness: fallbackFreshness };
+    }
     const recentTurns = history
         .slice(-4)
         .map((h) => `${h.role}: ${h.content.slice(0, 240)}`)
@@ -94,7 +110,7 @@ Latest user message: ${prompt.slice(0, 300)}`;
                     temperature: 0,
                     max_tokens: 80,
                 }),
-                signal: AbortSignal.timeout(2500),
+                signal: AbortSignal.timeout(1200),
             });
             if (res.ok) {
                 const json = await res.json();
@@ -102,7 +118,7 @@ Latest user message: ${prompt.slice(0, 300)}`;
                 const match = raw.match(/\{[\s\S]*\}/);
                 if (match) {
                     const parsed = JSON.parse(match[0]);
-                    const q = typeof parsed.query === 'string' && parsed.query.trim() ? parsed.query.trim().slice(0, 120) : prompt;
+                    const q = typeof parsed.query === 'string' && parsed.query.trim() ? parsed.query.trim().slice(0, 120) : cleanedQuery;
                     const f = ['breaking', 'recent', 'any'].includes(parsed.freshness)
                         ? parsed.freshness
                         : fallbackFreshness;
@@ -118,7 +134,7 @@ Latest user message: ${prompt.slice(0, 300)}`;
                 body: JSON.stringify({
                     contents: [{ role: 'user', parts: [{ text: rewritePrompt }] }],
                 }),
-                signal: AbortSignal.timeout(2500),
+                signal: AbortSignal.timeout(1200),
             });
             if (res.ok) {
                 const json = await res.json();
@@ -126,7 +142,7 @@ Latest user message: ${prompt.slice(0, 300)}`;
                 const match = raw.match(/\{[\s\S]*\}/);
                 if (match) {
                     const parsed = JSON.parse(match[0]);
-                    const q = typeof parsed.query === 'string' && parsed.query.trim() ? parsed.query.trim().slice(0, 120) : prompt;
+                    const q = typeof parsed.query === 'string' && parsed.query.trim() ? parsed.query.trim().slice(0, 120) : cleanedQuery;
                     const f = ['breaking', 'recent', 'any'].includes(parsed.freshness)
                         ? parsed.freshness
                         : fallbackFreshness;
@@ -136,9 +152,9 @@ Latest user message: ${prompt.slice(0, 300)}`;
         }
     }
     catch {
-        // Fall back to raw prompt
+        // Fall back to deterministic cleaned query
     }
-    return { query: prompt.trim().slice(0, 120), freshness: fallbackFreshness };
+    return { query: cleanedQuery, freshness: fallbackFreshness };
 }
 // ─── SSRF Protection & Page Enrichment ────────────────────────────────────────
 export function isPrivateOrReservedIp(ip) {
@@ -200,7 +216,7 @@ export async function validateSafePublicUrl(urlStr, lookupFn = (h) => dns.lookup
     }
     return parsed;
 }
-export async function fetchAndExtractPageExcerpt(urlStr) {
+export async function fetchAndExtractPageExcerpt(urlStr, timeoutMs = 1800) {
     try {
         let currentUrl = await validateSafePublicUrl(urlStr);
         let res = null;
@@ -212,7 +228,7 @@ export async function fetchAndExtractPageExcerpt(urlStr) {
                     'User-Agent': 'KarenAI-SearchBot/1.0 (+https://karen.local)',
                     Accept: 'text/html,application/xhtml+xml',
                 },
-                signal: AbortSignal.timeout(4000),
+                signal: AbortSignal.timeout(timeoutMs),
             });
             if (res.status >= 300 && res.status < 400) {
                 const loc = res.headers.get('location');
@@ -261,9 +277,10 @@ export async function fetchAndExtractPageExcerpt(urlStr) {
     }
 }
 // ─── Cache & Daily Quota ──────────────────────────────────────────────────────
-async function readSearchCache(queryHash) {
+async function readSearchCache(queryHash, freshness, maxCacheAgeMs) {
+    const now = Date.now();
     const mem = memoryCache.get(queryHash);
-    if (mem && mem.expiresAt > Date.now()) {
+    if (mem && mem.expiresAt > now && (!maxCacheAgeMs || now - mem.cachedAt <= maxCacheAgeMs)) {
         return mem.results;
     }
     const supabase = supabaseAdmin;
@@ -275,10 +292,14 @@ async function readSearchCache(queryHash) {
             .select('results, expires_at')
             .eq('query_hash', queryHash)
             .maybeSingle();
-        if (data && new Date(data.expires_at).getTime() > Date.now()) {
-            const results = (data.results || []);
-            memoryCache.set(queryHash, { results, expiresAt: new Date(data.expires_at).getTime() });
-            return results;
+        if (data) {
+            const expiresAtMs = new Date(data.expires_at).getTime();
+            const approxCachedAt = expiresAtMs - getCacheTtlMs(freshness);
+            if (expiresAtMs > now && (!maxCacheAgeMs || now - approxCachedAt <= maxCacheAgeMs)) {
+                const results = (data.results || []);
+                memoryCache.set(queryHash, { results, expiresAt: expiresAtMs, cachedAt: approxCachedAt });
+                return results;
+            }
         }
     }
     catch {
@@ -287,9 +308,10 @@ async function readSearchCache(queryHash) {
     return null;
 }
 async function writeSearchCache(queryHash, normalizedQuery, freshness, results) {
+    const now = Date.now();
     const ttlMs = getCacheTtlMs(freshness);
-    const expiresAtMs = Date.now() + ttlMs;
-    memoryCache.set(queryHash, { results, expiresAt: expiresAtMs });
+    const expiresAtMs = now + ttlMs;
+    memoryCache.set(queryHash, { results, expiresAt: expiresAtMs, cachedAt: now });
     const supabase = supabaseAdmin;
     if (!supabase)
         return;
@@ -394,7 +416,7 @@ export async function searchWebWithGoogle(query, limitOrOptions = 5, _signal) {
     }
     stats.totalLookups += 1;
     if (!opts.bypassCache) {
-        const cached = await readSearchCache(queryHash);
+        const cached = await readSearchCache(queryHash, freshness, opts.maxCacheAgeMs);
         if (cached) {
             stats.cacheHits += 1;
             logger.info('Google search cache hit', { queryHash, freshness, count: cached.length });
@@ -499,10 +521,14 @@ export async function searchWebWithGoogle(query, limitOrOptions = 5, _signal) {
                     displayLink: i.displayLink || new URL(i.link).hostname,
                 }));
                 if (opts.enrichPages !== false && mapped.length > 0) {
-                    const topTargets = mapped.slice(0, 3);
-                    const excerpts = await Promise.all(topTargets.map((item) => fetchAndExtractPageExcerpt(item.link)));
+                    const enrichTimeout = Math.min(Math.max(opts.enrichTimeoutMs ?? 1600, 400), 4000);
+                    const topTargets = mapped.slice(0, 2);
+                    const excerpts = await Promise.race([
+                        Promise.all(topTargets.map((item) => fetchAndExtractPageExcerpt(item.link, enrichTimeout))),
+                        new Promise((resolve) => setTimeout(() => resolve([]), enrichTimeout + 200)),
+                    ]);
                     excerpts.forEach((excerpt, idx) => {
-                        if (excerpt)
+                        if (excerpt && topTargets[idx])
                             topTargets[idx].pageExcerpt = excerpt;
                     });
                 }
@@ -570,6 +596,135 @@ export async function searchWebWithGoogle(query, limitOrOptions = 5, _signal) {
     finally {
         inFlightSearches.delete(inflightKey);
     }
+}
+async function fetchDuckDuckGoHtmlResults(query, limit) {
+    try {
+        const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query.slice(0, 220))}`;
+        const res = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                Accept: 'text/html',
+            },
+            signal: AbortSignal.timeout(2600),
+        });
+        if (!res.ok)
+            return [];
+        const html = await res.text();
+        const $ = cheerio.load(html);
+        const items = [];
+        $('.result').each((_, el) => {
+            if (items.length >= limit)
+                return;
+            const linkEl = $(el).find('a.result__a').first();
+            let href = linkEl.attr('href') || '';
+            if (href.includes('uddg=')) {
+                try {
+                    const parsed = new URL(href.startsWith('http') ? href : `https://duckduckgo.com${href}`);
+                    const actual = parsed.searchParams.get('uddg');
+                    if (actual)
+                        href = actual;
+                }
+                catch {
+                    // keep original href
+                }
+            }
+            if (!href.startsWith('http'))
+                return;
+            const title = stripActionTagsFromSearch(linkEl.text().replace(/\s+/g, ' ').trim());
+            const snippet = stripActionTagsFromSearch($(el).find('.result__snippet').first().text().replace(/\s+/g, ' ').trim());
+            if (!title)
+                return;
+            let displayLink = href;
+            try {
+                displayLink = new URL(href).hostname;
+            }
+            catch {
+                // ignore
+            }
+            items.push({ title, link: href, snippet, displayLink });
+        });
+        return items;
+    }
+    catch {
+        return [];
+    }
+}
+async function fetchGoogleNewsRssResults(query, limit) {
+    try {
+        const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query.slice(0, 200))}&hl=en-IN&gl=IN&ceid=IN:en`;
+        const res = await fetch(url, {
+            headers: { 'User-Agent': 'KarenAI-SearchBot/1.0' },
+            signal: AbortSignal.timeout(2400),
+        });
+        if (!res.ok)
+            return [];
+        const xml = await res.text();
+        const $ = cheerio.load(xml, { xmlMode: true });
+        const items = [];
+        $('item').each((_, el) => {
+            if (items.length >= limit)
+                return;
+            const title = stripActionTagsFromSearch($(el).find('title').first().text().trim());
+            const link = $(el).find('link').first().text().trim();
+            const pubDate = $(el).find('pubDate').first().text().trim();
+            const source = stripActionTagsFromSearch($(el).find('source').first().text().trim());
+            if (!title || !link.startsWith('http'))
+                return;
+            items.push({
+                title,
+                link,
+                snippet: [source, pubDate].filter(Boolean).join(' · ') || title,
+                displayLink: source || 'news.google.com',
+            });
+        });
+        return items;
+    }
+    catch {
+        return [];
+    }
+}
+export async function searchWebLiveFallback(query, limit = 5, freshness = 'any') {
+    const normalized = normalizeSearchQuery(query);
+    const [ddgResults, newsResults] = await Promise.all([
+        fetchDuckDuckGoHtmlResults(normalized, limit),
+        freshness === 'breaking' || freshness === 'recent'
+            ? fetchGoogleNewsRssResults(normalized, limit)
+            : Promise.resolve([]),
+    ]);
+    const combined = [];
+    const seen = new Set();
+    for (const item of [...newsResults, ...ddgResults]) {
+        if (!seen.has(item.link)) {
+            seen.add(item.link);
+            combined.push(item);
+        }
+        if (combined.length >= limit)
+            break;
+    }
+    return {
+        ok: combined.length > 0,
+        status: combined.length > 0 ? 200 : 503,
+        results: combined,
+        sources: combined.map((r) => ({
+            title: r.title,
+            url: r.link,
+            displayLink: r.displayLink || r.link,
+        })),
+        cached: false,
+        freshness,
+        queryUsed: normalized,
+        reason: combined.length > 0 ? undefined : 'network_error',
+        errorMessage: combined.length > 0 ? undefined : 'Live fallback search returned no results',
+    };
+}
+export async function searchWebWithFallback(query, limitOrOptions = 5, signal) {
+    const primary = await searchWebWithGoogle(query, limitOrOptions, signal);
+    if (primary.ok && primary.results.length > 0) {
+        return primary;
+    }
+    const opts = typeof limitOrOptions === 'number' ? { limit: limitOrOptions } : limitOrOptions;
+    const fallback = await searchWebLiveFallback(query, Math.min(Math.max(opts.limit ?? 5, 1), 10), opts.freshness || 'any');
+    return fallback.ok ? fallback : primary;
 }
 export function formatSearchContext(results) {
     if (results.length === 0)

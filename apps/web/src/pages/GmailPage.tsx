@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Mail, Sparkles, RefreshCw, Loader2, X } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, readCachedGet } from '../lib/api';
 
 interface EmailSummary {
   id: string;
@@ -16,21 +16,23 @@ interface FullEmail extends EmailSummary {
 }
 
 export const GmailPage: React.FC = () => {
-  const [configured, setConfigured] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const cachedStatus = readCachedGet<{ data?: { configured?: boolean; connected?: boolean } }>('/drive/status')?.data;
+  const cachedEmails = readCachedGet<{ data?: EmailSummary[] }>('/gmail/messages')?.data;
+  const [configured, setConfigured] = useState(() => Boolean(cachedStatus?.configured));
+  const [connected, setConnected] = useState(() => Boolean(cachedStatus?.connected));
+  const [loading, setLoading] = useState(() => !(cachedEmails && cachedEmails.length > 0));
   const [digestLoading, setDigestLoading] = useState(false);
-  const [emails, setEmails] = useState<EmailSummary[]>([]);
+  const [emails, setEmails] = useState<EmailSummary[]>(() => cachedEmails ?? []);
   const [digest, setDigest] = useState<string | null>(null);
   const [selectedEmail, setSelectedEmail] = useState<FullEmail | null>(null);
   const [loadingEmail, setLoadingEmail] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchEmails = useCallback(async () => {
-    setLoading(true);
+  const fetchEmails = useCallback(async (force = false) => {
+    if (!cachedEmails?.length || force) setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/gmail/messages');
+      const res = await api.get('/gmail/messages', force ? ({ skipCache: true } as any) : undefined);
       setEmails(res.data?.data ?? []);
     } catch (err: any) {
       setError(err?.response?.data?.error || 'Could not fetch Gmail messages.');
@@ -39,15 +41,15 @@ export const GmailPage: React.FC = () => {
     }
   }, []);
 
-  const refreshStatus = useCallback(async () => {
-    setLoading(true);
+  const refreshStatus = useCallback(async (force = false) => {
+    if (!cachedEmails?.length || force) setLoading(true);
     try {
-      const res = await api.get('/drive/status', { skipCache: true } as any);
+      const res = await api.get('/drive/status', force ? ({ skipCache: true } as any) : undefined);
       const status = res.data?.data;
       setConfigured(Boolean(status?.configured));
       setConnected(Boolean(status?.connected));
       if (status?.connected) {
-        await fetchEmails();
+        await fetchEmails(force);
       } else {
         setLoading(false);
       }
@@ -135,7 +137,7 @@ export const GmailPage: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={fetchEmails}
+                onClick={() => void fetchEmails(true)}
                 className="btn-coral text-xs flex items-center gap-1.5"
               >
                 <RefreshCw className="w-3.5 h-3.5" />

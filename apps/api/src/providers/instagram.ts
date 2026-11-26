@@ -19,10 +19,11 @@ async function resolveIgAuth(): Promise<{ token: string; accountId: string }> {
 }
 
 let conversationsCache: { expiresAt: number; data: InstagramThread[] } | null = null;
+let preferredFieldVariantIdx = 0;
 let profileCache: { expiresAt: number; data: InstagramProfile } | null = null;
 let mediaCache: { expiresAt: number; data: InstagramMediaItem[] } | null = null;
 
-async function metaFetch(url: string, init?: RequestInit, timeoutMs = 8000): Promise<Response> {
+async function metaFetch(url: string, init?: RequestInit, timeoutMs = 4500): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -222,10 +223,14 @@ export async function getInstagramConversations(): Promise<InstagramThread[]> {
 
     let res: Response | null = null;
     let lastErrBody: { error?: { message?: string; code?: number } } = {};
-    for (const fields of fieldVariants) {
+    for (let idx = preferredFieldVariantIdx; idx < fieldVariants.length; idx++) {
+      const fields = fieldVariants[idx];
       const url = `${META_BASE_URL}/${accountId}/conversations?platform=instagram&fields=${fields}&limit=10&access_token=${encodeURIComponent(token)}`;
       res = await metaFetch(url);
-      if (res.ok) break;
+      if (res.ok) {
+        preferredFieldVariantIdx = idx;
+        break;
+      }
       lastErrBody = (await res.json().catch(() => ({}))) as { error?: { message?: string; code?: number } };
       if (res.status !== 400) break;
       logger.warn('Retrying Instagram conversations without unsupported message subfields', {

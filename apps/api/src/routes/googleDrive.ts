@@ -214,11 +214,9 @@ async function getValidAccessToken(req?: Request): Promise<string | null> {
   let tokens: StoredGoogleTokens | null = null;
   let status: ConnectionStatus = 'disconnected';
 
-  if (userId) {
-    const dbRes = await loadGoogleTokensWithStatus(userId);
-    tokens = dbRes.tokens;
-    status = dbRes.status;
-  }
+  const dbRes = await loadGoogleTokensWithStatus(userId || undefined);
+  tokens = dbRes.tokens;
+  status = dbRes.status;
 
   // Fallback to encrypted HttpOnly cookie if DB persistence was unavailable
   if ((!tokens || status !== 'connected') && req) {
@@ -290,7 +288,7 @@ export async function disconnectGoogleAccount(explicitUserId?: string): Promise<
     await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(tokenToRevoke)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    }).catch(() => {});
+    }).catch(() => { });
   }
   await clearGoogleTokensFromDb(userId);
 }

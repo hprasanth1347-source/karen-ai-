@@ -1,32 +1,27 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { logger } from '../config/logger.js';
-const tasksStore = [
-    {
-        id: '1',
-        title: 'Complete Karen AI Master Build Documentation',
-        due: '2026-11-23',
-        priority: 'urgent',
-        status: 'in_progress',
-        source: 'manual',
-    },
-    {
-        id: '2',
-        title: 'Review AWS Cloud Billing Statement ($14.20)',
-        due: '2026-11-25',
-        priority: 'medium',
-        status: 'todo',
-        source: 'email_derived',
-    },
-    {
-        id: '3',
-        title: 'Submit Semester Project Presentation Slides',
-        due: '2026-11-27',
-        priority: 'high',
-        status: 'todo',
-        source: 'document_derived',
-    },
-];
+import { listGoogleTasks, updateGoogleTask } from './googleWorkspace.service.js';
+const tasksStore = [];
 export async function listTasks(userId) {
+    const items = [];
+    const seenTitles = new Set();
+    // 1. Live Google Tasks (primary real task source)
+    const googleRes = await listGoogleTasks(userId).catch(() => ({ ok: false, tasks: [] }));
+    if (googleRes.ok && googleRes.tasks.length > 0) {
+        for (const gt of googleRes.tasks) {
+            const normalized = gt.title.trim().toLowerCase();
+            seenTitles.add(normalized);
+            items.push({
+                id: `gtask:${gt.id}`,
+                title: gt.title,
+                due: gt.due ? String(gt.due).slice(0, 10) : '',
+                priority: 'medium',
+                status: gt.status === 'completed' ? 'done' : 'todo',
+                source: 'google_tasks',
+            });
+        }
+    }
+    // 2. Real Supabase tasks created via Karen AI / Telegram (never fake static seeds)
     if (userId) {
         try {
             const { data, error } = await supabaseAdmin
@@ -35,22 +30,35 @@ export async function listTasks(userId) {
                 .eq('user_id', userId)
                 .order('created_at', { ascending: false });
             if (!error && data && data.length > 0) {
-                return data.map((row) => ({
-                    id: row.id,
-                    title: row.title,
-                    due: row.due_at ? String(row.due_at).slice(0, 10) : '',
-                    priority: row.priority || 'medium',
-                    status: row.status || 'todo',
-                    source: row.source || 'manual',
-                    created_at: row.created_at,
-                }));
+                for (const row of data) {
+                    const normalized = String(row.title || '').trim().toLowerCase();
+                    if (seenTitles.has(normalized))
+                        continue;
+                    seenTitles.add(normalized);
+                    items.push({
+                        id: row.id,
+                        title: row.title,
+                        due: row.due_at ? String(row.due_at).slice(0, 10) : '',
+                        priority: row.priority || 'medium',
+                        status: row.status || 'todo',
+                        source: row.source || 'manual',
+                        created_at: row.created_at,
+                    });
+                }
             }
         }
         catch (err) {
             logger.debug('Supabase tasks read fallback to in-memory store', { err });
         }
     }
-    return [...tasksStore];
+    for (const local of tasksStore) {
+        const normalized = local.title.trim().toLowerCase();
+        if (!seenTitles.has(normalized)) {
+            seenTitles.add(normalized);
+            items.push(local);
+        }
+    }
+    return items;
 }
 export async function addTask(title, due, priority = 'medium', source = 'manual', userId) {
     const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -97,6 +105,27 @@ export async function addTask(title, due, priority = 'medium', source = 'manual'
     return newTask;
 }
 export async function updateTask(id, patch, userId) {
+    if (id.startsWith('gtask:')) {
+        const gTaskId = id.slice(6);
+        const gRes = await updateGoogleTask({
+            taskId: gTaskId,
+            status: patch.status === 'done' ? 'completed' : patch.status ? 'needsAction' : undefined,
+            title: patch.title,
+            dueIso: patch.due,
+            userId,
+        });
+        if (gRes.ok && gRes.task) {
+            return {
+                id,
+                title: gRes.task.title,
+                due: gRes.task.due ? String(gRes.task.due).slice(0, 10) : patch.due || '',
+                priority: patch.priority || 'medium',
+                status: gRes.task.status === 'completed' ? 'done' : 'todo',
+                source: 'google_tasks',
+            };
+        }
+        return null;
+    }
     const task = tasksStore.find((t) => t.id === id);
     if (task) {
         Object.assign(task, patch);
@@ -121,9 +150,10 @@ export async function updateTask(id, patch, userId) {
     return task || null;
 }
 export async function getTasksContextPrompt() {
-    const active = tasksStore.filter((t) => t.status !== 'done').slice(0, 10);
+    const all = await listTasks().catch(() => []);
+    const active = all.filter((t) => t.status !== 'done').slice(0, 12);
     if (active.length === 0)
         return '';
-    const lines = active.map((t) => `- [${t.priority}] ${t.title} (due: ${t.due || 'unspecified'}, status: ${t.status})`);
-    return `\n\nOwner's Current Active Tasks:\n${lines.join('\n')}`;
+    const lines = active.map((t) => `- [${t.priority}] ${t.title} (due: ${t.due || 'unspecified'}, status: ${t.status}, source: ${t.source})`);
+    return `\n\nOwner's Live Active Tasks:\n${lines.join('\n')}`;
 }

@@ -8,6 +8,7 @@ import {
   markAllNotificationsRead,
   setApprovalStatus,
 } from '../services/approval.service.js';
+import { syncAndNotifyLiveWorkspaceAlerts } from '../services/notificationEngine.service.js';
 import { hydrateGoogleTokensFromRequest, sendGmailMessage } from './googleDrive.js';
 import { getInstagramConversations, sendInstagramMessage } from '../providers/instagram.js';
 import { success, error } from '../utils/response.js';
@@ -26,6 +27,14 @@ router.get('/notifications', authGuard, async (_req, res) => {
 router.post('/notifications/mark-all-read', authGuard, async (_req, res) => {
   await markAllNotificationsRead();
   return success(res, { message: 'All notifications marked as read' });
+});
+
+router.post('/notifications/sync-live', authGuard, async (req, res) => {
+  await hydrateGoogleTokensFromRequest(req);
+  const result = await syncAndNotifyLiveWorkspaceAlerts({
+    forceSummary: Boolean(req.body?.forceSummary),
+  });
+  return success(res, result);
 });
 
 router.get('/approvals', authGuard, async (_req, res) => {

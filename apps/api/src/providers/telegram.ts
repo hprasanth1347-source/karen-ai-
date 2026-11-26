@@ -28,8 +28,19 @@ import {
   markNotificationRead,
   muteNotificationSource,
   snoozeNotification,
+  syncAndNotifyLiveWorkspaceAlerts,
   type NotificationSource,
 } from '../services/notificationEngine.service.js';
+import {
+  buildLiveAlertsDigest,
+  handleTelegramCalendarCommand,
+  handleTelegramContactsCommand,
+  handleTelegramDriveCommand,
+  handleTelegramGmailCommand,
+  handleTelegramSearchCommand,
+  handleTelegramSheetsCommand,
+  handleTelegramTasksCommand,
+} from '../services/telegramCommands.service.js';
 import { getGoogleContextForPrompt, buildGoogleAuthUrl, disconnectGoogleAccount } from '../routes/googleDrive.js';
 import {
   draftClassroomAssignment,
@@ -264,6 +275,39 @@ export async function sendTelegramMessage(
   return ok;
 }
 
+export async function sendTelegramDocument(
+  chatId: string | number,
+  buffer: Buffer,
+  filename: string,
+  caption?: string
+): Promise<boolean> {
+  const target = chatId ?? ownerId();
+  const token = botToken();
+  if (!token || !target) return false;
+
+  try {
+    const form = new FormData();
+    form.append('chat_id', String(target));
+    form.append('document', new Blob([new Uint8Array(buffer)]), filename);
+    if (caption) form.append('caption', caption.slice(0, 900));
+
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(15000),
+    });
+    const json = (await res.json().catch(() => ({}))) as { ok?: boolean };
+    if (res.ok && json.ok) {
+      telegramState.totalSent++;
+      telegramState.lastOutgoing = `[File: ${filename}]`;
+      return true;
+    }
+  } catch (err) {
+    logger.warn('Telegram sendDocument error', { err, filename });
+  }
+  return false;
+}
+
 function splitMessage(text: string): string[] {
   const MAX = 4000;
   if (text.length <= MAX) return [text];
@@ -421,18 +465,12 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       return `✅ Remembered: "${args.trim()}"`;
     }
 
-    case '/tasks': {
-      const tasks = await listTasks();
-      const active = tasks.filter((t) => t.status !== 'done').slice(0, 10);
-      if (active.length === 0) return '✅ No active tasks.';
-      const lines = active.map((t, i) => `${i + 1}. [${t.priority.toUpperCase()}] ${t.title} — ${t.due || 'no due date'}`);
-      return `📋 *Active Tasks (${active.length}):*\n\n${lines.join('\n')}`;
-    }
+    case '/tasks':
+      return handleTelegramTasksCommand(args);
 
     case '/task': {
       if (!args.trim()) return '⚠️ Usage: /task <task title>';
-      const task = await addTask(args.trim(), undefined, 'medium', 'telegram');
-      return `✅ Task created: *${task.title}*`;
+      return handleTelegramTasksCommand(`add ${args.trim()}`);
     }
 
     case '/digest': {
@@ -486,9 +524,32 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     }
 
     case '/drive':
-      return config.GOOGLE_CLIENT_ID
-        ? '✅ Google Drive OAuth is configured. Connect at karen-ai-me.vercel.app/drive'
-        : '❌ Google Drive not configured. Add GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in Vercel env vars.';
+      return handleTelegramDriveCommand(args, chatId, sendTelegramDocument);
+
+    case '/sheets':
+      return handleTelegramSheetsCommand(args);
+
+    case '/calendar':
+      return handleTelegramCalendarCommand(args);
+
+    case '/contacts':
+      return handleTelegramContactsCommand(args);
+
+    case '/gmail':
+      return handleTelegramGmailCommand(args);
+
+    case '/search':
+      return handleTelegramSearchCommand(args);
+
+    case '/alerts': {
+      const syncRes = await syncAndNotifyLiveWorkspaceAlerts({ forceSummary: false }).catch(() => ({
+        alertsSent: 0,
+      }));
+      const digest = await buildLiveAlertsDigest();
+      return syncRes.alertsSent > 0
+        ? `${digest}\n\n✅ Dispatched ${syncRes.alertsSent} urgent alert(s).`
+        : digest;
+    }
 
     case '/settings': {
       // No heavy DB call — just show static config (memory status is advisory only)
@@ -573,11 +634,23 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
           ? '🎉 No overdue assignments!'
           : '📝 No matching assignments found. Try /classroom to check connection.';
       }
+      const todayIst = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const tomorrowIst = new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleDateString('en-CA', {
+        timeZone: 'Asia/Kolkata',
+      });
       return `📝 *${cmd.slice(1).toUpperCase()} (${filtered.length})*\n\n${top
-        .map(
-          (a, i) =>
-            `${i + 1}. *${a.title}*\n   📘 ${a.courseName}\n   ⏰ Due: ${a.dueIstDisplay} | Status: ${a.category.toUpperCase()}`
-        )
+        .map((a, i) => {
+          const dueDateIst = a.dueIso
+            ? new Date(a.dueIso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+            : '';
+          const dayBadge =
+            dueDateIst === todayIst
+              ? '🚨 DUE TODAY'
+              : dueDateIst === tomorrowIst
+                ? '⏰ Due Tomorrow'
+                : a.category.toUpperCase();
+          return `${i + 1}. *${a.title}*\n   📘 ${a.courseName}\n   ⏰ Due: ${a.dueIstDisplay} | ${dayBadge}`;
+        })
         .join('\n\n')}`;
     }
 
@@ -691,6 +764,7 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
 
   telegramState.totalReceived++;
   void sendTyping(chatId); // fire-and-forget — don't block AI on typing indicator
+  await hydrateGoogleTokensFromRequest().catch(() => { });
 
   let reply = '';
   let replyButtons: Array<Array<{ text: string; callback_data?: string; url?: string }>> | undefined;
@@ -871,11 +945,11 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
           const engineRes = loveModeActive
             ? { handled: false as const, reply: '', buttons: undefined }
             : await runCommandEngine({
-                chatKey: String(chatId),
-                text,
-                channel: 'telegram',
-                history,
-              });
+              chatKey: String(chatId),
+              text,
+              channel: 'telegram',
+              history,
+            });
 
           if (engineRes.handled) {
             pushHistory(chatId, 'user', text);
@@ -922,11 +996,11 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
       reply
         ? replyButtons && replyButtons.length > 0
           ? tgApiCall('sendMessage', {
-              chat_id: chatId,
-              text: reply,
-              parse_mode: 'Markdown',
-              reply_markup: { inline_keyboard: replyButtons },
-            })
+            chat_id: chatId,
+            text: reply,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: replyButtons },
+          })
           : sendTelegramMessage(reply, chatId)
         : Promise.resolve(false),
       addNotification('telegram', 'Telegram Message', `"${(msg.text || '[media]').slice(0, 60)}"`, 'normal', 'telegram').catch(() => { }),
@@ -999,8 +1073,9 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
       await sendTelegramMessage(text, chatId);
     } else if (action === 'comp_calendar') {
       await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id });
-      const ctx = await getGoogleContextForPrompt('calendar events today and tomorrow').catch(() => '');
-      await sendTelegramMessage(ctx || '📅 Your calendar schedule is clear (or Google Calendar is not connected).', chatId);
+      await hydrateGoogleTokensFromRequest().catch(() => { });
+      const calMsg = await handleTelegramCalendarCommand('3');
+      await sendTelegramMessage(calMsg, chatId);
     } else if (action === 'comp_notifs') {
       await tgApiCall('answerCallbackQuery', { callback_query_id: cb.id });
       const unread = listNotificationHistory().filter((n) => !n.isRead).slice(0, 5);
@@ -1227,7 +1302,13 @@ export async function setTelegramCommands(): Promise<void> {
       { command: 'reject', description: 'Reject a pending action' },
       { command: 'whatsapp', description: 'WhatsApp status' },
       { command: 'instagram', description: 'Instagram status' },
-      { command: 'drive', description: 'Google Drive status' },
+      { command: 'drive', description: 'Live Drive files or /drive <file>' },
+      { command: 'sheets', description: 'Google Sheets list/read/create/add' },
+      { command: 'calendar', description: 'Live Google Calendar schedule' },
+      { command: 'contacts', description: 'Search or add Google Contacts' },
+      { command: 'gmail', description: 'Unread & important Gmail' },
+      { command: 'search', description: 'Fresh live web search' },
+      { command: 'alerts', description: 'Live Tasks, Calendar & Deadline alerts' },
       { command: 'settings', description: 'Karen settings overview' },
       { command: 'love', description: 'Activate Love & Comfort Mode ❤️' },
       { command: 'comfort', description: 'Activate emotional support mode' },

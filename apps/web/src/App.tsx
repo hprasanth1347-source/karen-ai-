@@ -49,6 +49,7 @@ const WhatsAppPage = lazy(() => import('./pages/WhatsAppPage'));
 const InstagramPage = lazy(() => import('./pages/InstagramPage'));
 const GmailPage = lazy(() => import('./pages/GmailPage'));
 const DrivePage = lazy(() => import('./pages/DrivePage'));
+const SheetsPage = lazy(() => import('./pages/SheetsPage'));
 const MemoryPage = lazy(() => import('./pages/MemoryPage'));
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
 const VoicePage = lazy(() => import('./pages/VoicePage'));
@@ -68,7 +69,6 @@ const AuthPage = lazy(() => import('./pages/AuthPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const LoveModePage = lazy(() => import('./pages/LoveModePage'));
 const ClassroomPage = lazy(() => import('./pages/ClassroomPage'));
-const DesignSystemPage = lazy(() => import('./pages/DesignSystemPage'));
 
 // ─── Auth Guard ──────────────────────────────────────────────────────────────
 
@@ -96,52 +96,52 @@ export function App() {
   return (
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <BrowserRouter>
-          <Suspense fallback={<LoadingScreen />}>
-          <Routes>
-            <Route path="/auth" element={<AuthPage />} />
-            <Route
-              path="/*"
-              element={
-                <RequireAuth>
-                  <AppLayout>
-                    <Routes>
-                      <Route path="/" element={<OverviewPage />} />
-                      <Route path="/ai-chat" element={<AIChatPage />} />
-                      <Route path="/whatsapp" element={<WhatsAppPage />} />
-                      <Route path="/instagram" element={<InstagramPage />} />
-                      <Route path="/gmail" element={<GmailPage />} />
-                      <Route path="/drive" element={<DrivePage />} />
-                      <Route path="/memory" element={<MemoryPage />} />
-                      <Route path="/documents" element={<DocumentsPage />} />
-                      <Route path="/voice" element={<VoicePage />} />
-                      <Route path="/telegram" element={<TelegramPage />} />
-                      <Route path="/notifications" element={<NotificationsPage />} />
-                      <Route path="/contacts" element={<ContactsPage />} />
-                      <Route path="/automation" element={<AutomationPage />} />
-                      <Route path="/tasks" element={<TasksPage />} />
-                      <Route path="/reminders" element={<RemindersPage />} />
-                      <Route path="/security" element={<SecurityPage />} />
-                      <Route path="/api-management" element={<ApiManagementPage />} />
-                      <Route path="/database" element={<DatabasePage />} />
-                      <Route path="/monitor" element={<MonitorPage />} />
-                      <Route path="/activity" element={<ActivityPage />} />
-                      <Route path="/settings" element={<SettingsPage />} />
-                      <Route path="/love-mode" element={<LoveModePage />} />
-                      <Route path="/classroom" element={<ClassroomPage />} />
-                      <Route path="/design-system" element={<DesignSystemPage />} />
-                      <Route path="*" element={<NotFoundPage />} />
-                    </Routes>
-                  </AppLayout>
-                </RequireAuth>
-              }
-            />
-          </Routes>
-          </Suspense>
-        </BrowserRouter>
-      </AuthProvider>
-    </QueryClientProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <Suspense fallback={<LoadingScreen />}>
+              <Routes>
+                <Route path="/auth" element={<AuthPage />} />
+                <Route
+                  path="/*"
+                  element={
+                    <RequireAuth>
+                      <AppLayout>
+                        <Routes>
+                          <Route path="/" element={<OverviewPage />} />
+                          <Route path="/ai-chat" element={<AIChatPage />} />
+                          <Route path="/whatsapp" element={<WhatsAppPage />} />
+                          <Route path="/instagram" element={<InstagramPage />} />
+                          <Route path="/gmail" element={<GmailPage />} />
+                          <Route path="/drive" element={<DrivePage />} />
+                          <Route path="/sheets" element={<SheetsPage />} />
+                          <Route path="/memory" element={<MemoryPage />} />
+                          <Route path="/documents" element={<DocumentsPage />} />
+                          <Route path="/voice" element={<VoicePage />} />
+                          <Route path="/telegram" element={<TelegramPage />} />
+                          <Route path="/notifications" element={<NotificationsPage />} />
+                          <Route path="/contacts" element={<ContactsPage />} />
+                          <Route path="/automation" element={<AutomationPage />} />
+                          <Route path="/tasks" element={<TasksPage />} />
+                          <Route path="/reminders" element={<RemindersPage />} />
+                          <Route path="/security" element={<SecurityPage />} />
+                          <Route path="/api-management" element={<ApiManagementPage />} />
+                          <Route path="/database" element={<DatabasePage />} />
+                          <Route path="/monitor" element={<MonitorPage />} />
+                          <Route path="/activity" element={<ActivityPage />} />
+                          <Route path="/settings" element={<SettingsPage />} />
+                          <Route path="/love-mode" element={<LoveModePage />} />
+                          <Route path="/classroom" element={<ClassroomPage />} />
+                          <Route path="*" element={<NotFoundPage />} />
+                        </Routes>
+                      </AppLayout>
+                    </RequireAuth>
+                  }
+                />
+              </Routes>
+            </Suspense>
+          </BrowserRouter>
+        </AuthProvider>
+      </QueryClientProvider>
     </AppErrorBoundary>
   );
 }

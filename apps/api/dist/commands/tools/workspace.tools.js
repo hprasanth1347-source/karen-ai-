@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { appendGoogleSheetRows, createCalendarEvent, createGoogleSheet, createGoogleTask, listCalendarEvents, listGoogleTasks, readGoogleSheet, updateGoogleSheetRange, } from '../../services/googleWorkspace.service.js';
+import { appendGoogleSheetRows, createCalendarEvent, createGoogleContact, createGoogleSheet, createGoogleTask, listCalendarEvents, listGoogleContacts, listGoogleSheets, listGoogleTasks, readGoogleSheet, updateGoogleSheetRange, updateGoogleTask, } from '../../services/googleWorkspace.service.js';
 import { addMemory, listMemories } from '../../services/memory.service.js';
 import { addTask, listTasks } from '../../services/task.service.js';
 export const calendarListEventsTool = {
@@ -83,6 +83,30 @@ export const googleTasksCreateTool = {
         };
     },
 };
+export const sheetsListTool = {
+    name: 'sheets_list',
+    category: 'drive',
+    description: 'List your Google Spreadsheets from Google Drive.',
+    requiresConfirmation: false,
+    inputSchema: z.object({ query: z.string().optional() }),
+    jsonSchema: { type: 'object', properties: { query: { type: 'string' } } },
+    async execute(args, ctx) {
+        const res = await listGoogleSheets(args.query, ctx.userId);
+        if (!res.ok) {
+            return {
+                ok: false,
+                summary: res.error || 'Could not list Google Sheets.',
+                fixButton: { label: 'Reconnect Google', url: '/sheets' },
+            };
+        }
+        if (res.sheets.length === 0)
+            return { ok: true, summary: 'No Google Sheets found yet.' };
+        const lines = res.sheets
+            .slice(0, 12)
+            .map((s, i) => `${i + 1}. *${s.name}* (ID: \`${s.id}\`)${s.webViewLink ? ` — ${s.webViewLink}` : ''}`);
+        return { ok: true, summary: `📊 *Google Sheets (${res.sheets.length}):*\n${lines.join('\n')}` };
+    },
+};
 export const sheetsCreateTool = {
     name: 'sheets_create',
     category: 'drive',
@@ -116,18 +140,45 @@ export const sheetsCreateTool = {
 export const sheetsReadTool = {
     name: 'sheets_read',
     category: 'drive',
-    description: 'Read values from a Google Sheet by spreadsheet ID and optional A1 range.',
+    description: 'Read values from a Google Sheet by spreadsheet ID or name and optional A1 range.',
     requiresConfirmation: false,
-    inputSchema: z.object({ spreadsheetId: z.string().min(5), range: z.string().default('A1:Z30') }),
+    inputSchema: z.object({ spreadsheetId: z.string().min(1), range: z.string().default('A1:Z30') }),
     jsonSchema: { type: 'object', properties: { spreadsheetId: { type: 'string' }, range: { type: 'string' } }, required: ['spreadsheetId'] },
     async execute(args, ctx) {
-        const res = await readGoogleSheet({ ...args, userId: ctx.userId });
+        let targetId = args.spreadsheetId.trim();
+        if (!/^[a-zA-Z0-9_-]{25,}$/.test(targetId)) {
+            const found = await listGoogleSheets(targetId, ctx.userId);
+            if (found.ok && found.sheets[0])
+                targetId = found.sheets[0].id;
+        }
+        const res = await readGoogleSheet({ spreadsheetId: targetId, range: args.range, userId: ctx.userId });
         if (!res.ok)
             return { ok: false, summary: res.error || 'Sheet read failed.' };
         if (res.values.length === 0)
             return { ok: true, summary: 'Sheet is empty.' };
         const preview = res.values.slice(0, 15).map((r) => r.join(' | ')).join('\n');
         return { ok: true, summary: `📊 Sheet Data:\n${preview}` };
+    },
+};
+export const googleTasksCompleteTool = {
+    name: 'google_tasks_complete',
+    category: 'tasks',
+    description: 'Mark a live Google Task as completed by matching its title.',
+    requiresConfirmation: false,
+    inputSchema: z.object({ query: z.string().min(1) }),
+    jsonSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+    async execute(args, ctx) {
+        const listed = await listGoogleTasks(ctx.userId);
+        if (!listed.ok)
+            return { ok: false, summary: listed.error || 'Could not load Google Tasks.' };
+        const needle = args.query.trim().toLowerCase();
+        const match = listed.tasks.find((t) => t.title.toLowerCase().includes(needle));
+        if (!match)
+            return { ok: false, summary: `No active Google Task matching "${args.query}".` };
+        const upd = await updateGoogleTask({ taskId: match.id, status: 'completed', userId: ctx.userId });
+        if (!upd.ok)
+            return { ok: false, summary: upd.error || 'Could not complete Google Task.' };
+        return { ok: true, summary: `✅ Marked Google Task completed: *${match.title}*` };
     },
 };
 export const sheetsEditTool = {
@@ -204,7 +255,6 @@ export const memorySaveTool = {
         return { ok: true, summary: `🧠 Saved to Personal Memory: "${saved.content}".` };
     },
 };
-import { createGoogleContact, listGoogleContacts } from '../../services/googleWorkspace.service.js';
 export const googleContactsSearchTool = {
     name: 'google_contacts_search',
     category: 'system',

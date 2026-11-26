@@ -6,9 +6,11 @@ import {
   createGoogleSheet,
   createGoogleTask,
   listCalendarEvents,
+  listGoogleSheets,
   listGoogleTasks,
   readGoogleSheet,
 } from './googleWorkspace.service.js';
+import { listTasks } from './task.service.js';
 import { saveGoogleTokensToDb } from './persistence.service.js';
 import { planDeterministicCommand } from '../commands/engine.js';
 
@@ -132,6 +134,35 @@ test('Google Contacts (People API) list and create work with mocked responses', 
     const addRes = await createGoogleContact({ givenName: 'Raghul', email: 'raghul@x.com' });
     assert.equal(addRes.ok, true);
     assert.equal(addRes.contact?.name, 'Raghul');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('listTasks returns zero fake seeded tasks, lists live Google Sheets, and routes expanded Karen commands', async () => {
+  assert.equal(planDeterministicCommand('show my google sheets', [], false)?.[0]?.tool, 'sheets_list');
+  assert.equal(planDeterministicCommand('list drive files', [], false)?.[0]?.tool, 'drive_list');
+  assert.equal(planDeterministicCommand('complete google task submit lab', [], false)?.[0]?.tool, 'google_tasks_complete');
+
+  const origFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes('tasks.googleapis.com')) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (u.includes('drive/v3/files')) {
+        return new Response(JSON.stringify({ files: [{ id: 'sh_1', name: 'Live Budget Sheet' }] }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    const tasks = await listTasks();
+    assert.equal(tasks.length, 0);
+
+    const sheetsRes = await listGoogleSheets();
+    assert.equal(sheetsRes.ok, true);
+    assert.equal(sheetsRes.sheets[0]?.name, 'Live Budget Sheet');
   } finally {
     globalThis.fetch = origFetch;
   }

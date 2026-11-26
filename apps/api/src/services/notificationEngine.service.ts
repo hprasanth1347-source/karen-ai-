@@ -460,3 +460,112 @@ export async function retryFailedNotifications(): Promise<{ retried: number; suc
   }
   return { retried: failed.length, succeeded };
 }
+
+export async function syncAndNotifyLiveWorkspaceAlerts(options?: {
+  forceSummary?: boolean;
+}): Promise<{ alertsSent: number; checkedTasks: number; checkedEvents: number }> {
+  if (!isTelegramConfigured()) {
+    return { alertsSent: 0, checkedTasks: 0, checkedEvents: 0 };
+  }
+
+  const [{ hydrateGoogleTokensFromRequest }, { listCalendarEvents, listGoogleTasks }, { loadUserSetting, saveUserSetting }] =
+    await Promise.all([
+      import('../routes/googleDrive.js'),
+      import('./googleWorkspace.service.js'),
+      import('./persistence.service.js'),
+    ]);
+
+  await hydrateGoogleTokensFromRequest().catch(() => {});
+
+  const nowMs = Date.now();
+  const todayIst = new Date(nowMs).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+  const [gTasksRes, calRes, sentCacheRaw] = await Promise.all([
+    listGoogleTasks().catch(() => ({ ok: false, tasks: [] })),
+    listCalendarEvents(2).catch(() => ({ ok: false, events: [] })),
+    loadUserSetting<Record<string, number>>('workspace_live_alerts_sent_v1').catch(() => null),
+  ]);
+
+  const sentMap: Record<string, number> =
+    sentCacheRaw && typeof sentCacheRaw === 'object' ? { ...sentCacheRaw } : {};
+  // Prune dedup entries older than 36h
+  for (const [k, ts] of Object.entries(sentMap)) {
+    if (typeof ts !== 'number' || nowMs - ts > 36 * 60 * 60 * 1000) {
+      delete sentMap[k];
+    }
+  }
+
+  let alertsSent = 0;
+
+  // 1. Live Google Tasks due today or overdue
+  const tasks = gTasksRes.ok ? gTasksRes.tasks : [];
+  for (const task of tasks) {
+    if (task.status === 'completed') continue;
+    const dueIso = task.due ? String(task.due).slice(0, 10) : '';
+    if (!dueIso || dueIso > todayIst) continue;
+
+    const dedupKey = `gtask:${task.id}:${todayIst}`;
+    if (!options?.forceSummary && sentMap[dedupKey]) continue;
+
+    const isOverdue = dueIso < todayIst;
+    const msg = isOverdue
+      ? `⚠️ *Live Google Task Overdue*\n\n• *${task.title}*\n• Due was: ${dueIso}\n\nTap below once completed:`
+      : `📋 *Live Google Task Due TODAY (${todayIst})*\n\n• *${task.title}*\n\nStay on track today!`;
+
+    const ok = await sendTelegramMessage(msg, undefined, {
+      inlineKeyboard: [
+        [
+          { text: '✅ Done', callback_data: `task_done:gtask:${task.id}` },
+          { text: '📆 Snooze +1d', callback_data: `task_snooze:gtask:${task.id}` },
+        ],
+      ],
+    });
+    if (ok) {
+      sentMap[dedupKey] = nowMs;
+      alertsSent++;
+    }
+  }
+
+  // 2. Live Google Calendar upcoming events (within next 45 min, or today agenda if forceSummary)
+  const events = calRes.ok ? calRes.events : [];
+  for (const ev of events) {
+    const startMs = ev.start ? new Date(ev.start).getTime() : NaN;
+    if (Number.isNaN(startMs)) continue;
+    const diffMin = Math.round((startMs - nowMs) / 60000);
+    const evIst = new Date(startMs).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+    const isSoon = diffMin >= 0 && diffMin <= 45;
+    const isTodayForced = Boolean(options?.forceSummary && evIst === todayIst && diffMin >= -10);
+    if (!isSoon && !isTodayForced) continue;
+
+    const dedupKey = `gcal:${ev.id}:${evIst}`;
+    if (!options?.forceSummary && sentMap[dedupKey]) continue;
+
+    const timeIst = new Date(startMs).toLocaleTimeString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const msg =
+      `📅 *Google Calendar Alert*\n\n` +
+      `• *${ev.summary}*\n` +
+      `• 🕒 ${timeIst} IST (${diffMin > 0 ? `in ~${diffMin} mins` : 'starting now'})` +
+      `${ev.location ? `\n• 📍 ${ev.location}` : ''}`;
+
+    const ok = await sendTelegramMessage(
+      msg,
+      undefined,
+      ev.htmlLink ? { inlineKeyboard: [[{ text: 'Open Calendar', url: ev.htmlLink }]] } : undefined
+    );
+    if (ok) {
+      sentMap[dedupKey] = nowMs;
+      alertsSent++;
+    }
+  }
+
+  if (alertsSent > 0) {
+    await saveUserSetting('workspace_live_alerts_sent_v1', sentMap).catch(() => {});
+  }
+
+  return { alertsSent, checkedTasks: tasks.length, checkedEvents: events.length };
+}

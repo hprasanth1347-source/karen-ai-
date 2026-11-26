@@ -101,6 +101,13 @@ export async function createGoogleTask(input) {
     const token = await getGoogleAccessToken(input.userId, input.req);
     if (!token)
         return { ok: false, error: 'Google is not connected.' };
+    let formattedDue;
+    if (input.dueIso?.trim()) {
+        const cleanDue = input.dueIso.trim();
+        formattedDue = /^\d{4}-\d{2}-\d{2}$/.test(cleanDue)
+            ? `${cleanDue}T00:00:00.000Z`
+            : new Date(cleanDue).toISOString();
+    }
     const res = await fetch('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks', {
         method: 'POST',
         headers: {
@@ -110,7 +117,7 @@ export async function createGoogleTask(input) {
         body: JSON.stringify({
             title: input.title,
             notes: input.notes,
-            ...(input.dueIso ? { due: new Date(input.dueIso).toISOString() } : {}),
+            ...(formattedDue ? { due: formattedDue } : {}),
         }),
         signal: AbortSignal.timeout(8000),
     });
@@ -122,6 +129,122 @@ export async function createGoogleTask(input) {
     }
     const t = (await res.json());
     return { ok: true, task: { id: t.id, title: t.title, notes: t.notes, due: t.due, status: t.status } };
+}
+export async function updateGoogleTask(input) {
+    const token = await getGoogleAccessToken(input.userId, input.req);
+    if (!token)
+        return { ok: false, error: 'Google is not connected.' };
+    const patchBody = {};
+    if (input.status)
+        patchBody.status = input.status;
+    if (input.status === 'completed')
+        patchBody.completed = new Date().toISOString();
+    if (input.status === 'needsAction')
+        patchBody.completed = null;
+    if (input.title !== undefined)
+        patchBody.title = input.title;
+    if (input.notes !== undefined)
+        patchBody.notes = input.notes;
+    if (input.dueIso !== undefined) {
+        const cleanDue = input.dueIso.trim();
+        patchBody.due = cleanDue
+            ? /^\d{4}-\d{2}-\d{2}$/.test(cleanDue)
+                ? `${cleanDue}T00:00:00.000Z`
+                : new Date(cleanDue).toISOString()
+            : null;
+    }
+    const res = await fetch(`https://tasks.googleapis.com/tasks/v1/lists/@default/tasks/${encodeURIComponent(input.taskId)}`, {
+        method: 'PATCH',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(patchBody),
+        signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+        return { ok: false, error: `Google Task update failed (${res.status})` };
+    }
+    const t = (await res.json());
+    return { ok: true, task: { id: t.id, title: t.title, notes: t.notes, due: t.due, status: t.status } };
+}
+export async function deleteGoogleTask(input) {
+    const token = await getGoogleAccessToken(input.userId, input.req);
+    if (!token)
+        return { ok: false, error: 'Google is not connected.' };
+    const res = await fetch(`https://tasks.googleapis.com/tasks/v1/lists/@default/tasks/${encodeURIComponent(input.taskId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok)
+        return { ok: false, error: `Google Task delete failed (${res.status})` };
+    return { ok: true };
+}
+export async function deleteCalendarEvent(input) {
+    const token = await getGoogleAccessToken(input.userId, input.req);
+    if (!token)
+        return { ok: false, error: 'Google is not connected.' };
+    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(input.eventId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok && res.status !== 204) {
+        return { ok: false, error: `Calendar event delete failed (${res.status})` };
+    }
+    return { ok: true };
+}
+export async function listGoogleSheets(query, userId, req) {
+    const token = await getGoogleAccessToken(userId, req);
+    if (!token)
+        return { ok: false, sheets: [], error: 'Google is not connected.' };
+    const escaped = query?.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'") || '';
+    const qParts = ["mimeType = 'application/vnd.google-apps.spreadsheet'", 'trashed = false'];
+    if (escaped)
+        qParts.push(`name contains '${escaped}'`);
+    const params = new URLSearchParams({
+        q: qParts.join(' and '),
+        pageSize: '30',
+        orderBy: 'modifiedTime desc',
+        fields: 'files(id,name,modifiedTime,webViewLink)',
+    });
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+        return {
+            ok: false,
+            sheets: [],
+            error: res.status === 403 ? 'Missing Drive/Sheets permission. Reconnect Google once.' : `Sheets list error (${res.status})`,
+        };
+    }
+    const json = (await res.json());
+    return {
+        ok: true,
+        sheets: (json.files || []).map((f) => ({
+            id: String(f.id),
+            name: String(f.name || 'Untitled Sheet'),
+            modifiedTime: f.modifiedTime,
+            webViewLink: f.webViewLink,
+        })),
+    };
+}
+export async function getGoogleSheetMeta(input) {
+    const token = await getGoogleAccessToken(input.userId, input.req);
+    if (!token)
+        return { ok: false, tabs: [], error: 'Google is not connected.' };
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(input.spreadsheetId)}?fields=properties.title,spreadsheetUrl,sheets.properties.title`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok)
+        return { ok: false, tabs: [], error: `Sheets metadata failed (${res.status})` };
+    const json = (await res.json());
+    return {
+        ok: true,
+        title: json.properties?.title || 'Untitled Sheet',
+        spreadsheetUrl: json.spreadsheetUrl,
+        tabs: (json.sheets || []).map((s) => s.properties?.title || 'Sheet1').filter(Boolean),
+    };
 }
 export async function createGoogleSheet(input) {
     const token = await getGoogleAccessToken(input.userId, input.req);

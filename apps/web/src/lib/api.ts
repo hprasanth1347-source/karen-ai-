@@ -7,9 +7,99 @@ export const api = axios.create({
   withCredentials: true,
 })
 
-// In-memory GET cache for instant menu switching (invalidated on any mutation)
-const GET_CACHE_TTL_MS = 120_000;
+// Persistent Stale-While-Revalidate cache for instant menu switching
+const GET_CACHE_TTL_MS = 180_000;
+const SWR_STORAGE_KEY = 'karen_swr_cache_v1';
 const getCache = new Map<string, { expiresAt: number; response: AxiosResponse }>();
+
+function readSessionCacheEntry(cacheKey: string): { expiresAt: number; response: AxiosResponse } | null {
+  const mem = getCache.get(cacheKey);
+  if (mem) return mem;
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(SWR_STORAGE_KEY);
+    if (!raw) return null;
+    const store = JSON.parse(raw) as Record<string, { expiresAt: number; data: unknown }>;
+    const hit = store[cacheKey];
+    if (!hit) return null;
+    const synthetic = { data: hit.data, status: 200, statusText: 'OK', headers: {}, config: {} } as AxiosResponse;
+    getCache.set(cacheKey, { expiresAt: hit.expiresAt, response: synthetic });
+    return { expiresAt: hit.expiresAt, response: synthetic };
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionCacheEntry(cacheKey: string, res: AxiosResponse): void {
+  const expiresAt = Date.now() + GET_CACHE_TTL_MS;
+  getCache.set(cacheKey, { expiresAt, response: res });
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = window.sessionStorage.getItem(SWR_STORAGE_KEY);
+    const store: Record<string, { expiresAt: number; data: unknown }> = raw ? JSON.parse(raw) : {};
+    store[cacheKey] = { expiresAt, data: res.data };
+    // Keep up to 40 cached endpoints bounded cleanly
+    const keys = Object.keys(store);
+    if (keys.length > 40) {
+      delete store[keys[0]];
+    }
+    window.sessionStorage.setItem(SWR_STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function readCachedGet<T = unknown>(url: string, params?: Record<string, unknown>): T | null {
+  const cacheKey = params ? `${url}?${JSON.stringify(params)}` : url;
+  const hit = readSessionCacheEntry(cacheKey);
+  return hit ? (hit.response.data as T) : null;
+}
+
+export function invalidateCacheByUrl(url: string): void {
+  const scopeGroups: Array<[RegExp, string[]]> = [
+    [/^\/ai/, ['/ai/conversations', '/ai/models']],
+    [/^\/(tasks|google-tasks)/, ['/tasks', '/google-tasks']],
+    [/^\/calendar/, ['/calendar']],
+    [/^\/sheets/, ['/sheets', '/drive']],
+    [/^\/(drive|gmail)/, ['/drive', '/gmail', '/sheets', '/classroom']],
+    [/^\/google-contacts/, ['/google-contacts']],
+    [/^\/instagram/, ['/instagram']],
+    [/^\/classroom/, ['/classroom']],
+    [/^\/telegram/, ['/telegram']],
+    [/^\/notifications/, ['/notifications']],
+    [/^\/memories/, ['/memories']],
+  ];
+
+  const matched = scopeGroups.find(([re]) => re.test(url));
+  const prefixes = matched ? matched[1] : [url.split('?')[0]];
+
+  for (const key of Array.from(getCache.keys())) {
+    if (prefixes.some((p) => key.startsWith(p))) {
+      getCache.delete(key);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = window.sessionStorage.getItem(SWR_STORAGE_KEY);
+      if (raw) {
+        const store = JSON.parse(raw) as Record<string, unknown>;
+        let changed = false;
+        for (const key of Object.keys(store)) {
+          if (prefixes.some((p) => key.startsWith(p))) {
+            delete store[key];
+            changed = true;
+          }
+        }
+        if (changed) {
+          window.sessionStorage.setItem(SWR_STORAGE_KEY, JSON.stringify(store));
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }
+}
 
 const rawGet = api.get.bind(api);
 const rawPost = api.post.bind(api);
@@ -19,35 +109,35 @@ const rawDelete = api.delete.bind(api);
 
 api.get = (async (url: string, config?: any) => {
   const cacheKey = config?.params ? `${url}?${JSON.stringify(config.params)}` : url;
-  const cached = getCache.get(cacheKey);
+  const cached = readSessionCacheEntry(cacheKey);
   if (cached && cached.expiresAt > Date.now() && !config?.skipCache) {
     return cached.response;
   }
   const res = await rawGet(url, config);
   if (!config?.skipCache && res.status >= 200 && res.status < 300) {
-    getCache.set(cacheKey, { expiresAt: Date.now() + GET_CACHE_TTL_MS, response: res });
+    writeSessionCacheEntry(cacheKey, res);
   }
   return res;
 }) as typeof api.get;
 
-api.post = (async (...args: Parameters<typeof rawPost>) => {
-  getCache.clear();
-  return rawPost(...args);
+api.post = (async (url: string, ...rest: any[]) => {
+  invalidateCacheByUrl(url);
+  return (rawPost as any)(url, ...rest);
 }) as typeof api.post;
 
-api.put = (async (...args: Parameters<typeof rawPut>) => {
-  getCache.clear();
-  return rawPut(...args);
+api.put = (async (url: string, ...rest: any[]) => {
+  invalidateCacheByUrl(url);
+  return (rawPut as any)(url, ...rest);
 }) as typeof api.put;
 
-api.patch = (async (...args: Parameters<typeof rawPatch>) => {
-  getCache.clear();
-  return rawPatch(...args);
+api.patch = (async (url: string, ...rest: any[]) => {
+  invalidateCacheByUrl(url);
+  return (rawPatch as any)(url, ...rest);
 }) as typeof api.patch;
 
-api.delete = (async (...args: Parameters<typeof rawDelete>) => {
-  getCache.clear();
-  return rawDelete(...args);
+api.delete = (async (url: string, ...rest: any[]) => {
+  invalidateCacheByUrl(url);
+  return (rawDelete as any)(url, ...rest);
 }) as typeof api.delete;
 
 // Inject auth token synchronously from sessionStorage first, falling back to Supabase

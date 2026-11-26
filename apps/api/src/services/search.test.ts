@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   shouldSearchWeb,
+  rewriteSearchQuery,
   getFreshnessParams,
   getCacheTtlMs,
   validateSafePublicUrl,
   stripActionTagsFromSearch,
   searchWebWithGoogle,
+  searchWebWithFallback,
 } from './search.service.js';
 import { config } from '../config/env.js';
 
@@ -136,6 +138,40 @@ test('searchWebWithGoogle handles success, 403, 429, and empty results with mock
     assert.equal(res429.ok, false);
     assert.equal(res429.status, 429);
     assert.equal(res429.reason, 'quota_exceeded');
+  } finally {
+    config.GOOGLE_SEARCH_API_KEY = origKey;
+    config.GOOGLE_SEARCH_ENGINE_ID = origCx;
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('custom search queries trigger shouldSearchWeb, clean fast rewrite, and fallback search', async () => {
+  assert.equal(shouldSearchWeb('search custom data about Nvidia Blackwell Ultra 2026'), true);
+  assert.equal(shouldSearchWeb('check current gold price in Chennai'), true);
+
+  const rewritten = await rewriteSearchQuery('search the data for gold rate today');
+  assert.equal(rewritten.query, 'gold rate today');
+  assert.equal(rewritten.freshness, 'breaking');
+
+  const origKey = config.GOOGLE_SEARCH_API_KEY;
+  const origCx = config.GOOGLE_SEARCH_ENGINE_ID;
+  const origFetch = globalThis.fetch;
+  config.GOOGLE_SEARCH_API_KEY = '';
+  config.GOOGLE_SEARCH_ENGINE_ID = '';
+
+  try {
+    globalThis.fetch = (async () =>
+      new Response(
+        '<div class="result"><a class="result__a" href="https://example.com/fresh-data">Fresh 2026 Report</a><div class="result__snippet">Updated figures for November 2026.</div></div>',
+        { status: 200, headers: { 'Content-Type': 'text/html' } }
+      )) as typeof fetch;
+
+    const fallback = await searchWebWithFallback('custom data report 2026', {
+      freshness: 'any',
+      bypassCache: true,
+    });
+    assert.equal(fallback.ok, true);
+    assert.equal(fallback.results[0].title, 'Fresh 2026 Report');
   } finally {
     config.GOOGLE_SEARCH_API_KEY = origKey;
     config.GOOGLE_SEARCH_ENGINE_ID = origCx;

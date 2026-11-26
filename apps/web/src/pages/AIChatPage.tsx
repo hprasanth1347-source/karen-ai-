@@ -182,6 +182,9 @@ export const AIChatPage: React.FC = () => {
     }
   });
   const activeConvIdRef = useRef<string | null>(activeConversationId);
+  const librarySeqRef = useRef<number>(0);
+  const deletedIdsRef = useRef<Set<string>>(new Set());
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [libraryOpen, setLibraryOpen] = useState<boolean>(true);
   const [libraryLoading, setLibraryLoading] = useState<boolean>(false);
   const [libraryError, setLibraryError] = useState<string>('');
@@ -280,22 +283,48 @@ export const AIChatPage: React.FC = () => {
   };
 
   const loadConversations = async (restoreActive = false, qOverride?: string) => {
+    const seq = ++librarySeqRef.current;
     setLibraryLoading(true);
     setLibraryError('');
     try {
       const qVal = (qOverride !== undefined ? qOverride : searchQuery).trim();
       const queryUrl = qVal ? `/ai/conversations?q=${encodeURIComponent(qVal)}` : '/ai/conversations';
       const res = await api.get<{ ok: boolean; data: SavedConversation[] }>(queryUrl, { skipCache: true } as any);
+      if (seq !== librarySeqRef.current) return;
+
       const serverList = Array.isArray(res.data?.data) ? res.data.data : [];
+      const localStore = readLocalLibrary();
+
       if (qVal) {
-        setConversations(serverList);
+        const filtered =
+          serverList.length > 0
+            ? serverList.filter((c) => !deletedIdsRef.current.has(c.id))
+            : localStore.conversations.filter(
+                (c) =>
+                  !deletedIdsRef.current.has(c.id) &&
+                  c.title.toLowerCase().includes(qVal.toLowerCase())
+              );
+        setConversations(filtered);
         return;
       }
-      const list = [...serverList].sort(
+
+      // Merge server list with non-deleted local chats so library items never flash in and vanish on cold/empty responses
+      const mergedMap = new Map<string, SavedConversation>();
+      for (const item of localStore.conversations) {
+        if (!deletedIdsRef.current.has(item.id)) {
+          mergedMap.set(item.id, item);
+        }
+      }
+      for (const item of serverList) {
+        if (!deletedIdsRef.current.has(item.id)) {
+          mergedMap.set(item.id, item);
+        }
+      }
+
+      const list = Array.from(mergedMap.values()).sort(
         (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
       );
       setConversations(list);
-      const localStore = readLocalLibrary();
       localStore.conversations = list;
       writeLocalLibrary(localStore);
 
@@ -312,15 +341,19 @@ export const AIChatPage: React.FC = () => {
         })();
         if (savedId && list.some((c) => c.id === savedId)) {
           await handleSelectConversation(savedId);
-        } else if (list.length > 0) {
+        } else if (list.length > 0 && !activeConvIdRef.current) {
           // Auto-resume latest saved chat so we never spawn a new chat on every reload/menu switch
           await handleSelectConversation(list[0].id);
         }
       }
     } catch (err: any) {
-      setLibraryError(err?.response?.data?.error || 'Could not load saved chats.');
+      if (seq === librarySeqRef.current) {
+        setLibraryError(err?.response?.data?.error || 'Could not load saved chats.');
+      }
     } finally {
-      setLibraryLoading(false);
+      if (seq === librarySeqRef.current) {
+        setLibraryLoading(false);
+      }
     }
   };
 
@@ -355,6 +388,7 @@ export const AIChatPage: React.FC = () => {
 
   const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    deletedIdsRef.current.add(id);
     const store = readLocalLibrary();
     store.conversations = store.conversations.filter((c) => c.id !== id);
     delete store.messages[id];
@@ -858,7 +892,10 @@ export const AIChatPage: React.FC = () => {
             onChange={(e) => {
               const val = e.target.value;
               setSearchQuery(val);
-              void loadConversations(false, val);
+              if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+              searchDebounceRef.current = setTimeout(() => {
+                void loadConversations(false, val);
+              }, 160);
             }}
             placeholder="Search saved chats..."
             className="w-full border-2 border-ink bg-white px-2 py-1 text-[11px] outline-none focus:border-coral"

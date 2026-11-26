@@ -247,6 +247,10 @@ function isQuietHours(settings: ClassroomSettings): boolean {
   return h >= startHour || h < endHour;
 }
 
+function getIstDateIsoFromDate(d: Date): string {
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
 function formatDueIst(iso?: string | null): string {
   if (!iso) return 'No due date';
   const d = new Date(iso);
@@ -266,12 +270,17 @@ function parseGoogleDueDate(
   dueTime?: { hours?: number; minutes?: number; seconds?: number }
 ): string | null {
   if (!dueDate?.year || !dueDate?.month || !dueDate?.day) return null;
-  const hh = String(dueTime?.hours ?? 23).padStart(2, '0');
-  const mm = String(dueTime?.minutes ?? 59).padStart(2, '0');
-  const ss = String(dueTime?.seconds ?? 0).padStart(2, '0');
   const month = String(dueDate.month).padStart(2, '0');
   const day = String(dueDate.day).padStart(2, '0');
-  // Google Classroom dueDate/dueTime are UTC unless specified; build UTC ISO
+  // If Classroom omits dueTime, treat deadline as 23:59:00 Asia/Kolkata (NOT 23:59 UTC which shifts into tomorrow IST)
+  if (dueTime?.hours === undefined) {
+    const isoIst = `${dueDate.year}-${month}-${day}T23:59:00+05:30`;
+    const parsed = new Date(isoIst);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  const hh = String(dueTime.hours).padStart(2, '0');
+  const mm = String(dueTime.minutes ?? 0).padStart(2, '0');
+  const ss = String(dueTime.seconds ?? 0).padStart(2, '0');
   const iso = `${dueDate.year}-${month}-${day}T${hh}:${mm}:${ss}.000Z`;
   return Number.isNaN(new Date(iso).getTime()) ? null : iso;
 }
@@ -990,29 +999,46 @@ async function evaluateClassroomNotifications(
       await notifyOnce(`grade_${a.id}_${a.assignedGrade}`, msg, `Grade: ${a.title}`);
     }
 
-    // 3. Deadline reminders (for pending/new/overdue only)
+    // 3. Deadline reminders (for pending/new/overdue only — use exact Asia/Kolkata calendar dates)
     if (a.dueIso && a.category !== 'submitted' && a.category !== 'graded') {
-      const diffMs = new Date(a.dueIso).getTime() - now;
+      const dueMs = new Date(a.dueIso).getTime();
+      const diffMs = dueMs - now;
       const diffHours = diffMs / (1000 * 60 * 60);
+      const dueIstDate = getIstDateIsoFromDate(new Date(dueMs));
+      const todayIstDate = getIstDateIsoFromDate(new Date(now));
+      const tomorrowIstDate = getIstDateIsoFromDate(new Date(now + 24 * 60 * 60 * 1000));
 
-      if (settings.reminders.threeDaysBefore && diffHours <= 72 && diffHours > 24) {
+      if (settings.reminders.threeHoursBefore && diffHours <= 3 && diffHours > 0) {
         await notifyOnce(
-          `due_3d_${a.id}`,
-          `KAREN ⏰\n\nAssignment due in ~3 days!\nSubject: ${a.courseName}\nAssignment: ${a.title}\nDue: ${a.dueIstDisplay}`,
-          `3-Day Reminder: ${a.title}`
+          `due_3h_${a.id}`,
+          `KAREN 🚨\n\nOnly ~${Math.max(1, Math.round(diffHours))} hour(s) left TODAY!\nSubject: ${a.courseName}\nAssignment: ${a.title}\nDue: ${a.dueIstDisplay}`,
+          `3-Hour Urgent: ${a.title}`
         );
-      } else if (settings.reminders.oneDayBefore && diffHours <= 24 && diffHours > 3) {
+      } else if (dueIstDate === todayIstDate && diffHours > 0) {
+        await notifyOnce(
+          `due_today_${a.id}_${todayIstDate}`,
+          `KAREN ⏰\n\nAssignment due TODAY!\nSubject: ${a.courseName}\nAssignment: ${a.title}\nDue: ${a.dueIstDisplay}`,
+          `Due Today: ${a.title}`,
+          [[{ text: 'Explain', callback_data: `classroom_explain:${a.id}` }]]
+        );
+      } else if (settings.reminders.oneDayBefore && dueIstDate === tomorrowIstDate && diffHours > 0) {
         await notifyOnce(
           `due_1d_${a.id}`,
           `KAREN ⏰\n\nAssignment due tomorrow!\nSubject: ${a.courseName}\nAssignment: ${a.title}\nDue: ${a.dueIstDisplay}`,
           `1-Day Reminder: ${a.title}`,
           [[{ text: 'Explain', callback_data: `classroom_explain:${a.id}` }]]
         );
-      } else if (settings.reminders.threeHoursBefore && diffHours <= 3 && diffHours > 0) {
+      } else if (
+        settings.reminders.threeDaysBefore &&
+        diffHours <= 72 &&
+        diffHours > 24 &&
+        dueIstDate !== todayIstDate &&
+        dueIstDate !== tomorrowIstDate
+      ) {
         await notifyOnce(
-          `due_3h_${a.id}`,
-          `KAREN 🚨\n\nOnly ~3 hours left!\nSubject: ${a.courseName}\nAssignment: ${a.title}\nDue: ${a.dueIstDisplay}`,
-          `3-Hour Urgent: ${a.title}`
+          `due_3d_${a.id}`,
+          `KAREN ⏰\n\nAssignment due in ~3 days!\nSubject: ${a.courseName}\nAssignment: ${a.title}\nDue: ${a.dueIstDisplay}`,
+          `3-Day Reminder: ${a.title}`
         );
       } else if (settings.reminders.afterDeadline && diffHours < 0 && diffHours > -48) {
         await notifyOnce(

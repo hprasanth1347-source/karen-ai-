@@ -16,9 +16,10 @@ async function resolveIgAuth() {
     return { token, accountId };
 }
 let conversationsCache = null;
+let preferredFieldVariantIdx = 0;
 let profileCache = null;
 let mediaCache = null;
-async function metaFetch(url, init, timeoutMs = 8000) {
+async function metaFetch(url, init, timeoutMs = 4500) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -161,11 +162,14 @@ export async function getInstagramConversations() {
         ];
         let res = null;
         let lastErrBody = {};
-        for (const fields of fieldVariants) {
+        for (let idx = preferredFieldVariantIdx; idx < fieldVariants.length; idx++) {
+            const fields = fieldVariants[idx];
             const url = `${META_BASE_URL}/${accountId}/conversations?platform=instagram&fields=${fields}&limit=10&access_token=${encodeURIComponent(token)}`;
             res = await metaFetch(url);
-            if (res.ok)
+            if (res.ok) {
+                preferredFieldVariantIdx = idx;
                 break;
+            }
             lastErrBody = (await res.json().catch(() => ({})));
             if (res.status !== 400)
                 break;
