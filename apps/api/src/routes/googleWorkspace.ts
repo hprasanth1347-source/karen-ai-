@@ -24,7 +24,7 @@ import { addNotification } from '../services/approval.service.js';
 import { success, error } from '../utils/response.js';
 
 const router = Router();
-router.use(requireAuth, requireOwner);
+router.use(['/calendar', '/google-tasks', '/sheets', '/google-contacts'], requireAuth, requireOwner);
 
 router.get('/calendar/events', async (req, res) => {
   const days = req.query.days ? Number(req.query.days) : 7;

@@ -234,19 +234,35 @@ export const InstagramPage: React.FC = () => {
   const [newVip, setNewVip] = useState('');
 
   // Auto-Reply Engine State
-  const [autoReplyConfig, setAutoReplyConfig] = useState<AutoReplyConfig>({
-    enabled: true,
-    triggerMode: 'all',
-    aiProvider: 'groq',
-    aiModel: 'qwen/qwen3.8-27b',
-  });
-  const [autoReplyLogs, setAutoReplyLogs] = useState<AutoReplyLog[]>([]);
+  const [autoReplyConfig, setAutoReplyConfig] = useState<AutoReplyConfig>(
+    instagramPageCache.autoReplyConfig || {
+      enabled: true,
+      triggerMode: 'all',
+      aiProvider: 'groq',
+      aiModel: 'qwen/qwen3.8-27b',
+    }
+  );
+  const [autoReplyLogs, setAutoReplyLogs] = useState<AutoReplyLog[]>(instagramPageCache.autoReplyLogs || []);
   const [simulatingAutoReply, setSimulatingAutoReply] = useState(false);
   const [simulatedMessage, setSimulatedMessage] = useState('hi karen');
   const [scanningAutoReply, setScanningAutoReply] = useState(false);
+  const [connectionHealth, setConnectionHealth] = useState<{
+    connected: boolean;
+    status: string;
+    lastError?: string;
+  } | null>(null);
+  const [showTokenConnect, setShowTokenConnect] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [accountIdInput, setAccountIdInput] = useState('');
+  const [savingToken, setSavingToken] = useState(false);
 
-  // Speech Recognition Reference
+  // Speech Recognition Reference & Live Selected Thread Ref
   const recognitionRef = useRef<any>(null);
+  const selectedThreadIdRef = useRef<string | null>(instagramPageCache.selectedThread?.id || null);
+
+  useEffect(() => {
+    selectedThreadIdRef.current = selectedThread?.id || null;
+  }, [selectedThread?.id]);
 
   // Update default model when provider changes
   useEffect(() => {
@@ -254,6 +270,23 @@ export const InstagramPage: React.FC = () => {
     else if (aiProvider === 'gemini') setAiModel('gemini-flash-lite-latest');
     else if (aiProvider === 'copilot') setAiModel('gpt-4o-mini');
   }, [aiProvider]);
+
+  const applyThreadsUpdate = (loadedThreads: InstagramThread[]) => {
+    setThreads(loadedThreads);
+    instagramPageCache.threads = loadedThreads;
+    instagramPageCache.loaded = true;
+
+    const currentId = selectedThreadIdRef.current;
+    const matched = currentId ? loadedThreads.find((t) => t.id === currentId) : loadedThreads[0];
+    if (matched) {
+      setSelectedThread(matched);
+      instagramPageCache.selectedThread = matched;
+      if (Array.isArray(matched.messages) && matched.messages.length > 0) {
+        setThreadMessages(matched.messages);
+      }
+    }
+    saveIgCacheSnapshot();
+  };
 
   // Load full messages & attachments when selectedThread changes
   useEffect(() => {
@@ -280,14 +313,17 @@ export const InstagramPage: React.FC = () => {
     };
   }, [selectedThread?.id]);
 
-  // Live DM & Auto-DM background refresh every 15s while page is open
+  // Live DM & Auto-DM background refresh every 8s while tab is visible
   useEffect(() => {
     const timer = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
-        const tRes = await authenticatedFetch('/api/v1/instagram/conversations');
+        const tRes = await authenticatedFetch('/api/v1/instagram/conversations?fresh=1');
         if (tRes.ok) {
           const tData = await tRes.json();
-          if (Array.isArray(tData.data)) setThreads(tData.data);
+          if (Array.isArray(tData.data)) {
+            applyThreadsUpdate(tData.data);
+          }
         }
         if (autoReplyConfig.enabled) {
           const pollRes = await authenticatedFetch('/api/v1/instagram/auto-reply/poll', { method: 'POST' });
@@ -295,32 +331,36 @@ export const InstagramPage: React.FC = () => {
             const pollJson = await pollRes.json();
             if (Array.isArray(pollJson.data?.logs)) {
               setAutoReplyLogs(pollJson.data.logs);
+              instagramPageCache.autoReplyLogs = pollJson.data.logs;
+              saveIgCacheSnapshot();
             }
           }
         }
       } catch {
         // Ignore transient poll errors
       }
-    }, 7000);
+    }, 8000);
     return () => clearInterval(timer);
   }, [autoReplyConfig.enabled]);
 
   // Load live data from backend (background-refresh if already cached)
-  const loadData = async () => {
+  const loadData = async (forceFresh = false) => {
     if (!instagramPageCache.loaded) setLoading(true);
     try {
-      const tRes = await authenticatedFetch('/api/v1/instagram/conversations');
+      const tRes = await authenticatedFetch(
+        forceFresh ? '/api/v1/instagram/conversations?fresh=1' : '/api/v1/instagram/conversations'
+      );
       if (tRes.ok) {
         const tData = await tRes.json();
-        const loadedThreads = tData.data || [];
-        setThreads(loadedThreads);
-        instagramPageCache.threads = loadedThreads;
-        instagramPageCache.loaded = true;
-        if (loadedThreads.length > 0 && !selectedThread) {
-          setSelectedThread(loadedThreads[0]);
-          instagramPageCache.selectedThread = loadedThreads[0];
-        }
-        saveIgCacheSnapshot();
+        const loadedThreads = Array.isArray(tData.data) ? tData.data : [];
+        applyThreadsUpdate(loadedThreads);
+      } else {
+        const errJson = await tRes.json().catch(() => ({}));
+        const msg =
+          typeof errJson?.error === 'string'
+            ? errJson.error
+            : errJson?.error?.message || `Instagram DM sync failed (${tRes.status}).`;
+        setSendError(msg);
       }
       setLoading(false);
 
@@ -329,7 +369,8 @@ export const InstagramPage: React.FC = () => {
         authenticatedFetch('/api/v1/instagram/media'),
         authenticatedFetch('/api/v1/instagram/favourites'),
         authenticatedFetch('/api/v1/instagram/auto-reply'),
-      ]).then(async ([pRes, mRes, vRes, aRes]) => {
+        authenticatedFetch('/api/v1/instagram/health'),
+      ]).then(async ([pRes, mRes, vRes, aRes, hRes]) => {
         if (pRes.ok) {
           const p = (await pRes.json()).data;
           setProfile(p);
@@ -358,13 +399,52 @@ export const InstagramPage: React.FC = () => {
             instagramPageCache.autoReplyLogs = aData.data.logs;
           }
         }
+        if (hRes.ok) {
+          const hData = await hRes.json();
+          if (hData.data) {
+            setConnectionHealth(hData.data);
+            if (!hData.data.connected && hData.data.lastError && tRes.ok) {
+              setSendError(`Meta Instagram Connection: ${hData.data.lastError}`);
+            }
+          }
+        }
         instagramPageCache.loaded = true;
         saveIgCacheSnapshot();
       }).catch((err) => console.error('Error loading secondary Instagram data:', err));
-    } catch (err) {
-      console.error('Error loading Instagram data:', err);
+    } catch (err: any) {
+      setSendError(err?.message || 'Error loading Instagram data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveInstagramToken = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tokenInput.trim() || savingToken) return;
+    setSavingToken(true);
+    setSendError(null);
+    setSendSuccess(null);
+    try {
+      const res = await authenticatedFetch('/api/v1/instagram/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: tokenInput.trim(),
+          ...(accountIdInput.trim() ? { accountId: accountIdInput.trim() } : {}),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.ok) {
+        throw new Error(json?.error || 'Failed to save Instagram token');
+      }
+      setSendSuccess('Instagram Access Token saved! Syncing live DMs now...');
+      setTokenInput('');
+      setShowTokenConnect(false);
+      await loadData(true);
+    } catch (err: any) {
+      setSendError(err?.message || 'Failed to connect Instagram token');
+    } finally {
+      setSavingToken(false);
     }
   };
 
@@ -374,6 +454,8 @@ export const InstagramPage: React.FC = () => {
       if (res.ok) {
         const d = await res.json();
         setAutoReplyConfig(d.data);
+        instagramPageCache.autoReplyConfig = d.data;
+        saveIgCacheSnapshot();
       }
     } catch (err) {
       console.error('Failed to toggle auto-reply:', err);
@@ -390,6 +472,9 @@ export const InstagramPage: React.FC = () => {
       if (res.ok) {
         const d = await res.json();
         setAutoReplyConfig(d.data);
+        instagramPageCache.autoReplyConfig = d.data;
+        saveIgCacheSnapshot();
+        setSendSuccess('Auto-Reply settings updated.');
       }
     } catch (err) {
       console.error('Failed to update auto-reply config:', err);
@@ -401,6 +486,7 @@ export const InstagramPage: React.FC = () => {
     if (!msg.trim() || simulatingAutoReply) return;
     setSimulatingAutoReply(true);
     setSendError(null);
+    setSendSuccess(null);
     try {
       const res = await authenticatedFetch('/api/v1/instagram/auto-reply/simulate', {
         method: 'POST',
@@ -413,10 +499,21 @@ export const InstagramPage: React.FC = () => {
       });
       const d = await res.json();
       if (d.ok && d.data) {
-        if (d.data.logs) setAutoReplyLogs(d.data.logs);
-        if (d.data.replyText) {
+        if (Array.isArray(d.data.logs)) {
+          setAutoReplyLogs(d.data.logs);
+          instagramPageCache.autoReplyLogs = d.data.logs;
+          saveIgCacheSnapshot();
+        }
+        if (d.data.autoReplied && d.data.replyText) {
           speakKarenResponse(d.data.replyText);
           setSendSuccess(`Auto-replied to @_.raghul._.15: "${d.data.replyText}"`);
+        } else {
+          setSendError(
+            d.data.error ||
+              (d.data.replyText
+                ? `Generated reply "${d.data.replyText}", but Meta API dispatch failed.`
+                : 'Auto-reply was skipped or Meta send failed.')
+          );
         }
       } else {
         throw new Error(d.error || 'Auto-reply simulation failed');
@@ -431,12 +528,20 @@ export const InstagramPage: React.FC = () => {
   const handleScanAndAutoReply = async () => {
     setScanningAutoReply(true);
     setSendError(null);
+    setSendSuccess(null);
     try {
       const res = await authenticatedFetch('/api/v1/instagram/auto-reply/poll', { method: 'POST' });
       const d = await res.json();
       if (d.ok && d.data) {
-        if (d.data.logs) setAutoReplyLogs(d.data.logs);
+        if (Array.isArray(d.data.logs)) {
+          setAutoReplyLogs(d.data.logs);
+          instagramPageCache.autoReplyLogs = d.data.logs;
+          saveIgCacheSnapshot();
+        }
         setSendSuccess(d.data.message || 'Scanned and processed DMs.');
+        if (d.data.repliesSent > 0) {
+          void loadData(true);
+        }
       } else {
         throw new Error(d.error || 'Failed to poll DMs');
       }
@@ -466,7 +571,7 @@ export const InstagramPage: React.FC = () => {
         throw new Error(d.error || 'Meta dispatch retry failed. Rate limit may still be cooling down.');
       }
       setSendSuccess(d.data.message || `Sent successfully to @${log.senderUsername}!`);
-      loadData();
+      await loadData(true);
     } catch (err: any) {
       setSendError(err.message || 'Retry failed');
     } finally {
@@ -475,7 +580,7 @@ export const InstagramPage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadData();
+    void loadData(false);
   }, []);
 
   // Web Speech API Initialization
@@ -657,10 +762,11 @@ export const InstagramPage: React.FC = () => {
     setSendError(null);
     setSendSuccess(null);
     try {
+      const sentText = suggestedDraft.trim();
       const res = await authenticatedFetch('/api/v1/instagram/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipientId: recipient.id, message: suggestedDraft.trim() }),
+        body: JSON.stringify({ recipientId: recipient.id, message: sentText }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok || !data.data?.success) {
@@ -668,8 +774,17 @@ export const InstagramPage: React.FC = () => {
       }
       setSendSuccess(`Message sent to @${recipient.username}!`);
       setSuggestedDraft('');
-      // Reload DMs
-      loadData();
+      setThreadMessages((prev) => [
+        {
+          id: data.data?.messageId || `local_${Date.now()}`,
+          created_time: new Date().toISOString(),
+          from: { id: profile?.id || 'me', username: profile?.username || 'hari.ii_14' },
+          message: sentText,
+        },
+        ...prev,
+      ]);
+      // Reload DMs cleanly in background so thread stays synced with Meta
+      void loadData(true);
     } catch (err: any) {
       setSendError(err.message || 'Instagram send failed');
     } finally {
@@ -720,19 +835,29 @@ export const InstagramPage: React.FC = () => {
               </span>
             </h1>
             <p className="text-xs text-ink-muted font-mono">
-              IGSID: {profile?.id || 'unknown'} • Posts: {media.length || 0} • Status: {profile ? 'Connected' : 'Disconnected'}
+              IGSID: {profile?.id || 'unknown'} • Posts: {media.length || 0} • Status:{' '}
+              {connectionHealth ? (connectionHealth.connected ? 'Connected' : connectionHealth.status) : profile?.id ? 'Connected' : 'Checking...'}
             </p>
           </div>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
-            onClick={loadData}
+            type="button"
+            onClick={() => void loadData(true)}
             className="btn-ghost text-xs flex items-center gap-1.5"
             disabled={loading}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             <span>Sync Live Instagram</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowTokenConnect((prev) => !prev)}
+            className="btn-ghost text-xs flex items-center gap-1.5"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-coral" />
+            <span>{showTokenConnect ? 'Close Token Setup' : 'Update Meta Token'}</span>
           </button>
           <a
             href={profile?.username ? `https://instagram.com/${profile.username}` : 'https://instagram.com'}
@@ -745,6 +870,52 @@ export const InstagramPage: React.FC = () => {
           </a>
         </div>
       </div>
+
+      {/* Token Connect / Reconnect Panel */}
+      {(showTokenConnect || (connectionHealth && !connectionHealth.connected)) && (
+        <form
+          onSubmit={handleSaveInstagramToken}
+          className="bg-yellow/20 border-3 border-ink p-4 shadow-brutal space-y-3"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-black font-mono uppercase">
+                CONNECT / REFRESH INSTAGRAM META ACCESS TOKEN
+              </h3>
+              <p className="text-[11px] text-ink-muted">
+                Paste a valid Meta Page Access Token (<code>EAA...</code>) or Instagram Graph Token (<code>IG...</code>) if live DMs fail due to token expiry.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            <input
+              type="password"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="Paste Meta / Instagram Access Token (EAA... or IG...)"
+              className="md:col-span-2 p-2 bg-white border-2 border-ink text-xs font-mono outline-none focus:border-coral"
+              required
+            />
+            <input
+              type="text"
+              value={accountIdInput}
+              onChange={(e) => setAccountIdInput(e.target.value)}
+              placeholder="Instagram Account ID (optional)"
+              className="p-2 bg-white border-2 border-ink text-xs font-mono outline-none focus:border-coral"
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="submit"
+              disabled={!tokenInput.trim() || savingToken}
+              className="btn-brutal bg-ink text-white text-xs px-4 py-1.5 flex items-center gap-1.5"
+            >
+              <Check className="w-3.5 h-3.5 text-mint" />
+              <span>{savingToken ? 'Saving Token…' : 'Save & Reconnect Live DMs'}</span>
+            </button>
+          </div>
+        </form>
+      )}
 
       {/* Notifications */}
       {sendSuccess && (
@@ -1630,14 +1801,20 @@ export const InstagramPage: React.FC = () => {
                     rows={3}
                     value={suggestedDraft}
                     onChange={(e) => setSuggestedDraft(e.target.value)}
-                    placeholder="Click 'Draft Thanglish Reply' or write your custom response here..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        void handleSendReply();
+                      }
+                    }}
+                    placeholder="Type a live DM reply directly (press Enter to send) or click 'Draft Thanglish Reply'..."
                     className="w-full p-2.5 bg-cream-50 border-2 border-ink text-xs font-mono outline-none focus:border-coral"
                   />
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-mono text-ink-muted">
-                    Channel: Instagram Creator Messaging API
+                    Channel: Instagram Creator Messaging API (Enter = Send)
                   </span>
                   <button
                     onClick={handleSendReply}
@@ -1645,7 +1822,7 @@ export const InstagramPage: React.FC = () => {
                     className="btn-coral text-xs flex items-center gap-1.5 shadow-brutal"
                   >
                     <Send className="w-3.5 h-3.5" />
-                    <span>{sending ? 'Sending…' : 'Approve & Send to Instagram'}</span>
+                    <span>{sending ? 'Sending…' : 'Send Live DM'}</span>
                   </button>
                 </div>
               </div>

@@ -202,6 +202,7 @@ class InstagramAutoReplyService {
   private pollIntervalTimer: NodeJS.Timeout | null = null;
   private scanInProgress = false;
   private hydrated = false;
+  private lastScanError: string | null = null;
 
   constructor() {
     if (config.INSTAGRAM_AUTO_REPLY_POLLING_ENABLED) {
@@ -209,19 +210,36 @@ class InstagramAutoReplyService {
     }
   }
 
+  public getLastScanError(): string | null {
+    return this.lastScanError;
+  }
+
   private async ensureHydrated(): Promise<void> {
     if (this.hydrated) return;
-    this.hydrated = true;
+    let completed = false;
     try {
-      const [savedConfig, savedLogs] = await Promise.race([
+      const result = await Promise.race([
         Promise.all([
-          loadUserSetting<Partial<AutoReplyConfig>>('instagram_auto_reply_config').catch(() => null),
-          loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs').catch(() => null),
-        ]),
-        new Promise<[null, null]>((resolve) => setTimeout(() => resolve([null, null]), 900)),
+          loadUserSetting<Partial<AutoReplyConfig>>('instagram_auto_reply_config'),
+          loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs'),
+          loadUserSetting<string[]>('instagram_replied_ids'),
+        ]).then((vals) => {
+          completed = true;
+          return vals;
+        }),
+        new Promise<[null, null, null]>((resolve) => setTimeout(() => resolve([null, null, null]), 2000)),
       ]);
+      if (completed) {
+        this.hydrated = true;
+      }
+      const [savedConfig, savedLogs, savedIds] = result;
       if (savedConfig && typeof savedConfig === 'object') {
         this.config = { ...this.config, ...savedConfig };
+      }
+      if (Array.isArray(savedIds)) {
+        for (const id of savedIds) {
+          if (typeof id === 'string' && id) this.repliedMessageIds.add(id);
+        }
       }
       if (Array.isArray(savedLogs) && savedLogs.length > 0) {
         this.logs = savedLogs.slice(0, 30);
@@ -303,16 +321,21 @@ class InstagramAutoReplyService {
     }
   ): Promise<{ autoReplied: boolean; replyText?: string; error?: string }> {
     await this.ensureHydrated();
-    const ownerId = config.INSTAGRAM_ACCOUNT_ID;
-    const ownerUsername = config.INSTAGRAM_USERNAME;
+    const normOwnerUsername = (config.INSTAGRAM_USERNAME || '').trim().replace(/^@/, '').toLowerCase();
+    const normSenderUsername = (senderUsername || '').trim().replace(/^@/, '').toLowerCase();
+    const ownerIds = new Set(
+      [config.INSTAGRAM_ACCOUNT_ID, /^\d+$/.test(config.INSTAGRAM_PAGE_ID || '') ? config.INSTAGRAM_PAGE_ID : ''].filter(
+        Boolean
+      )
+    );
 
     // 1. Skip if message is from the owner or human takeover is active
-    if (senderId === ownerId || senderUsername === ownerUsername) {
-      return { autoReplied: false };
+    if (ownerIds.has(senderId) || (normOwnerUsername && normSenderUsername === normOwnerUsername)) {
+      return { autoReplied: false, error: 'Skipped own message.' };
     }
     if (this.isHumanTakeover(senderId) || this.isHumanTakeover(senderUsername)) {
       logger.info(`Human takeover active for @${senderUsername}; skipping AI auto-reply.`);
-      return { autoReplied: false };
+      return { autoReplied: false, error: `Human takeover active for @${senderUsername}.` };
     }
 
     // 2. Skip if already replied
@@ -333,7 +356,7 @@ class InstagramAutoReplyService {
 
     // 3a. Skip unwanted/noisy DMs (reactions, tiny "ok"/"hmm" acks, promo spam) unless there is media
     const hasAttachment = Boolean(mediaMeta?.attachments?.length);
-    if (!hasAttachment && !mediaMeta?.replyToStoryId && isUnwantedOrNoisyDm(messageText)) {
+    if (!bypassRateLimit && !hasAttachment && !mediaMeta?.replyToStoryId && isUnwantedOrNoisyDm(messageText)) {
       logger.info(`Skipping unwanted/low-signal DM from @${senderUsername}: "${messageText}"`);
       this.repliedMessageIds.add(messageId);
       return { autoReplied: false };
@@ -387,9 +410,18 @@ class InstagramAutoReplyService {
     }
 
     // 4. Check if trigger matches (allow media/story replies when enabled)
+    if (!this.config.enabled) {
+      return {
+        autoReplied: false,
+        error: 'Auto-Reply is currently PAUSED. Turn it ON to dispatch auto-replies.',
+      };
+    }
     if (!firstAtt && !mediaMeta?.replyToStoryId && !this.shouldAutoReply(messageText)) {
       logger.info(`Message "${messageText}" from @${senderUsername} does not match trigger criteria.`);
-      return { autoReplied: false };
+      return {
+        autoReplied: false,
+        error: 'Message skipped because trigger filter is set to greetings only.',
+      };
     }
 
     this.processingMessageIds.add(messageId);
@@ -482,7 +514,11 @@ Thanglish Style Guide (CRITICAL):
 
     this.logs.unshift(logEntry);
     if (this.logs.length > 30) this.logs.length = 30;
-    const persistPromise = saveUserSetting('instagram_auto_reply_logs', this.logs).catch(() => { });
+    const recentIds = Array.from(this.repliedMessageIds).slice(-120);
+    const persistPromise = Promise.all([
+      saveUserSetting('instagram_auto_reply_logs', this.logs),
+      ...(sendRes.success ? [saveUserSetting('instagram_replied_ids', recentIds)] : []),
+    ]).catch(() => { });
 
     const badge =
       urgentInfo.category === 'MEDICAL_EMERGENCY'
@@ -551,79 +587,126 @@ Thanglish Style Guide (CRITICAL):
     }
 
     this.scanInProgress = true;
+    this.lastScanError = null;
     let repliesCount = 0;
     try {
       const [threads, profile] = await Promise.all([
-        getInstagramConversations(),
+        getInstagramConversations({ forceFresh: true }),
         getInstagramProfile().catch(() => null),
       ]);
-      const ownerUsername = config.INSTAGRAM_USERNAME || profile?.username || '';
-      const ownerId = config.INSTAGRAM_ACCOUNT_ID || profile?.id || '';
+      const normOwnerUsername = (config.INSTAGRAM_USERNAME || profile?.username || '')
+        .trim()
+        .replace(/^@/, '')
+        .toLowerCase();
+      const ownerIds = new Set(
+        [
+          config.INSTAGRAM_ACCOUNT_ID,
+          /^\d+$/.test(config.INSTAGRAM_PAGE_ID || '') ? config.INSTAGRAM_PAGE_ID : '',
+          profile?.id,
+        ].filter(Boolean)
+      );
+
+      const candidates: Array<{
+        recipientId: string;
+        recipientUsername: string;
+        messageId: string;
+        messageText: string;
+        mediaMeta: {
+          attachments?: Array<{ type?: string; payload?: { url?: string; title?: string } }>;
+          history: Array<{ role: 'user' | 'assistant'; content: string }>;
+        };
+      }> = [];
 
       for (const t of threads) {
-        if (!t.participant?.id || !t.participant?.username) continue;
-        if (ownerUsername && t.participant.username === ownerUsername) continue;
-        if (ownerId && t.participant.id === ownerId) continue;
+        const rawMsgs = Array.isArray(t.messages) ? t.messages : [];
+        if (rawMsgs.length === 0) continue;
 
-        // Use messages already fetched in the single-call query
-        const msgs = t.messages || [];
-        if (!msgs || msgs.length === 0) continue;
+        const msgs = [...rawMsgs].sort((a, b) => {
+          const ta = a.created_time ? new Date(a.created_time).getTime() : 0;
+          const tb = b.created_time ? new Date(b.created_time).getTime() : 0;
+          return tb - ta;
+        });
 
         const latestMsg = msgs[0];
-        if (!latestMsg || !latestMsg.from) continue;
+        if (!latestMsg) continue;
 
-        // Only reply if the latest message is FROM the external user (not from Hari)
-        // and within the 24-hour Meta messaging window
+        // Only reply if within the 24-hour Meta messaging window
         const msgTime = latestMsg.created_time ? new Date(latestMsg.created_time).getTime() : Date.now();
         if (Date.now() - msgTime > 24 * 60 * 60 * 1000) continue;
 
-        if (
-          (!ownerUsername || latestMsg.from.username !== ownerUsername) &&
-          (!ownerId || latestMsg.from.id !== ownerId)
-        ) {
-          if (!this.repliedMessageIds.has(latestMsg.id)) {
-            const history = msgs
-              .slice(1, 7)
-              .reverse()
-              .map((m) => ({
-                role: (
-                  (ownerUsername && m.from?.username === ownerUsername) ||
-                    (ownerId && m.from?.id === ownerId)
-                    ? 'assistant'
-                    : 'user'
-                ) as 'user' | 'assistant',
-                content: m.message || '[Media]',
-              }));
-            const mediaMeta = {
-              ...(Array.isArray(latestMsg.attachments) && latestMsg.attachments.length > 0
-                ? {
-                  attachments: latestMsg.attachments.map((att) => ({
-                    type: att.type,
-                    payload: { url: att.url, title: att.title },
-                  })),
-                }
-                : {}),
-              history,
+        const fromId = latestMsg.from?.id || '';
+        const normFromUsername = (latestMsg.from?.username || '').trim().replace(/^@/, '').toLowerCase();
+        const isFromOwner =
+          (fromId && ownerIds.has(fromId)) ||
+          (normOwnerUsername && normFromUsername && normFromUsername === normOwnerUsername);
+        if (isFromOwner) continue;
+
+        const recipientId = fromId || t.participant?.id || '';
+        const recipientUsername = latestMsg.from?.username || t.participant?.username || 'friend';
+        if (!recipientId || ownerIds.has(recipientId)) continue;
+        if (this.repliedMessageIds.has(latestMsg.id)) continue;
+
+        const history = msgs
+          .slice(1, 7)
+          .reverse()
+          .map((m) => {
+            const mFromNorm = (m.from?.username || '').trim().replace(/^@/, '').toLowerCase();
+            const mIsOwner =
+              (m.from?.id && ownerIds.has(m.from.id)) ||
+              (normOwnerUsername && mFromNorm && mFromNorm === normOwnerUsername);
+            return {
+              role: (mIsOwner ? 'assistant' : 'user') as 'user' | 'assistant',
+              content: m.message || '[Media]',
             };
-            const res = await this.handleIncomingMessage(
-              t.participant.id,
-              t.participant.username,
-              latestMsg.id,
-              latestMsg.message,
+          });
+
+        candidates.push({
+          recipientId,
+          recipientUsername,
+          messageId: latestMsg.id,
+          messageText: latestMsg.message,
+          mediaMeta: {
+            ...(Array.isArray(latestMsg.attachments) && latestMsg.attachments.length > 0
+              ? {
+                attachments: latestMsg.attachments.map((att) => ({
+                  type: att.type,
+                  payload: { url: att.url, title: att.title },
+                })),
+              }
+              : {}),
+            history,
+          },
+        });
+      }
+
+      if (candidates.length > 0) {
+        const results = await Promise.allSettled(
+          candidates.slice(0, 5).map((c) =>
+            this.handleIncomingMessage(
+              c.recipientId,
+              c.recipientUsername,
+              c.messageId,
+              c.messageText,
               false,
-              mediaMeta
-            );
-            if (res.autoReplied) {
-              repliesCount++;
-            }
+              c.mediaMeta
+            )
+          )
+        );
+        for (const r of results) {
+          if (r.status === 'fulfilled' && r.value.autoReplied) {
+            repliesCount++;
+          } else if (r.status === 'fulfilled' && r.value.error && !this.lastScanError) {
+            this.lastScanError = r.value.error;
           }
         }
       }
     } catch (err: any) {
-      if (err?.message?.includes('limit reached')) {
+      const msg = err?.message || String(err);
+      this.lastScanError = msg;
+      if (msg.includes('limit reached')) {
         this.rateLimitCooldownUntil = Date.now() + 180000;
       }
-      logger.warn('Scan and auto-reply error:', err?.message || err);
+      logger.warn('Scan and auto-reply error:', msg);
     } finally {
       this.scanInProgress = false;
     }

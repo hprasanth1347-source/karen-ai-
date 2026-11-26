@@ -4,25 +4,69 @@ import { generateAIReply } from '../services/ai.service.js';
 import { loadInstagramTokensWithStatus } from '../services/persistence.service.js';
 
 const META_BASE_URL = `https://graph.facebook.com/${config.META_GRAPH_API_VERSION || 'v21.0'}`;
+const IG_BASE_URL = `https://graph.instagram.com/${config.META_GRAPH_API_VERSION || 'v21.0'}`;
 
-async function resolveIgAuth(): Promise<{ token: string; accountId: string }> {
-  let token = config.INSTAGRAM_ACCESS_TOKEN || config.META_PAGE_ACCESS_TOKEN || '';
-  let accountId = config.INSTAGRAM_ACCOUNT_ID || '';
-  if (!token || !accountId) {
-    const stored = await loadInstagramTokensWithStatus().catch(() => ({ tokens: null, status: 'disconnected' }));
-    if (stored.tokens) {
-      token = token || stored.tokens.accessToken || '';
-      accountId = accountId || stored.tokens.accountId || '';
-    }
-  }
-  return { token, accountId };
+function normalizeHandle(value?: string): string {
+  return (value || '').trim().replace(/^@/, '').toLowerCase();
 }
 
-let conversationsCache: { expiresAt: number; data: InstagramThread[] } | null = null;
-let preferredFieldVariantIdx = 0;
-let preferredSendEndpoint: string | null = null;
-let profileCache: { expiresAt: number; data: InstagramProfile } | null = null;
-let mediaCache: { expiresAt: number; data: InstagramMediaItem[] } | null = null;
+function isNumericId(value?: string): boolean {
+  return Boolean(value && /^\d+$/.test(value.trim()));
+}
+
+async function resolveIgAuth(userId?: string): Promise<{
+  token: string;
+  accountId: string;
+  pageId: string;
+  isIgToken: boolean;
+}> {
+  let token = config.INSTAGRAM_ACCESS_TOKEN || config.META_PAGE_ACCESS_TOKEN || '';
+  let accountId = config.INSTAGRAM_ACCOUNT_ID || '';
+  let pageId = isNumericId(config.INSTAGRAM_PAGE_ID) ? config.INSTAGRAM_PAGE_ID : '';
+
+  const stored = await loadInstagramTokensWithStatus(userId).catch(() => ({
+    tokens: null,
+    status: 'disconnected',
+  }));
+  if (stored.tokens && stored.status === 'connected') {
+    token = stored.tokens.accessToken || token;
+    accountId = stored.tokens.accountId || accountId;
+    if (isNumericId(stored.tokens.pageId)) {
+      pageId = stored.tokens.pageId;
+    }
+  }
+
+  return {
+    token: token.trim(),
+    accountId: accountId.trim(),
+    pageId: pageId.trim(),
+    isIgToken: token.trim().startsWith('IG'),
+  };
+}
+
+let conversationsCache: { expiresAt: number; data: InstagramThread[]; tokenSig: string } | null = null;
+let preferredConvRoute: { baseNode: string; fieldIdx: number; tokenSig: string } | null = null;
+let preferredSendEndpoint: { endpoint: string; tokenSig: string } | null = null;
+let profileCache: { expiresAt: number; data: InstagramProfile; tokenSig: string } | null = null;
+let mediaCache: { expiresAt: number; data: InstagramMediaItem[]; tokenSig: string } | null = null;
+const usernameCache = new Map<string, { expiresAt: number; username: string }>();
+
+export function invalidateInstagramCache(): void {
+  conversationsCache = null;
+  preferredConvRoute = null;
+  preferredSendEndpoint = null;
+  profileCache = null;
+  mediaCache = null;
+  usernameCache.clear();
+}
+
+function sortMessagesNewestFirst(msgs: InstagramMessage[]): InstagramMessage[] {
+  return [...msgs].sort((a, b) => {
+    const ta = a.created_time ? new Date(a.created_time).getTime() : 0;
+    const tb = b.created_time ? new Date(b.created_time).getTime() : 0;
+    return tb - ta;
+  });
+}
 
 async function metaFetch(url: string, init?: RequestInit, timeoutMs = 4500): Promise<Response> {
   const controller = new AbortController();
@@ -126,14 +170,14 @@ export interface InstagramThread {
   messages?: InstagramMessage[];
 }
 
-export async function getInstagramProfile(): Promise<InstagramProfile> {
-  if (profileCache && profileCache.expiresAt > Date.now()) {
+export async function getInstagramProfile(userId?: string): Promise<InstagramProfile> {
+  const { token, accountId, isIgToken } = await resolveIgAuth(userId);
+  const tokenSig = token.slice(0, 14);
+  if (profileCache && profileCache.expiresAt > Date.now() && profileCache.tokenSig === tokenSig) {
     return profileCache.data;
   }
-  const token = config.INSTAGRAM_ACCESS_TOKEN;
-  const accountId = config.INSTAGRAM_ACCOUNT_ID || '';
 
-  if (!token || !accountId) {
+  if (!token) {
     return {
       id: accountId,
       name: '',
@@ -144,140 +188,266 @@ export async function getInstagramProfile(): Promise<InstagramProfile> {
     };
   }
 
+  const urls = isIgToken
+    ? [
+      `${IG_BASE_URL}/me?fields=id,user_id,username,name,profile_picture_url,followers_count,media_count&access_token=${encodeURIComponent(token)}`,
+      ...(accountId
+        ? [
+          `${META_BASE_URL}/${accountId}?fields=id,name,username,profile_picture_url,followers_count,media_count&access_token=${encodeURIComponent(token)}`,
+        ]
+        : []),
+    ]
+    : [
+      ...(accountId
+        ? [
+          `${META_BASE_URL}/${accountId}?fields=id,name,username,profile_picture_url,followers_count,media_count&access_token=${encodeURIComponent(token)}`,
+        ]
+        : []),
+      `${META_BASE_URL}/me?fields=id,name,username,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}&access_token=${encodeURIComponent(token)}`,
+    ];
+
   try {
-    const res = await metaFetch(
-      `${META_BASE_URL}/${accountId}?fields=id,name,username,profile_picture_url,followers_count,media_count&access_token=${token}`
-    );
-    if (!res.ok) {
-      return {
-        id: accountId,
-        name: '',
-        username: config.INSTAGRAM_USERNAME || '',
+    for (const url of urls) {
+      const res = await metaFetch(url).catch(() => null);
+      if (!res?.ok) continue;
+      const raw = (await res.json().catch(() => ({}))) as any;
+      const data = raw.instagram_business_account || raw;
+      const resolvedId = data.user_id || data.id || accountId;
+      if (!resolvedId && !data.username) continue;
+      const profile: InstagramProfile = {
+        id: String(resolvedId || ''),
+        name: data.name || data.username || '',
+        username: data.username || config.INSTAGRAM_USERNAME || '',
+        profile_picture_url: data.profile_picture_url,
+        followers_count: data.followers_count,
+        media_count: data.media_count,
       };
+      profileCache = { expiresAt: Date.now() + 60_000, data: profile, tokenSig };
+      return profile;
     }
-    const data = await res.json();
-    const profile: InstagramProfile = {
-      id: data.id,
-      name: data.name || data.username || '',
-      username: data.username || config.INSTAGRAM_USERNAME || '',
-      profile_picture_url: data.profile_picture_url,
-      followers_count: data.followers_count,
-      media_count: data.media_count,
-    };
-    profileCache = { expiresAt: Date.now() + 60_000, data: profile };
-    return profile;
   } catch (err) {
     logger.error('Failed to get Instagram profile:', err);
-    if (profileCache) return profileCache.data;
-    return {
-      id: accountId,
-      name: '',
-      username: config.INSTAGRAM_USERNAME || '',
-    };
   }
+
+  if (profileCache && profileCache.tokenSig === tokenSig) return profileCache.data;
+  return {
+    id: accountId,
+    name: '',
+    username: config.INSTAGRAM_USERNAME || '',
+  };
 }
 
-export async function getInstagramMedia(): Promise<InstagramMediaItem[]> {
-  if (mediaCache && mediaCache.expiresAt > Date.now()) {
+export async function lookupInstagramUserById(
+  igUserId: string,
+  userId?: string
+): Promise<string | null> {
+  if (!igUserId) return null;
+  const cached = usernameCache.get(igUserId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.username;
+  }
+  const { token, isIgToken } = await resolveIgAuth(userId);
+  if (!token) return null;
+  const base = isIgToken ? IG_BASE_URL : META_BASE_URL;
+  try {
+    const res = await metaFetch(
+      `${base}/${encodeURIComponent(igUserId)}?fields=username,name&access_token=${encodeURIComponent(token)}`,
+      undefined,
+      900
+    );
+    if (res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { username?: string; name?: string };
+      const uname = data.username || data.name;
+      if (uname) {
+        usernameCache.set(igUserId, { expiresAt: Date.now() + 10 * 60_000, username: uname });
+        return uname;
+      }
+    }
+  } catch {
+    // Best-effort lookup under strict SLA budget
+  }
+  return null;
+}
+
+export async function getInstagramMedia(userId?: string): Promise<InstagramMediaItem[]> {
+  const { token, accountId, isIgToken } = await resolveIgAuth(userId);
+  const tokenSig = token.slice(0, 14);
+  if (mediaCache && mediaCache.expiresAt > Date.now() && mediaCache.tokenSig === tokenSig) {
     return mediaCache.data;
   }
-  const token = config.INSTAGRAM_ACCESS_TOKEN;
-  const accountId = config.INSTAGRAM_ACCOUNT_ID || '';
 
   if (!token) return [];
 
+  const fields = 'id,caption,media_type,media_url,permalink,thumbnail_url,timestamp,like_count,comments_count';
+  const urls = isIgToken
+    ? [
+      `${IG_BASE_URL}/me/media?fields=${fields}&access_token=${encodeURIComponent(token)}`,
+      ...(accountId ? [`${META_BASE_URL}/${accountId}/media?fields=${fields}&access_token=${encodeURIComponent(token)}`] : []),
+    ]
+    : [
+      ...(accountId ? [`${META_BASE_URL}/${accountId}/media?fields=${fields}&access_token=${encodeURIComponent(token)}`] : []),
+      `${IG_BASE_URL}/me/media?fields=${fields}&access_token=${encodeURIComponent(token)}`,
+    ];
+
   try {
-    const url = `${META_BASE_URL}/${accountId}/media?fields=id,caption,media_type,media_url,permalink,thumbnail_url,timestamp,like_count,comments_count&access_token=${token}`;
-    const res = await metaFetch(url);
-    if (!res.ok) {
-      logger.warn('Failed to fetch Instagram media:', await res.text());
-      return [];
+    for (const url of urls) {
+      const res = await metaFetch(url).catch(() => null);
+      if (!res?.ok) continue;
+      const json = (await res.json().catch(() => ({}))) as { data?: InstagramMediaItem[] };
+      const media = json.data || [];
+      mediaCache = { expiresAt: Date.now() + 30_000, data: media, tokenSig };
+      return media;
     }
-    const json = await res.json();
-    const media = json.data || [];
-    mediaCache = { expiresAt: Date.now() + 30_000, data: media };
-    return media;
+    return [];
   } catch (err) {
     logger.error('Error fetching Instagram media:', err);
-    if (mediaCache) return mediaCache.data;
+    if (mediaCache && mediaCache.tokenSig === tokenSig) return mediaCache.data;
     return [];
   }
 }
 
-export async function getInstagramConversations(): Promise<InstagramThread[]> {
-  if (conversationsCache && conversationsCache.expiresAt > Date.now()) {
+export async function getInstagramConversations(
+  options?: { forceFresh?: boolean; userId?: string }
+): Promise<InstagramThread[]> {
+  const { token, accountId, pageId, isIgToken } = await resolveIgAuth(options?.userId);
+  const tokenSig = token.slice(0, 14);
+  if (
+    !options?.forceFresh &&
+    conversationsCache &&
+    conversationsCache.expiresAt > Date.now() &&
+    conversationsCache.tokenSig === tokenSig
+  ) {
     return conversationsCache.data;
   }
-  const { token, accountId } = await resolveIgAuth();
 
-  if (!token || !accountId) {
-    throw new Error('Instagram is not connected. Add a server-side Instagram access token first.');
+  if (!token) {
+    throw new Error('Instagram is not connected. Add a valid Instagram/Meta access token first.');
   }
 
   try {
-    // Try full fields (with attachments & shares), then gracefully fall back if Meta rejects subfields
     const fieldVariants = [
       'id,updated_time,participants,messages.limit(15){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url},shares}',
       'id,updated_time,participants,messages.limit(15){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url}}',
       'id,updated_time,participants,messages.limit(10){id,created_time,from,to,message}',
     ];
 
-    let res: Response | null = null;
-    let lastErrBody: { error?: { message?: string; code?: number } } = {};
-    for (let idx = preferredFieldVariantIdx; idx < fieldVariants.length; idx++) {
-      const fields = fieldVariants[idx];
-      const url = `${META_BASE_URL}/${accountId}/conversations?platform=instagram&fields=${fields}&limit=10&access_token=${encodeURIComponent(token)}`;
-      res = await metaFetch(url);
-      if (res.ok) {
-        preferredFieldVariantIdx = idx;
-        break;
+    const rawBaseNodes = isIgToken
+      ? [
+        `${IG_BASE_URL}/me`,
+        ...(accountId ? [`${IG_BASE_URL}/${accountId}`, `${META_BASE_URL}/${accountId}`] : []),
+        `${META_BASE_URL}/me`,
+      ]
+      : [
+        ...(accountId ? [`${META_BASE_URL}/${accountId}`] : []),
+        ...(pageId && pageId !== accountId ? [`${META_BASE_URL}/${pageId}`] : []),
+        `${META_BASE_URL}/me`,
+        `${IG_BASE_URL}/me`,
+      ];
+
+    const baseNodes = Array.from(new Set(rawBaseNodes));
+    const orderedRoutes: Array<{ baseNode: string; fieldIdx: number }> = [];
+    if (preferredConvRoute && preferredConvRoute.tokenSig === tokenSig && baseNodes.includes(preferredConvRoute.baseNode)) {
+      orderedRoutes.push({ baseNode: preferredConvRoute.baseNode, fieldIdx: preferredConvRoute.fieldIdx });
+    }
+    for (const baseNode of baseNodes) {
+      for (let fieldIdx = 0; fieldIdx < fieldVariants.length; fieldIdx++) {
+        if (
+          orderedRoutes[0]?.baseNode === baseNode &&
+          orderedRoutes[0]?.fieldIdx === fieldIdx
+        ) {
+          continue;
+        }
+        orderedRoutes.push({ baseNode, fieldIdx });
       }
-      lastErrBody = (await res.json().catch(() => ({}))) as { error?: { message?: string; code?: number } };
-      if (res.status !== 400) break;
-      logger.warn('Retrying Instagram conversations without unsupported message subfields', {
-        status: res.status,
-        error: lastErrBody.error?.message,
-      });
     }
 
-    if (!res || !res.ok) {
+    let res: Response | null = null;
+    let json: { data?: any[] } | null = null;
+    let lastErrBody: { error?: { message?: string; code?: number } } = {};
+    const deadNodes = new Set<string>();
+
+    for (const route of orderedRoutes) {
+      if (deadNodes.has(route.baseNode)) continue;
+      const fields = fieldVariants[route.fieldIdx];
+      const url = `${route.baseNode}/conversations?platform=instagram&fields=${fields}&limit=15&access_token=${encodeURIComponent(token)}`;
+      res = await metaFetch(url).catch(() => null);
+      if (res?.ok) {
+        json = (await res.json().catch(() => ({ data: [] }))) as { data?: any[] };
+        preferredConvRoute = { baseNode: route.baseNode, fieldIdx: route.fieldIdx, tokenSig };
+        break;
+      }
+      if (!res) continue;
+      lastErrBody = (await res.json().catch(() => ({}))) as { error?: { message?: string; code?: number } };
+      const errMsg = lastErrBody.error?.message || '';
+      logger.warn('Instagram conversations attempt failed, trying fallback', {
+        baseNode: route.baseNode,
+        fieldIdx: route.fieldIdx,
+        status: res.status,
+        error: errMsg,
+      });
+      // Token error (190) / permission error (10/200) on Facebook Graph might still work on IG Graph if IG token,
+      // but if not field-related (400 without subfield keyword), skip other field variants on the same base node.
+      const isFieldError = res.status === 400 && /subfield|nonexisting field|cannot be accessed|unknown fields|shares|attachments/i.test(errMsg);
+      if (!isFieldError) {
+        deadNodes.add(route.baseNode);
+      }
+    }
+
+    if (!res || !res.ok || !json) {
+      preferredConvRoute = null;
       throw new Error(
         lastErrBody.error?.message || `Instagram conversation request failed (${res?.status || 500}).`
       );
     }
 
-    const json = await res.json();
     const rawThreads = Array.isArray(json.data) ? json.data : [];
 
     let ownerUsername = config.INSTAGRAM_USERNAME || '';
-    if (!ownerUsername) {
-      const profile = await getInstagramProfile().catch(() => null);
-      ownerUsername = profile?.username || '';
-    }
+    const profile = !ownerUsername || !accountId ? await getInstagramProfile(options?.userId).catch(() => null) : null;
+    ownerUsername = ownerUsername || profile?.username || '';
+    const normOwner = normalizeHandle(ownerUsername);
+    const ownerIds = new Set([accountId, pageId, profile?.id].filter(Boolean));
+
     const threads: InstagramThread[] = rawThreads.map((t: any): InstagramThread => {
       const rawMsgs = t.messages?.data || [];
-      const msgs: InstagramMessage[] = rawMsgs.map((m: any) => ({
-        id: m.id,
-        created_time: m.created_time,
-        from: m.from,
-        to: m.to,
-        message: m.message || (m.attachments ? '[Media Attachment]' : ''),
-        attachments: parseMessageAttachments(m),
-      }));
+      const msgs: InstagramMessage[] = sortMessagesNewestFirst(
+        rawMsgs.map((m: any) => ({
+          id: m.id,
+          created_time: m.created_time,
+          from: m.from,
+          to: m.to,
+          message: m.message || (m.attachments ? '[Media Attachment]' : ''),
+          attachments: parseMessageAttachments(m),
+        }))
+      );
       const participants: Array<{ id: string; username: string }> = t.participants?.data || [];
       const lastMsg = msgs[0];
 
+      const isOwnerParticipant = (p?: { id?: string; username?: string }) =>
+        Boolean((p?.id && ownerIds.has(p.id)) || (normOwner && normalizeHandle(p?.username) === normOwner));
+
       let otherUser = { id: '', username: 'friend' };
       for (const p of participants) {
-        if (p.username && p.username !== ownerUsername) {
-          otherUser = p;
+        if ((p.id || p.username) && !isOwnerParticipant(p)) {
+          otherUser = { id: p.id || '', username: p.username || 'friend' };
           break;
         }
       }
-      if (!otherUser.id && lastMsg) {
-        if (lastMsg.from?.username && lastMsg.from.username !== ownerUsername) {
-          otherUser = lastMsg.from;
+      if (!otherUser.id) {
+        for (const m of msgs) {
+          if (m.from?.id && !isOwnerParticipant(m.from)) {
+            otherUser = { id: m.from.id, username: m.from.username || 'friend' };
+            break;
+          }
+          const toTarget = m.to?.data?.find((u) => (u.id || u.username) && !isOwnerParticipant(u));
+          if (toTarget?.id) {
+            otherUser = { id: toTarget.id, username: toTarget.username || 'friend' };
+            break;
+          }
         }
+      }
+      if (otherUser.id && otherUser.username && otherUser.username !== 'friend') {
+        usernameCache.set(otherUser.id, { expiresAt: Date.now() + 10 * 60_000, username: otherUser.username });
       }
 
       return {
@@ -290,17 +460,19 @@ export async function getInstagramConversations(): Promise<InstagramThread[]> {
       };
     });
 
-    conversationsCache = { expiresAt: Date.now() + 3000, data: threads };
+    conversationsCache = { expiresAt: Date.now() + 3000, data: threads, tokenSig };
     return threads;
   } catch (err) {
     logger.error('Error fetching Instagram conversations:', err);
-    if (conversationsCache) return conversationsCache.data;
+    if (!options?.forceFresh && conversationsCache && conversationsCache.tokenSig === tokenSig) {
+      return conversationsCache.data;
+    }
     throw err instanceof Error ? err : new Error('Instagram conversation sync failed.');
   }
 }
 
-export async function getThreadDetails(threadId: string): Promise<InstagramMessage[]> {
-  const { token } = await resolveIgAuth();
+export async function getThreadDetails(threadId: string, userId?: string): Promise<InstagramMessage[]> {
+  const { token, isIgToken } = await resolveIgAuth(userId);
   if (!token) return [];
 
   try {
@@ -309,27 +481,38 @@ export async function getThreadDetails(threadId: string): Promise<InstagramMessa
       'messages.limit(30){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url}}',
       'messages.limit(20){id,created_time,from,to,message}',
     ];
+    const hosts = isIgToken ? [IG_BASE_URL, META_BASE_URL] : [META_BASE_URL, IG_BASE_URL];
 
     let res: Response | null = null;
-    for (const fields of fieldVariants) {
-      res = await metaFetch(
-        `${META_BASE_URL}/${threadId}?fields=${fields}&access_token=${encodeURIComponent(token)}`
-      );
-      if (res.ok) break;
-      if (res.status !== 400) break;
+    for (const host of hosts) {
+      let hostRejected = false;
+      for (const fields of fieldVariants) {
+        res = await metaFetch(
+          `${host}/${encodeURIComponent(threadId)}?fields=${fields}&access_token=${encodeURIComponent(token)}`
+        ).catch(() => null);
+        if (res?.ok) break;
+        if (!res || res.status !== 400) {
+          hostRejected = true;
+          break;
+        }
+      }
+      if (res?.ok) break;
+      if (hostRejected) continue;
     }
 
     if (!res || !res.ok) return [];
     const json = await res.json();
     const rawList = json.messages?.data || [];
-    return rawList.map((m: any) => ({
-      id: m.id,
-      created_time: m.created_time,
-      from: m.from,
-      to: m.to,
-      message: m.message || (m.attachments ? '[Media Attachment]' : ''),
-      attachments: parseMessageAttachments(m),
-    }));
+    return sortMessagesNewestFirst(
+      rawList.map((m: any) => ({
+        id: m.id,
+        created_time: m.created_time,
+        from: m.from,
+        to: m.to,
+        message: m.message || (m.attachments ? '[Media Attachment]' : ''),
+        attachments: parseMessageAttachments(m),
+      }))
+    );
   } catch (err) {
     logger.error('Error fetching thread details:', err);
     return [];
@@ -338,20 +521,34 @@ export async function getThreadDetails(threadId: string): Promise<InstagramMessa
 
 export async function sendInstagramMessage(
   recipientId: string,
-  text: string
+  text: string,
+  userId?: string
 ): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  const { token, accountId } = await resolveIgAuth();
+  const { token, accountId, pageId, isIgToken } = await resolveIgAuth(userId);
 
   if (!token) {
     return { success: false, error: 'Instagram is not connected. Add a valid server-side access token first.' };
   }
 
-  const rawEndpoints = token.startsWith('IG')
-    ? ['https://graph.instagram.com/v21.0/me/messages', `${META_BASE_URL}/${accountId || 'me'}/messages`]
-    : [`${META_BASE_URL}/${accountId || 'me'}/messages`, `${META_BASE_URL}/me/messages`, 'https://graph.instagram.com/v21.0/me/messages'];
-  const endpoints = preferredSendEndpoint
-    ? [preferredSendEndpoint, ...rawEndpoints.filter((e) => e !== preferredSendEndpoint)]
-    : rawEndpoints;
+  const tokenSig = token.slice(0, 14);
+  const rawEndpoints = isIgToken
+    ? [
+      `${IG_BASE_URL}/me/messages`,
+      ...(accountId ? [`${IG_BASE_URL}/${accountId}/messages`, `${META_BASE_URL}/${accountId}/messages`] : []),
+      `${META_BASE_URL}/me/messages`,
+    ]
+    : [
+      ...(pageId ? [`${META_BASE_URL}/${pageId}/messages`] : []),
+      ...(accountId ? [`${META_BASE_URL}/${accountId}/messages`] : []),
+      `${META_BASE_URL}/me/messages`,
+      `${IG_BASE_URL}/me/messages`,
+    ];
+
+  const uniqueEndpoints = Array.from(new Set(rawEndpoints));
+  const endpoints =
+    preferredSendEndpoint && preferredSendEndpoint.tokenSig === tokenSig
+      ? [preferredSendEndpoint.endpoint, ...uniqueEndpoints.filter((e) => e !== preferredSendEndpoint?.endpoint)]
+      : uniqueEndpoints;
 
   let lastError = 'Meta API error';
   for (const endpoint of endpoints) {
@@ -374,7 +571,7 @@ export async function sendInstagramMessage(
 
       const json = await res.json().catch(() => ({}));
       if (res.ok) {
-        preferredSendEndpoint = endpoint;
+        preferredSendEndpoint = { endpoint, tokenSig };
         conversationsCache = null;
         return { success: true, messageId: json.message_id };
       }
@@ -384,6 +581,7 @@ export async function sendInstagramMessage(
       lastError = err.message || 'Network error';
     }
   }
+  preferredSendEndpoint = null;
   return { success: false, error: lastError };
 }
 

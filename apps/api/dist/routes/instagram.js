@@ -5,7 +5,7 @@ import { validate } from '../middleware/validate.js';
 import { success, error } from '../utils/response.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
-import { getInstagramProfile, getInstagramMedia, getInstagramConversations, getThreadDetails, sendInstagramMessage, draftInstagramReply, executeInstagramVoiceCommand, } from '../providers/instagram.js';
+import { getInstagramProfile, getInstagramMedia, getInstagramConversations, getThreadDetails, sendInstagramMessage, draftInstagramReply, executeInstagramVoiceCommand, lookupInstagramUserById, invalidateInstagramCache, } from '../providers/instagram.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
 import { getActiveStories, getAllReels, getFollowerMonitorSummary, getFollowersAndFollowing, getInstagramConnectionHealth, getInstagramNotesActivity, handleInstagramCommentEvent, handleInstagramMentionEvent, handleInstagramNoteActivityEvent, } from '../services/instagramHub.service.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
@@ -20,9 +20,9 @@ router.use((req, res, next) => {
 // Default empty VIP list unless persisted in user_settings
 const vipContacts = [];
 // 1. Live Profile
-router.get('/profile', async (_req, res) => {
+router.get('/profile', async (req, res) => {
     try {
-        const profile = await getInstagramProfile();
+        const profile = await getInstagramProfile(req.user?.id);
         return success(res, profile);
     }
     catch (err) {
@@ -30,9 +30,9 @@ router.get('/profile', async (_req, res) => {
     }
 });
 // 2. Live Media & Posts / Reels
-router.get('/media', async (_req, res) => {
+router.get('/media', async (req, res) => {
     try {
-        const media = await getInstagramMedia();
+        const media = await getInstagramMedia(req.user?.id);
         return success(res, media);
     }
     catch (err) {
@@ -40,19 +40,20 @@ router.get('/media', async (_req, res) => {
     }
 });
 // 3. Live Conversations (threads)
-router.get('/conversations', async (_req, res) => {
+router.get('/conversations', async (req, res) => {
     try {
-        const conversations = await getInstagramConversations();
+        const forceFresh = req.query.fresh === '1' || req.query.fresh === 'true';
+        const conversations = await getInstagramConversations({ forceFresh, userId: req.user?.id });
         return success(res, conversations);
     }
     catch (err) {
-        return error(res, err.message, 500);
+        return error(res, err.message, 400, 'INSTAGRAM_SYNC_ERROR');
     }
 });
 // 4. Thread details
 router.get('/conversations/:id', async (req, res) => {
     try {
-        const messages = await getThreadDetails(req.params.id);
+        const messages = await getThreadDetails(req.params.id, req.user?.id);
         return success(res, messages);
     }
     catch (err) {
@@ -63,10 +64,12 @@ router.get('/conversations/:id', async (req, res) => {
 const draftSchema = z.object({
     message: z.string().min(1),
     username: z.string().optional(),
+    preferredProvider: z.enum(['groq', 'gemini', 'copilot']).optional(),
+    preferredModel: z.string().optional(),
 });
 router.post('/draft', validate(draftSchema), async (req, res) => {
     try {
-        const draft = await draftInstagramReply(req.body.message, req.body.username);
+        const draft = await draftInstagramReply(req.body.message, req.body.username, req.body.preferredProvider, req.body.preferredModel);
         return success(res, { draft });
     }
     catch (err) {
@@ -80,7 +83,7 @@ const sendSchema = z.object({
 });
 router.post('/send', validate(sendSchema), async (req, res) => {
     try {
-        const result = await sendInstagramMessage(req.body.recipientId, req.body.message);
+        const result = await sendInstagramMessage(req.body.recipientId, req.body.message, req.user?.id);
         if (!result.success) {
             return error(res, result.error || 'Failed to send Instagram message', 400);
         }
@@ -125,15 +128,17 @@ router.post('/connect', validate(z.object({
 })), async (req, res) => {
     const expiresAt = Date.now() + (req.body.expiresInDays ?? 60) * 24 * 60 * 60 * 1000;
     await saveInstagramTokensToDb({
-        accessToken: req.body.accessToken,
-        accountId: req.body.accountId || config.INSTAGRAM_ACCOUNT_ID || '',
-        pageId: req.body.pageId || config.INSTAGRAM_PAGE_ID || '',
+        accessToken: req.body.accessToken.trim(),
+        accountId: (req.body.accountId || config.INSTAGRAM_ACCOUNT_ID || '').trim(),
+        pageId: (req.body.pageId || config.INSTAGRAM_PAGE_ID || '').trim(),
         expiresAt,
     }, req.user?.id);
+    invalidateInstagramCache();
     return success(res, { connected: true, status: 'connected', expiresAt: new Date(expiresAt).toISOString() });
 });
 router.post('/disconnect', async (req, res) => {
     await clearInstagramTokensFromDb(req.user?.id);
+    invalidateInstagramCache();
     return success(res, { disconnected: true, status: 'disconnected' });
 });
 router.get('/ui-state', async (_req, res) => {
@@ -167,16 +172,20 @@ router.post('/favourites', async (req, res) => {
     return success(res, current);
 });
 // 8. Creator account insights
-router.get('/insights', async (_req, res) => {
+router.get('/insights', async (req, res) => {
     try {
-        const profile = await getInstagramProfile();
+        const [profile, tokenState] = await Promise.all([
+            getInstagramProfile(req.user?.id),
+            loadInstagramTokensWithStatus(req.user?.id),
+        ]);
+        const hasToken = tokenState.status === 'connected' || Boolean(config.INSTAGRAM_ACCESS_TOKEN);
         return success(res, {
             account_type: 'CREATOR',
             username: profile.username || config.INSTAGRAM_USERNAME || null,
             total_followers: profile.followers_count ?? null,
             media_count: profile.media_count ?? null,
-            connected: Boolean(config.INSTAGRAM_ACCESS_TOKEN || profile.id),
-            token_status: config.INSTAGRAM_ACCESS_TOKEN ? 'ACTIVE_SYSTEM_TOKEN' : 'UNCONFIGURED',
+            connected: hasToken && Boolean(profile.id || profile.username),
+            token_status: hasToken ? 'ACTIVE_SYSTEM_TOKEN' : 'UNCONFIGURED',
             permissions: [
                 { name: 'instagram_basic', status: 'GRANTED' },
                 { name: 'instagram_manage_messages', status: 'GRANTED' },
@@ -198,9 +207,15 @@ router.get('/insights', async (_req, res) => {
 // 9. Meta Webhook Verification
 router.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
+    const token = String(req.query['hub.verify_token'] || '');
     const challenge = req.query['hub.challenge'];
-    if (mode === 'subscribe' && token === config.META_VERIFY_TOKEN) {
+    const validTokens = [
+        config.META_VERIFY_TOKEN,
+        config.INSTAGRAM_WEBHOOK_VERIFY_TOKEN,
+        process.env.META_VERIFY_TOKEN,
+        process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN,
+    ].filter((t) => Boolean(t));
+    if (mode === 'subscribe' && token && validTokens.includes(token)) {
         logger.info('Meta webhook verified successfully');
         return res.status(200).send(challenge);
     }
@@ -221,7 +236,6 @@ router.post('/webhook', async (req, res) => {
             logger.warn('Instagram webhook signature mismatch', {
                 hasRawBody: Boolean(req.rawBody),
             });
-            // Only reject if we actually had the untouched rawBody bytes from Express
             if (req.rawBody) {
                 return res.sendStatus(401);
             }
@@ -235,47 +249,61 @@ router.post('/webhook', async (req, res) => {
         logger.warn('Instagram webhook processed without META_APP_SECRET verification (secret not configured)');
     }
     logger.info('Received and authenticated Instagram Webhook Event');
-    const body = req.body;
+    const body = (req.body || {});
+    const dispatchWebhookDm = async (event, entryId) => {
+        if (!event?.message || !event?.sender?.id || event.message.is_echo)
+            return;
+        const senderId = String(event.sender.id);
+        const recipientId = event.recipient?.id ? String(event.recipient.id) : undefined;
+        if (recipientId && senderId === recipientId)
+            return;
+        if (entryId && senderId === String(entryId) && recipientId !== String(entryId))
+            return;
+        const messageId = event.message.mid || `mid_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const messageText = event.message.text || (Array.isArray(event.message.attachments) && event.message.attachments.length > 0 ? '[Media Attachment]' : '');
+        const resolvedUsername = event.sender.username ||
+            (await lookupInstagramUserById(senderId).catch(() => null)) ||
+            'friend';
+        logger.info(`Instagram webhook received message for sender ${senderId} (@${resolvedUsername})`);
+        if (event.message.reply_to?.note) {
+            await handleInstagramNoteActivityEvent({
+                eventKey: `note_reply:${messageId}`,
+                activityType: 'note_reply',
+                noteId: event.message.reply_to.note.id,
+                noteText: event.message.reply_to.note.text,
+                actorId: senderId,
+                actorUsername: resolvedUsername,
+                replyText: messageText,
+            }).catch(() => { });
+        }
+        await instagramAutoReplyService.handleIncomingMessage(senderId, resolvedUsername, messageId, messageText, false, {
+            attachments: event.message.attachments,
+            replyToStoryId: event.message.reply_to?.story?.id,
+        });
+    };
     // Process webhook events concurrently so serverless runtimes reply well under 10s
-    if (body.object === 'instagram' && Array.isArray(body.entry)) {
+    if ((body.object === 'instagram' || body.object === 'page') && Array.isArray(body.entry)) {
         const tasks = [];
         for (const entry of body.entry) {
-            if (Array.isArray(entry.messaging)) {
-                for (const event of entry.messaging) {
-                    if (event.message && event.sender?.id && !event.message.is_echo) {
-                        const senderId = event.sender.id;
-                        const messageId = event.message.mid || `mid_${Date.now()}`;
-                        const messageText = event.message.text || '';
-                        const senderUsername = event.sender.username || 'friend';
-                        logger.info(`Instagram webhook received message for sender ${senderId}`);
-                        tasks.push((async () => {
-                            try {
-                                if (event.message.reply_to?.note) {
-                                    await handleInstagramNoteActivityEvent({
-                                        eventKey: `note_reply:${messageId}`,
-                                        activityType: 'note_reply',
-                                        noteId: event.message.reply_to.note.id,
-                                        noteText: event.message.reply_to.note.text,
-                                        actorId: senderId,
-                                        actorUsername: senderUsername,
-                                        replyText: messageText,
-                                    });
-                                }
-                                await instagramAutoReplyService.handleIncomingMessage(senderId, senderUsername, messageId, messageText, false, {
-                                    attachments: event.message.attachments,
-                                    replyToStoryId: event.message.reply_to?.story?.id,
-                                });
-                            }
-                            catch (err) {
-                                logger.error('Error handling webhook auto-reply:', err);
-                            }
-                        })());
-                    }
+            const messagingEvents = [
+                ...(Array.isArray(entry.messaging) ? entry.messaging : []),
+                ...(Array.isArray(entry.standby) ? entry.standby : []),
+            ];
+            for (const event of messagingEvents) {
+                if (event?.message && event?.sender?.id && !event.message.is_echo) {
+                    tasks.push(dispatchWebhookDm(event, entry.id).catch((err) => {
+                        logger.error('Error handling webhook auto-reply:', err);
+                    }));
                 }
             }
             if (Array.isArray(entry.changes)) {
                 for (const change of entry.changes) {
-                    if (change.field === 'comments' && change.value?.id) {
+                    if (change.field === 'messages' && change.value?.message && change.value?.sender?.id) {
+                        tasks.push(dispatchWebhookDm(change.value, entry.id).catch((err) => {
+                            logger.error('Error handling webhook messages change auto-reply:', err);
+                        }));
+                    }
+                    else if (change.field === 'comments' && change.value?.id) {
                         tasks.push(handleInstagramCommentEvent({
                             commentId: String(change.value.id),
                             mediaId: String(change.value.media?.id || ''),
@@ -329,6 +357,10 @@ router.post('/auto-reply/toggle', async (_req, res) => {
 router.post('/auto-reply/poll', async (_req, res) => {
     try {
         const repliesSent = await instagramAutoReplyService.scanAndAutoReply();
+        const scanError = instagramAutoReplyService.getLastScanError();
+        if (scanError && repliesSent === 0) {
+            return error(res, scanError, 400, 'INSTAGRAM_POLL_ERROR');
+        }
         return success(res, {
             message: `Scanned active Instagram conversations. ${repliesSent} auto-reply messages dispatched.`,
             repliesSent,
@@ -358,6 +390,7 @@ router.post('/auto-reply/simulate', validate(simulateSchema), async (req, res) =
             incomingMessage: messageText,
             autoReplied: result.autoReplied,
             replyText: result.replyText,
+            error: result.error,
             logs: await instagramAutoReplyService.getLogs(),
         });
     }
@@ -372,7 +405,7 @@ router.post('/auto-reply/retry', async (req, res) => {
         if (!senderId || !replyText) {
             return error(res, 'senderId and replyText are required', 400);
         }
-        const sendRes = await sendInstagramMessage(senderId, replyText);
+        const sendRes = await sendInstagramMessage(senderId, replyText, req.user?.id);
         if (!sendRes.success) {
             return error(res, sendRes.error || 'Meta dispatch failed', 400);
         }
