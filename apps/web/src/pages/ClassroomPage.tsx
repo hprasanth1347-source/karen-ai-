@@ -168,6 +168,12 @@ export default function ClassroomPage() {
   const [prepMode, setPrepMode] = useState<'plan' | 'notes' | 'quiz' | 'mock'>('plan');
   const [prepResult, setPrepResult] = useState<string | null>(null);
 
+  // Join Class by code / invite link
+  const [joinCodeOrLink, setJoinCodeOrLink] = useState('');
+  const [joinCourseId, setJoinCourseId] = useState('');
+  const [joining, setJoining] = useState(false);
+  const [joinMessage, setJoinMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
   const loadAll = useCallback(async () => {
     try {
       const [ovRes, asRes, anRes, grRes, exRes] = await Promise.all([
@@ -191,6 +197,22 @@ export default function ClassroomPage() {
   }, [categoryFilter, sortBy]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('connected') === '1') {
+      window.history.replaceState({}, '', window.location.pathname);
+      void (async () => {
+        setSyncing(true);
+        try {
+          await api.post('/classroom/sync');
+        } catch {
+          // loadAll will display lastError if sync failed
+        } finally {
+          setSyncing(false);
+          await loadAll();
+        }
+      })();
+      return;
+    }
     void loadAll();
   }, [loadAll]);
 
@@ -224,6 +246,33 @@ export default function ClassroomPage() {
       setError(err?.response?.data?.error || 'Classroom sync failed.');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleJoinClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinCodeOrLink.trim()) return;
+    setJoining(true);
+    setJoinMessage(null);
+    try {
+      const res = await api.post<{ data: { joined: boolean; message: string } }>('/classroom/join', {
+        codeOrLink: joinCodeOrLink.trim(),
+        courseId: joinCourseId.trim() || undefined,
+      });
+      const data = res.data.data;
+      setJoinMessage({ ok: data.joined, text: data.message });
+      if (data.joined) {
+        setJoinCodeOrLink('');
+        setJoinCourseId('');
+        await loadAll();
+      }
+    } catch (err: any) {
+      setJoinMessage({
+        ok: false,
+        text: err?.response?.data?.error || 'Could not join class.',
+      });
+    } finally {
+      setJoining(false);
     }
   };
 
@@ -427,9 +476,18 @@ export default function ClassroomPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="p-3 border-2 border-coral bg-coral/10 text-coral text-xs font-bold">
-          {error}
+      {(error || overview?.lastError) && (
+        <div className="p-3 border-2 border-coral bg-coral/10 text-coral text-xs font-bold flex items-center justify-between gap-3">
+          <span>{error || overview?.lastError}</span>
+          {overview?.connected && /scope|permission|reconnect/i.test(error || overview?.lastError || '') && (
+            <button
+              type="button"
+              onClick={handleConnect}
+              className="px-2.5 py-1 border-2 border-ink bg-white text-ink text-[11px] font-black shrink-0"
+            >
+              Reconnect Permissions
+            </button>
+          )}
         </div>
       )}
 
@@ -576,8 +634,70 @@ export default function ClassroomPage() {
       {/* TAB B: MY CLASSES */}
       {tab === 'classes' && (
         <div className="space-y-6">
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {(overview?.courses || []).map((c) => (
+          <form onSubmit={handleJoinClass} className="border-2 border-ink bg-white p-4 shadow-brutal-sm space-y-3">
+            <h2 className="text-sm font-black">Join a Class (Class Code or Invite Link)</h2>
+            <p className="text-xs text-ink/60">
+              Paste the Google Classroom invite link (e.g. <code>classroom.google.com/c/...?cjc=abc1234</code>), or enter Class Code + Course ID.
+            </p>
+            <div className="grid sm:grid-cols-3 gap-2">
+              <input
+                type="text"
+                required
+                value={joinCodeOrLink}
+                onChange={(e) => setJoinCodeOrLink(e.target.value)}
+                placeholder="Invite Link or Class Code"
+                className="sm:col-span-2 border-2 border-ink p-2 text-xs"
+              />
+              <input
+                type="text"
+                value={joinCourseId}
+                onChange={(e) => setJoinCourseId(e.target.value)}
+                placeholder="Course ID (if code only)"
+                className="border-2 border-ink p-2 text-xs"
+              />
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="submit"
+                disabled={joining}
+                className="btn-coral text-xs px-3 py-1.5 font-black"
+              >
+                {joining ? 'Joining...' : 'Join Class'}
+              </button>
+              {joinMessage && (
+                <span className={`text-xs font-bold ${joinMessage.ok ? 'text-green-700' : 'text-coral'}`}>
+                  {joinMessage.text}
+                </span>
+              )}
+            </div>
+          </form>
+          {(overview?.courses || []).length === 0 ? (
+            <div className="border-2 border-ink bg-white p-6 text-center space-y-3">
+              <p className="text-xs font-bold text-ink/70">
+                {overview?.connected
+                  ? 'No Google Classroom courses found yet.'
+                  : 'Connect your Google account to load your Classroom courses.'}
+              </p>
+              <div className="flex justify-center gap-2">
+                {overview?.connected ? (
+                  <>
+                    <button type="button" onClick={handleSync} disabled={syncing} className="btn-coral text-xs px-3 py-1.5">
+                      {syncing ? 'Syncing...' : 'Sync Courses Now'}
+                    </button>
+                    <button type="button" onClick={handleConnect} className="px-3 py-1.5 border-2 border-ink bg-white text-xs font-bold">
+                      Reconnect Google
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" onClick={handleConnect} className="btn-coral text-xs px-3 py-1.5">
+                    Connect Google Classroom
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {(overview?.courses || []).map((c) => (
               <div key={c.id} className="border-2 border-ink bg-white p-4 shadow-brutal-sm space-y-2">
                 <div className="flex items-start justify-between gap-2">
                   <h3 className="font-black text-sm">{c.name}</h3>
@@ -601,7 +721,8 @@ export default function ClassroomPage() {
                 )}
               </div>
             ))}
-          </div>
+            </div>
+          )}
 
           <div className="border-2 border-ink bg-white p-4 space-y-3">
             <h2 className="text-sm font-black">Recent Course Announcements</h2>

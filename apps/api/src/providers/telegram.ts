@@ -29,6 +29,7 @@ import {
   getClassroomOverview,
   getClassroomSettings,
   getGradesOverview,
+  joinClassroomByCodeOrLink,
   listClassroomAssignments,
   runLastMinuteExamPrep,
   snoozeAssignmentReminder,
@@ -44,6 +45,11 @@ import {
   detectLoveModeDeactivation,
   incrementLoveModeMessageCount,
 } from '../services/loveMode.service.js';
+import {
+  appendChatMessage,
+  createConversation,
+  listConversations,
+} from '../services/chatLibrary.service.js';
 import { executeInstagramVoiceCommand } from './instagram.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -455,7 +461,7 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       }
       const updated = await getClassroomCache();
       if (!updated.courses.length) {
-        return '📚 No Google Classroom courses found yet. Use /connectclassroom if not connected.';
+        return '📚 No Google Classroom courses found yet. Use /connectclassroom if not connected, or /joinclass <invite_link_or_code>.';
       }
       return `📚 *My Classroom Courses (${updated.courses.length})*\n\n${updated.courses
         .map(
@@ -463,6 +469,18 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
             `${i + 1}. *${c.name}*${c.section ? ` (${c.section})` : ''} [${c.courseState}]${c.teacherNames[0] ? `\n   👤 ${c.teacherNames[0]}` : ''}`
         )
         .join('\n\n')}`;
+    }
+
+    case '/joinclass': {
+      if (!args.trim()) {
+        return '⚠️ Usage: `/joinclass <classroom_invite_link>` or `/joinclass <courseId> <classCode>`\nExample: `/joinclass https://classroom.google.com/c/...?cjc=abc1234`';
+      }
+      const parts = args.trim().split(/\s+/);
+      const res =
+        parts.length >= 2 && !/classroom\.google\.com/i.test(parts[0])
+          ? await joinClassroomByCodeOrLink({ courseId: parts[0], codeOrLink: parts[1] })
+          : await joinClassroomByCodeOrLink({ codeOrLink: args.trim() });
+      return res.joined ? `✅ ${res.message}` : `⚠️ ${res.message}`;
     }
 
     case '/assignments':
@@ -704,6 +722,15 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
         }
         // ── Google Classroom natural language detection ─────────────────────
         else if (
+          /\b(join\s+(this\s+)?class|add\s+(me\s+)?to\s+class|class\s+code\s*[:\-]?\s*[a-z0-9]+|classroom\.google\.com\/c\/)/i.test(text)
+        ) {
+          const linkMatch = text.match(/https?:\/\/classroom\.google\.com\/\S+/i);
+          const codeMatch = text.match(/\b(?:code|join\s+class)\s*[:\-]?\s*([a-z0-9]{5,12})/i);
+          const target = linkMatch?.[0] || codeMatch?.[1] || text;
+          const res = await joinClassroomByCodeOrLink({ codeOrLink: target });
+          reply = res.joined ? `✅ ${res.message}` : `⚠️ ${res.message}`;
+        }
+        else if (
           /\b(my\s+assignments?|pending\s+(work|assignments?)|assignment\s+is\s+due|due\s+tomorrow|show\s+my\s+grades|my\s+classes|new\s+announcements?|next\s+exam|exam\s+tomorrow|prepare\s+me\s+for.*exam|start\s+exam\s+prep|i\s+have\s+only\s+\d+\s+hours?|haven'?t\s+studied\s+anything|explain\s+my\s+.*assignment|prepare\s+an?\s+assignment\s+draft)\b/i.test(text)
         ) {
           if (/\b(exam\s+tomorrow|prepare\s+me|start\s+exam\s+prep|i\s+have\s+only\s+\d+\s+hours?|haven'?t\s+studied)\b/i.test(text)) {
@@ -782,6 +809,21 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
     await Promise.all([
       reply ? sendTelegramMessage(reply, chatId) : Promise.resolve(false),
       addNotification('telegram', 'Telegram Message', `"${(msg.text || '[media]').slice(0, 60)}"`, 'normal', 'telegram').catch(() => {}),
+      (async () => {
+        if (!msg.text || !reply) return;
+        try {
+          const existing = await listConversations(undefined, 'telegram');
+          let convId = existing[0]?.id;
+          if (!convId) {
+            const created = await createConversation(`Telegram (${chatId})`, 'telegram');
+            convId = created.id;
+          }
+          await appendChatMessage(convId, 'user', msg.text, { channel: 'telegram' });
+          await appendChatMessage(convId, 'assistant', reply, { channel: 'telegram' });
+        } catch {
+          // Non-blocking DB persistence
+        }
+      })(),
     ]);
     if (reply) {
       telegramState.lastOutgoing = reply.slice(0, 100);

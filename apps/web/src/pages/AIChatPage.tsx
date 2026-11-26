@@ -150,6 +150,30 @@ export const AIChatPage: React.FC = () => {
     }
   };
 
+  const saveTurnToLibrary = async (userText: string, assistantText: string, providerName = 'Karen AI') => {
+    try {
+      let cid = activeConversationId;
+      if (!cid) {
+        const created = await api.post<{ ok: boolean; data: SavedConversation }>('/ai/conversations', {
+          title: userText.trim().slice(0, 60) || 'New Chat',
+        });
+        cid = created.data?.data?.id || null;
+        if (cid) persistActiveId(cid);
+      }
+      if (!cid) return;
+      await api.post(`/ai/conversations/${cid}/messages`, { role: 'user', content: userText, channel: 'web' });
+      await api.post(`/ai/conversations/${cid}/messages`, {
+        role: 'assistant',
+        content: assistantText,
+        channel: 'web',
+        provider: providerName,
+      });
+      void loadConversations(false);
+    } catch {
+      // Non-blocking fallback
+    }
+  };
+
   const handleSelectConversation = async (id: string) => {
     try {
       const res = await api.get<{
@@ -485,17 +509,19 @@ export const AIChatPage: React.FC = () => {
             provider: 'Instagram',
           },
         ]);
+        void saveTurnToLibrary(currentInput, content, 'Instagram');
         return;
       }
 
       if (isInstagramSendIntent(currentInput)) {
+        const helpMsg =
+          'I can prepare an Instagram DM for approval. Try: “Send an Instagram message to @handle: your message”.';
         setMessages((prev) => [
           ...prev,
           {
             id: `${Date.now()}-instagram-help`,
             role: 'assistant',
-            content:
-              'I can prepare an Instagram DM for approval. Try: “Send an Instagram message to @handle: your message”.',
+            content: helpMsg,
             timestamp: new Date().toLocaleTimeString([], {
               hour: '2-digit',
               minute: '2-digit',
@@ -503,6 +529,7 @@ export const AIChatPage: React.FC = () => {
             provider: 'Instagram',
           },
         ]);
+        void saveTurnToLibrary(currentInput, helpMsg, 'Instagram');
         return;
       }
 

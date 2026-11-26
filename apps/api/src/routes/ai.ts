@@ -114,6 +114,32 @@ router.get('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
   return success(res, messages);
 });
 
+router.post('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
+  const bodySchema = z.object({
+    role: z.enum(['user', 'assistant', 'system']),
+    content: z.string().min(1).max(8000),
+    channel: z.string().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+  });
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return error(res, 'Invalid message payload', 400);
+  }
+  const saved = await appendChatMessage(
+    String(req.params.id),
+    parsed.data.role,
+    parsed.data.content,
+    {
+      channel: parsed.data.channel || 'web',
+      provider: parsed.data.provider,
+      model: parsed.data.model,
+    },
+    req.user?.id
+  );
+  return success(res, saved, 201);
+});
+
 router.delete('/ai/conversations/:id', requireAuth, async (req, res) => {
   const deleted = await deleteConversation(String(req.params.id), req.user?.id);
   if (!deleted) {

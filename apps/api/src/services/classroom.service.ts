@@ -394,11 +394,18 @@ export async function syncClassroomData(): Promise<{
   }
 
   try {
-    const rawCourses = await fetchAllPages<Record<string, any>>(
-      '/courses?studentId=me&pageSize=50',
+    let rawCourses = await fetchAllPages<Record<string, any>>(
+      '/courses?pageSize=50',
       'courses',
       token
     );
+    if (rawCourses.length === 0) {
+      rawCourses = await fetchAllPages<Record<string, any>>(
+        '/courses?studentId=me&pageSize=50',
+        'courses',
+        token
+      ).catch(() => []);
+    }
 
     const courses: ClassroomCourse[] = [];
     const assignments: ClassroomAssignment[] = [];
@@ -557,21 +564,160 @@ export async function syncClassroomData(): Promise<{
 
     return { synced: true, cache: updatedCache, notificationsSent };
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Classroom sync failed';
+    const rawMsg = err instanceof Error ? err.message : 'Classroom sync failed';
     const isScopeOrAdminError =
-      /insufficient|permission|scope|403|disabled|classroom/i.test(message);
+      /insufficient|permission|scope|403|disabled|classroom/i.test(rawMsg);
+    const message = /insufficient.*scope/i.test(rawMsg)
+      ? 'Google token is missing Classroom permissions. Go to Settings → Disconnect & Reconnect Google Classroom.'
+      : rawMsg;
 
     const preserved: ClassroomCache = {
       ...existingCache,
       lastError: message,
       accountRestrictedNote: isScopeOrAdminError
-        ? 'If your college Google Workspace account restricts Classroom API access, reconnect with personal/permitted scopes or ask your Workspace administrator.'
+        ? 'If your college Google Workspace account restricts Classroom API access, or if you connected Drive before Classroom was added, click Disconnect & Reconnect in Settings.'
         : existingCache.accountRestrictedNote,
     };
     await saveClassroomCache(preserved);
     logger.warn('Classroom sync error (preserved last cache)', { err });
     return { synced: false, cache: preserved, notificationsSent: 0 };
   }
+}
+
+// ─── Join Class by Invite Link / Code ─────────────────────────────────────────
+
+function decodeCourseIdFromClassroomSlug(slug: string): string {
+  if (/^\d+$/.test(slug)) return slug;
+  try {
+    const padded = slug.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = Buffer.from(padded, 'base64').toString('utf8').trim();
+    if (/^\d+$/.test(decoded)) return decoded;
+  } catch {
+    // Fallback to raw slug
+  }
+  return slug;
+}
+
+export async function joinClassroomByCodeOrLink(input: {
+  codeOrLink: string;
+  courseId?: string;
+}): Promise<{
+  joined: boolean;
+  courseName?: string;
+  courseId?: string;
+  message: string;
+}> {
+  const token = await getValidGoogleAccessToken();
+  if (!token) {
+    return {
+      joined: false,
+      message: 'Google Classroom is not connected. Connect your Google account first.',
+    };
+  }
+
+  const raw = input.codeOrLink.trim();
+  let courseId = input.courseId?.trim() || '';
+  let enrollmentCode = raw;
+
+  // Parse Google Classroom invite link: https://classroom.google.com/c/<base64Id>?cjc=<code>
+  if (/classroom\.google\.com/i.test(raw)) {
+    try {
+      const url = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+      const cjc = url.searchParams.get('cjc') || '';
+      const pathMatch = url.pathname.match(/\/c\/([^/]+)/i);
+      if (pathMatch?.[1]) {
+        courseId = decodeCourseIdFromClassroomSlug(pathMatch[1]);
+      }
+      if (cjc) {
+        enrollmentCode = cjc.trim();
+      }
+    } catch {
+      // Keep raw string
+    }
+  }
+
+  // If no courseId yet, check pending Classroom invitations for the user
+  if (!courseId) {
+    try {
+      const invRes = await fetch(`${CLASSROOM_BASE}/invitations?userId=me`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (invRes.ok) {
+        const invData = (await invRes.json()) as {
+          invitations?: Array<{ id: string; courseId: string; role?: string }>;
+        };
+        const match = invData.invitations?.find((inv) => inv.role === 'STUDENT') || invData.invitations?.[0];
+        if (match?.id) {
+          const acceptRes = await fetch(
+            `${CLASSROOM_BASE}/invitations/${encodeURIComponent(match.id)}:accept`,
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}` },
+              signal: AbortSignal.timeout(10000),
+            }
+          );
+          if (acceptRes.ok) {
+            const syncRes = await syncClassroomData();
+            const joinedCourse = syncRes.cache.courses.find((c) => c.id === match.courseId);
+            return {
+              joined: true,
+              courseId: match.courseId,
+              courseName: joinedCourse?.name || match.courseId,
+              message: `Joined class "${joinedCourse?.name || match.courseId}" via your pending Classroom invitation!`,
+            };
+          }
+        }
+      }
+    } catch {
+      // Continue to code/link guidance
+    }
+
+    return {
+      joined: false,
+      message:
+        'Google Classroom API requires the Course Invite Link (e.g. classroom.google.com/c/...?cjc=' +
+        enrollmentCode +
+        ') or Course ID + Class Code, because Google does not provide a lookup by 6-7 char code alone. Paste the full Classroom invite link or enter the Course ID.',
+    };
+  }
+
+  // Enroll via official Classroom API: POST /v1/courses/{courseId}/students?enrollmentCode={code}
+  const enrollUrl = `${CLASSROOM_BASE}/courses/${encodeURIComponent(courseId)}/students?enrollmentCode=${encodeURIComponent(enrollmentCode)}`;
+  const res = await fetch(enrollUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ userId: 'me' }),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  const json = (await res.json().catch(() => ({}))) as {
+    error?: { message?: string; status?: string };
+  };
+
+  if (!res.ok) {
+    const errMsg = json.error?.message || `Failed to join class (${res.status})`;
+    if (/insufficient.*scope|permission/i.test(errMsg)) {
+      return {
+        joined: false,
+        message:
+          'Missing Classroom roster write permission. Click "Reconnect Google" to grant join-class permission, then try again.',
+      };
+    }
+    return { joined: false, message: errMsg };
+  }
+
+  const syncRes = await syncClassroomData();
+  const joinedCourse = syncRes.cache.courses.find((c) => c.id === courseId);
+  return {
+    joined: true,
+    courseId,
+    courseName: joinedCourse?.name || courseId,
+    message: `Successfully joined "${joinedCourse?.name || courseId}"!`,
+  };
 }
 
 // ─── Notifications (Deduplicated + Inline Buttons) ────────────────────────────

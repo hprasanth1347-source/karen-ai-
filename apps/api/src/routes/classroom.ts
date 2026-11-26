@@ -25,6 +25,7 @@ import {
   getClassroomOverview,
   getClassroomSettings,
   getGradesOverview,
+  joinClassroomByCodeOrLink,
   listClassroomAssignments,
   runLastMinuteExamPrep,
   setPersonalAssignmentStatus,
@@ -85,7 +86,12 @@ router.post('/classroom/sync', async (req, res) => {
 
 router.get('/classroom/overview', async (req, res) => {
   await hydrateGoogleTokensFromRequest(req);
-  const [overview, cache] = await Promise.all([getClassroomOverview(), getClassroomCache()]);
+  let overview = await getClassroomOverview();
+  if (overview.connected && !overview.lastSyncedAt) {
+    await syncClassroomData();
+    overview = await getClassroomOverview();
+  }
+  const cache = await getClassroomCache();
   return success(res, {
     ...overview,
     courses: cache.courses,
@@ -100,6 +106,21 @@ router.get('/classroom/courses', async (_req, res) => {
   const cache = await getClassroomCache();
   return success(res, cache.courses);
 });
+
+router.post(
+  '/classroom/join',
+  validate(
+    z.object({
+      codeOrLink: z.string().min(3).max(500),
+      courseId: z.string().max(100).optional(),
+    })
+  ),
+  async (req, res) => {
+    await hydrateGoogleTokensFromRequest(req);
+    const result = await joinClassroomByCodeOrLink(req.body);
+    return success(res, result);
+  }
+);
 
 router.get('/classroom/assignments', async (req, res) => {
   const category = typeof req.query.category === 'string' ? req.query.category : undefined;
