@@ -156,7 +156,9 @@ export const AIChatPage: React.FC = () => {
   };
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
-      const savedId = sessionStorage.getItem('karen_active_conversation_id');
+      const savedId =
+        localStorage.getItem('karen_active_conversation_id') ||
+        sessionStorage.getItem('karen_active_conversation_id');
       if (savedId) {
         const local = readLocalLibrary();
         if (local.messages[savedId]?.length) return local.messages[savedId];
@@ -169,11 +171,15 @@ export const AIChatPage: React.FC = () => {
   const [conversations, setConversations] = useState<SavedConversation[]>(() => readLocalLibrary().conversations);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
     try {
-      return sessionStorage.getItem('karen_active_conversation_id');
+      return (
+        localStorage.getItem('karen_active_conversation_id') ||
+        sessionStorage.getItem('karen_active_conversation_id')
+      );
     } catch {
       return null;
     }
   });
+  const activeConvIdRef = useRef<string | null>(activeConversationId);
   const [libraryOpen, setLibraryOpen] = useState<boolean>(true);
   const [libraryLoading, setLibraryLoading] = useState<boolean>(false);
   const [libraryError, setLibraryError] = useState<string>('');
@@ -187,10 +193,16 @@ export const AIChatPage: React.FC = () => {
   const sendingInstagramMessages = useRef(new Set<string>());
 
   const persistActiveId = (id: string | null) => {
+    activeConvIdRef.current = id;
     setActiveConversationId(id);
     try {
-      if (id) sessionStorage.setItem('karen_active_conversation_id', id);
-      else sessionStorage.removeItem('karen_active_conversation_id');
+      if (id) {
+        localStorage.setItem('karen_active_conversation_id', id);
+        sessionStorage.setItem('karen_active_conversation_id', id);
+      } else {
+        localStorage.removeItem('karen_active_conversation_id');
+        sessionStorage.removeItem('karen_active_conversation_id');
+      }
     } catch {
       // Ignore storage errors
     }
@@ -198,7 +210,7 @@ export const AIChatPage: React.FC = () => {
 
   const saveTurnToLibrary = async (userText: string, assistantText: string, providerName = 'Karen AI') => {
     try {
-      let cid = activeConversationId;
+      let cid = activeConvIdRef.current;
       if (!cid) {
         const created = await api.post<{ ok: boolean; data: SavedConversation }>('/ai/conversations', {
           title: userText.trim().slice(0, 60) || 'New Chat',
@@ -277,13 +289,19 @@ export const AIChatPage: React.FC = () => {
       if (restoreActive) {
         const savedId = (() => {
           try {
-            return sessionStorage.getItem('karen_active_conversation_id');
+            return (
+              localStorage.getItem('karen_active_conversation_id') ||
+              sessionStorage.getItem('karen_active_conversation_id')
+            );
           } catch {
             return null;
           }
         })();
         if (savedId && list.some((c) => c.id === savedId)) {
           await handleSelectConversation(savedId);
+        } else if (list.length > 0) {
+          // Auto-resume latest saved chat so we never spawn a new chat on every reload/menu switch
+          await handleSelectConversation(list[0].id);
         }
       }
     } catch (err: any) {
@@ -297,9 +315,29 @@ export const AIChatPage: React.FC = () => {
     void loadConversations(true);
   }, []);
 
-  const handleNewChat = () => {
-    persistActiveId(null);
+  const handleNewChat = async () => {
     setMessages([initialGreeting]);
+    try {
+      const res = await api.post<{ ok: boolean; data: SavedConversation }>('/ai/conversations', {
+        title: `New Chat (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+      });
+      const created = res.data?.data;
+      if (created?.id) {
+        persistActiveId(created.id);
+        setConversations((prev) => {
+          const next = [created, ...prev.filter((c) => c.id !== created.id)];
+          const store = readLocalLibrary();
+          store.conversations = next;
+          store.messages[created.id] = [initialGreeting];
+          writeLocalLibrary(store);
+          return next;
+        });
+        return;
+      }
+    } catch {
+      // Fallback to clearing active id so first message creates one
+    }
+    persistActiveId(null);
   };
 
   const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
@@ -631,7 +669,7 @@ export const AIChatPage: React.FC = () => {
         history: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
         provider,
         model: model || undefined,
-        conversationId: activeConversationId || undefined,
+        conversationId: activeConvIdRef.current || undefined,
       });
 
       const payload = axiosRes.data;

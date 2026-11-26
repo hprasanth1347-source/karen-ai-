@@ -86,12 +86,7 @@ router.post('/classroom/sync', async (req, res) => {
 
 router.get('/classroom/overview', async (req, res) => {
   await hydrateGoogleTokensFromRequest(req);
-  let overview = await getClassroomOverview();
-  if (overview.connected && !overview.lastSyncedAt) {
-    await syncClassroomData();
-    overview = await getClassroomOverview();
-  }
-  const cache = await getClassroomCache();
+  const [overview, cache] = await Promise.all([getClassroomOverview(), getClassroomCache()]);
   return success(res, {
     ...overview,
     courses: cache.courses,
@@ -99,6 +94,36 @@ router.get('/classroom/overview', async (req, res) => {
       .filter((a) => a.category !== 'submitted' && a.category !== 'graded')
       .slice(0, 6),
     upcomingExams: cache.exams.slice(0, 6),
+  });
+});
+
+router.get('/classroom/bundle', async (req, res) => {
+  await hydrateGoogleTokensFromRequest(req);
+  const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+  const sortBy =
+    typeof req.query.sortBy === 'string' &&
+    ['deadline', 'subject', 'priority', 'status'].includes(req.query.sortBy)
+      ? (req.query.sortBy as 'deadline' | 'subject' | 'priority' | 'status')
+      : 'deadline';
+  const [overview, cache, assignments, grades] = await Promise.all([
+    getClassroomOverview(),
+    getClassroomCache(),
+    listClassroomAssignments({ category, sortBy }),
+    getGradesOverview(),
+  ]);
+  return success(res, {
+    overview: {
+      ...overview,
+      courses: cache.courses,
+      upcomingDeadlines: cache.assignments
+        .filter((a) => a.category !== 'submitted' && a.category !== 'graded')
+        .slice(0, 6),
+      upcomingExams: cache.exams.slice(0, 6),
+    },
+    assignments,
+    announcements: cache.announcements,
+    grades,
+    exams: cache.exams,
   });
 });
 

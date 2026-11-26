@@ -331,11 +331,11 @@ async function classroomGet<T>(
 ): Promise<T> {
   const res = await fetch(`${CLASSROOM_BASE}${path}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(6000),
   });
 
-  if (res.status === 429 && attempt < 2) {
-    await new Promise((r) => setTimeout(r, (attempt + 1) * 1500));
+  if (res.status === 429 && attempt < 1) {
+    await new Promise((r) => setTimeout(r, 800));
     return classroomGet<T>(path, accessToken, attempt + 1);
   }
 

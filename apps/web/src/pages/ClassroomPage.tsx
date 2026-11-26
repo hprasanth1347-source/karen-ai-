@@ -138,14 +138,34 @@ interface GradeCourseSummary {
   }>;
 }
 
+const CLASSROOM_LOCAL_KEY = 'karen_classroom_bundle_v1';
+
+interface ClassroomBundle {
+  overview: OverviewPayload;
+  assignments: ClassroomAssignment[];
+  announcements: ClassroomAnnouncement[];
+  grades: GradeCourseSummary[];
+  exams: ClassroomExam[];
+}
+
+function readClassroomLocal(): ClassroomBundle | null {
+  try {
+    const raw = localStorage.getItem(CLASSROOM_LOCAL_KEY);
+    return raw ? (JSON.parse(raw) as ClassroomBundle) : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function ClassroomPage() {
+  const initialLocal = readClassroomLocal();
   const [tab, setTab] = useState<TabKey>('overview');
-  const [overview, setOverview] = useState<OverviewPayload | null>(null);
-  const [assignments, setAssignments] = useState<ClassroomAssignment[]>([]);
-  const [announcements, setAnnouncements] = useState<ClassroomAnnouncement[]>([]);
-  const [grades, setGrades] = useState<GradeCourseSummary[]>([]);
-  const [exams, setExams] = useState<ClassroomExam[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [overview, setOverview] = useState<OverviewPayload | null>(initialLocal?.overview ?? null);
+  const [assignments, setAssignments] = useState<ClassroomAssignment[]>(initialLocal?.assignments ?? []);
+  const [announcements, setAnnouncements] = useState<ClassroomAnnouncement[]>(initialLocal?.announcements ?? []);
+  const [grades, setGrades] = useState<GradeCourseSummary[]>(initialLocal?.grades ?? []);
+  const [exams, setExams] = useState<ClassroomExam[]>(initialLocal?.exams ?? []);
+  const [loading, setLoading] = useState(!initialLocal);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -176,18 +196,20 @@ export default function ClassroomPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [ovRes, asRes, anRes, grRes, exRes] = await Promise.all([
-        api.get<{ data: OverviewPayload }>('/classroom/overview'),
-        api.get<{ data: ClassroomAssignment[] }>(`/classroom/assignments?category=${categoryFilter}&sortBy=${sortBy}`),
-        api.get<{ data: ClassroomAnnouncement[] }>('/classroom/announcements'),
-        api.get<{ data: GradeCourseSummary[] }>('/classroom/grades'),
-        api.get<{ data: ClassroomExam[] }>('/classroom/exams'),
-      ]);
-      setOverview(ovRes.data.data);
-      setAssignments(asRes.data.data || []);
-      setAnnouncements(anRes.data.data || []);
-      setGrades(grRes.data.data || []);
-      setExams(exRes.data.data || []);
+      const res = await api.get<{ data: ClassroomBundle }>(
+        `/classroom/bundle?category=${categoryFilter}&sortBy=${sortBy}`
+      );
+      const bundle = res.data.data;
+      setOverview(bundle.overview);
+      setAssignments(bundle.assignments || []);
+      setAnnouncements(bundle.announcements || []);
+      setGrades(bundle.grades || []);
+      setExams(bundle.exams || []);
+      try {
+        localStorage.setItem(CLASSROOM_LOCAL_KEY, JSON.stringify(bundle));
+      } catch {
+        // Ignore storage quota errors
+      }
       setError(null);
     } catch (err: any) {
       setError(err?.response?.data?.error || 'Could not load Google Classroom data.');
