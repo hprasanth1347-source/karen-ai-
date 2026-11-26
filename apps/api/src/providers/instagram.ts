@@ -39,12 +39,65 @@ export interface InstagramMediaItem {
   comments_count?: number;
 }
 
+export interface InstagramAttachmentItem {
+  id?: string;
+  type: 'image' | 'video' | 'reel' | 'audio' | 'share' | 'file';
+  url: string;
+  previewUrl?: string;
+  mimeType?: string;
+  title?: string;
+}
+
 export interface InstagramMessage {
   id: string;
   created_time: string;
   from: { id: string; username: string };
   to?: { data: Array<{ id: string; username: string }> };
   message: string;
+  attachments?: InstagramAttachmentItem[];
+}
+
+export function parseMessageAttachments(rawMsg: any): InstagramAttachmentItem[] {
+  const attachments: InstagramAttachmentItem[] = [];
+  const rawAtts = rawMsg.attachments?.data || rawMsg.attachments || [];
+  if (Array.isArray(rawAtts)) {
+    for (const att of rawAtts) {
+      const type = (att.type || (att.image_data ? 'image' : att.video_data ? 'video' : 'file')).toLowerCase();
+      const url =
+        att.image_data?.url ||
+        att.image_data?.preview_url ||
+        att.video_data?.url ||
+        att.file_url ||
+        att.payload?.url ||
+        '';
+      const previewUrl = att.image_data?.preview_url || att.image_data?.url || att.video_data?.preview_url || url;
+      if (url) {
+        attachments.push({
+          id: att.id,
+          type: type as any,
+          url,
+          previewUrl,
+          mimeType: att.mime_type,
+          title: att.name || att.payload?.title,
+        });
+      }
+    }
+  }
+  const rawShares = rawMsg.shares?.data || rawMsg.shares || [];
+  if (Array.isArray(rawShares)) {
+    for (const s of rawShares) {
+      if (s.link) {
+        attachments.push({
+          id: s.id,
+          type: 'share',
+          url: s.link,
+          previewUrl: s.link,
+          title: s.name || 'Shared Post / Reel',
+        });
+      }
+    }
+  }
+  return attachments;
 }
 
 export interface InstagramThread {
@@ -146,8 +199,8 @@ export async function getInstagramConversations(): Promise<InstagramThread[]> {
   }
 
   try {
-    // Single-call nested field expansion: 1 request instead of N+1 requests
-    const url = `${META_BASE_URL}/${accountId}/conversations?platform=instagram&fields=id,updated_time,participants,messages.limit(10){id,created_time,from,to,message}&limit=5&access_token=${token}`;
+    // Single-call nested field expansion with attachments & shares
+    const url = `${META_BASE_URL}/${accountId}/conversations?platform=instagram&fields=id,updated_time,participants,messages.limit(20){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url,type},shares}&limit=10&access_token=${token}`;
     const res = await metaFetch(url);
     if (!res.ok) {
       const errorBody = (await res.json().catch(() => ({}))) as {
@@ -162,7 +215,15 @@ export async function getInstagramConversations(): Promise<InstagramThread[]> {
     const rawThreads = Array.isArray(json.data) ? json.data : [];
 
     const threads: InstagramThread[] = rawThreads.map((t: any): InstagramThread => {
-      const msgs: InstagramMessage[] = t.messages?.data || [];
+      const rawMsgs = t.messages?.data || [];
+      const msgs: InstagramMessage[] = rawMsgs.map((m: any) => ({
+        id: m.id,
+        created_time: m.created_time,
+        from: m.from,
+        to: m.to,
+        message: m.message || (m.attachments ? '[Media Attachment]' : ''),
+        attachments: parseMessageAttachments(m),
+      }));
       const participants: Array<{ id: string; username: string }> = t.participants?.data || [];
       const lastMsg = msgs[0];
 
@@ -182,7 +243,7 @@ export async function getInstagramConversations(): Promise<InstagramThread[]> {
       return {
         id: t.id,
         updated_time: t.updated_time,
-        snippet: lastMsg?.message || 'New message',
+        snippet: lastMsg?.message || (lastMsg?.attachments?.length ? '📷 Photo / Media' : 'New message'),
         participant: otherUser,
         participants,
         messages: msgs,
@@ -204,11 +265,19 @@ export async function getThreadDetails(threadId: string): Promise<InstagramMessa
 
   try {
     const res = await metaFetch(
-      `${META_BASE_URL}/${threadId}?fields=messages{id,created_time,from,to,message}&access_token=${token}`
+      `${META_BASE_URL}/${threadId}?fields=messages.limit(30){id,created_time,from,to,message,attachments{id,mime_type,image_data,video_data,file_url,type},shares}&access_token=${token}`
     );
     if (!res.ok) return [];
     const json = await res.json();
-    return json.messages?.data || [];
+    const rawList = json.messages?.data || [];
+    return rawList.map((m: any) => ({
+      id: m.id,
+      created_time: m.created_time,
+      from: m.from,
+      to: m.to,
+      message: m.message || (m.attachments ? '[Media Attachment]' : ''),
+      attachments: parseMessageAttachments(m),
+    }));
   } catch (err) {
     logger.error('Error fetching thread details:', err);
     return [];

@@ -7,7 +7,7 @@ import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { getInstagramProfile, getInstagramMedia, getInstagramConversations, getThreadDetails, sendInstagramMessage, draftInstagramReply, executeInstagramVoiceCommand, } from '../providers/instagram.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
-import { getActiveStories, getAllReels, getFollowerMonitorSummary, getInstagramConnectionHealth, getInstagramNotesActivity, handleInstagramCommentEvent, handleInstagramMentionEvent, handleInstagramNoteActivityEvent, } from '../services/instagramHub.service.js';
+import { getActiveStories, getAllReels, getFollowerMonitorSummary, getFollowersAndFollowing, getInstagramConnectionHealth, getInstagramNotesActivity, handleInstagramCommentEvent, handleInstagramMentionEvent, handleInstagramNoteActivityEvent, } from '../services/instagramHub.service.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { clearInstagramTokensFromDb, loadInstagramTokensWithStatus, loadUserSetting, saveInstagramTokensToDb, saveUserSetting, } from '../services/persistence.service.js';
 const router = Router();
@@ -373,6 +373,10 @@ router.get('/stories', async (req, res) => {
 router.get('/monitor', async (req, res) => {
     const monitor = await getFollowerMonitorSummary(req.user?.id);
     return success(res, monitor);
+});
+router.get('/followers', async (req, res) => {
+    const data = await getFollowersAndFollowing(req.user?.id);
+    return success(res, data);
 });
 router.get('/notes-activity', async (_req, res) => {
     const notes = await getInstagramNotesActivity();

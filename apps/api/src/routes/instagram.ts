@@ -19,6 +19,7 @@ import {
   getActiveStories,
   getAllReels,
   getFollowerMonitorSummary,
+  getFollowersAndFollowing,
   getInstagramConnectionHealth,
   getInstagramNotesActivity,
   handleInstagramCommentEvent,
@@ -449,6 +450,11 @@ router.get('/stories', async (req, res) => {
 router.get('/monitor', async (req, res) => {
   const monitor = await getFollowerMonitorSummary(req.user?.id);
   return success(res, monitor);
+});
+
+router.get('/followers', async (req, res) => {
+  const data = await getFollowersAndFollowing(req.user?.id);
+  return success(res, data);
 });
 
 router.get('/notes-activity', async (_req, res) => {

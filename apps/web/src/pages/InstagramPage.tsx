@@ -26,6 +26,8 @@ import {
   ToggleRight,
   Radio,
   Check,
+  Image as ImageIcon,
+  Loader2,
 } from 'lucide-react';
 
 interface InstagramProfile {
@@ -49,18 +51,31 @@ interface InstagramMediaItem {
   comments_count?: number;
 }
 
+interface InstagramAttachmentItem {
+  id?: string;
+  type: 'image' | 'video' | 'reel' | 'audio' | 'share' | 'file';
+  url: string;
+  previewUrl?: string;
+  mimeType?: string;
+  title?: string;
+}
+
+interface InstagramMessage {
+  id: string;
+  created_time: string;
+  from: { id: string; username: string };
+  to?: { data: Array<{ id: string; username: string }> };
+  message: string;
+  attachments?: InstagramAttachmentItem[];
+}
+
 interface InstagramThread {
   id: string;
   updated_time: string;
   snippet?: string;
   participant?: { id: string; username: string };
   participants?: Array<{ id: string; username: string }>;
-  messages?: Array<{
-    id: string;
-    created_time: string;
-    from: { id: string; username: string };
-    message: string;
-  }>;
+  messages?: InstagramMessage[];
 }
 
 interface VoiceLogItem {
@@ -121,6 +136,8 @@ export const InstagramPage: React.FC = () => {
   const [media, setMedia] = useState<InstagramMediaItem[]>([]);
   const [threads, setThreads] = useState<InstagramThread[]>([]);
   const [selectedThread, setSelectedThread] = useState<InstagramThread | null>(null);
+  const [threadMessages, setThreadMessages] = useState<InstagramMessage[]>([]);
+  const [loadingThread, setLoadingThread] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // AI & Voice State
@@ -178,6 +195,31 @@ export const InstagramPage: React.FC = () => {
     else if (aiProvider === 'gemini') setAiModel('gemini-flash-lite-latest');
     else if (aiProvider === 'copilot') setAiModel('gpt-4o-mini');
   }, [aiProvider]);
+
+  // Load full messages & attachments when selectedThread changes
+  useEffect(() => {
+    if (!selectedThread?.id) {
+      setThreadMessages([]);
+      return;
+    }
+    let active = true;
+    setThreadMessages(selectedThread.messages || []);
+    setLoadingThread(true);
+    authenticatedFetch(`/api/v1/instagram/conversations/${encodeURIComponent(selectedThread.id)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (active && Array.isArray(json?.data) && json.data.length > 0) {
+          setThreadMessages(json.data);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setLoadingThread(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedThread?.id]);
 
   // Load live data from backend
   const loadData = async () => {
@@ -551,6 +593,7 @@ export const InstagramPage: React.FC = () => {
             <img
               src={profile.profile_picture_url}
               alt={profile.username}
+              referrerPolicy="no-referrer"
               className="w-16 h-16 border-3 border-ink shadow-brutal-sm object-cover"
             />
           ) : (
@@ -1155,6 +1198,7 @@ export const InstagramPage: React.FC = () => {
                     <img
                       src={item.thumbnail_url || item.media_url}
                       alt={item.caption || 'Instagram Post'}
+                      referrerPolicy="no-referrer"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
                   ) : (
@@ -1315,15 +1359,143 @@ export const InstagramPage: React.FC = () => {
                 </div>
 
                 {/* Message display */}
-                <div className="bg-cream-50 border-2 border-ink p-4 space-y-3 max-h-60 overflow-y-auto">
-                  <div className="flex items-start gap-2 max-w-md">
-                    <div className="p-1.5 bg-magenta text-white border border-ink text-[10px] font-bold">
-                      @{getThreadRecipient(selectedThread)?.username || 'unknown'}
+                <div className="bg-cream-50 border-2 border-ink p-4 space-y-3 max-h-80 overflow-y-auto">
+                  {loadingThread && threadMessages.length === 0 ? (
+                    <div className="flex items-center gap-2 text-xs font-mono text-ink-muted py-4 justify-center">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Loading conversation history & media...</span>
                     </div>
-                    <div className="p-2.5 bg-white border-2 border-ink text-xs font-mono shadow-brutal-sm">
-                      {selectedThread.snippet || 'No message content available'}
+                  ) : threadMessages.length > 0 ? (
+                    [...threadMessages].reverse().map((msg) => {
+                      const recipientUsername = getThreadRecipient(selectedThread)?.username;
+                      const isFromMe =
+                        (profile?.username && msg.from?.username === profile.username) ||
+                        (profile?.id && msg.from?.id === profile.id) ||
+                        (recipientUsername && msg.from?.username && msg.from.username !== recipientUsername);
+
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`flex items-start gap-2 max-w-md ${isFromMe ? 'ml-auto flex-row-reverse' : ''}`}
+                        >
+                          <div
+                            className={`p-1.5 border border-ink text-[10px] font-bold shrink-0 ${
+                              isFromMe ? 'bg-teal text-white' : 'bg-magenta text-white'
+                            }`}
+                          >
+                            @{msg.from?.username || (isFromMe ? profile?.username || 'me' : 'unknown')}
+                          </div>
+                          <div
+                            className={`p-2.5 border-2 border-ink text-xs font-mono shadow-brutal-sm space-y-2 ${
+                              isFromMe ? 'bg-mint/30' : 'bg-white'
+                            }`}
+                          >
+                            {msg.message && msg.message !== '[Media Attachment]' && (
+                              <p className="whitespace-pre-wrap break-words">{msg.message}</p>
+                            )}
+                            {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
+                              <div className="space-y-2">
+                                {msg.attachments.map((att, idx) => {
+                                  const imgSrc = att.previewUrl || att.url;
+                                  if (att.type === 'image' || att.mimeType?.startsWith('image/')) {
+                                    return (
+                                      <div key={att.id || idx} className="space-y-1">
+                                        <a
+                                          href={att.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="block"
+                                          title="Open full image"
+                                        >
+                                          <img
+                                            src={imgSrc}
+                                            alt={att.title || 'DM Photo'}
+                                            referrerPolicy="no-referrer"
+                                            className="max-w-[260px] max-h-60 object-cover border-2 border-ink bg-cream-100 hover:opacity-95"
+                                            onError={(e) => {
+                                              const target = e.currentTarget;
+                                              target.style.display = 'none';
+                                              const fallback = target.nextElementSibling as HTMLElement | null;
+                                              if (fallback) fallback.style.display = 'flex';
+                                            }}
+                                          />
+                                          <div className="hidden items-center gap-1.5 p-2 border border-ink bg-cream-50 text-[11px]">
+                                            <ImageIcon className="w-3.5 h-3.5 text-coral" />
+                                            <span>Image link (click to open)</span>
+                                            <ExternalLink className="w-3 h-3" />
+                                          </div>
+                                        </a>
+                                      </div>
+                                    );
+                                  }
+                                  if (att.type === 'video' || att.type === 'reel' || att.mimeType?.startsWith('video/')) {
+                                    return (
+                                      <div key={att.id || idx} className="space-y-1">
+                                        <video
+                                          src={att.url}
+                                          controls
+                                          preload="metadata"
+                                          className="max-w-[260px] max-h-60 border-2 border-ink bg-black"
+                                        />
+                                        <a
+                                          href={att.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-1 text-[10px] font-bold text-coral underline"
+                                        >
+                                          <Film className="w-3 h-3" />
+                                          Open Video / Reel
+                                        </a>
+                                      </div>
+                                    );
+                                  }
+                                  if (att.type === 'audio' || att.mimeType?.startsWith('audio/')) {
+                                    return (
+                                      <div key={att.id || idx} className="space-y-1">
+                                        <audio src={att.url} controls className="max-w-[240px] h-8" />
+                                      </div>
+                                    );
+                                  }
+                                  return (
+                                    <a
+                                      key={att.id || idx}
+                                      href={att.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="p-2 border border-ink bg-cream-50 flex items-center gap-1.5 text-[11px] font-bold text-coral hover:bg-yellow/30"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                                      <span className="truncate">{att.title || 'Open Shared Media'}</span>
+                                    </a>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {msg.created_time && (
+                              <div className="text-[9px] text-ink-muted">
+                                {new Date(msg.created_time).toLocaleString('en-IN', {
+                                  timeZone: 'Asia/Kolkata',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  day: '2-digit',
+                                  month: 'short',
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="flex items-start gap-2 max-w-md">
+                      <div className="p-1.5 bg-magenta text-white border border-ink text-[10px] font-bold">
+                        @{getThreadRecipient(selectedThread)?.username || 'unknown'}
+                      </div>
+                      <div className="p-2.5 bg-white border-2 border-ink text-xs font-mono shadow-brutal-sm">
+                        {selectedThread.snippet || 'No message content available'}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {suggestedDraft && (
                     <div className="flex items-start gap-2 max-w-md ml-auto flex-row-reverse">

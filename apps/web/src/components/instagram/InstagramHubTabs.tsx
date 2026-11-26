@@ -1,6 +1,27 @@
 import React, { useEffect, useState } from 'react';
-import { Film, Share2, Eye, Activity, ExternalLink, Copy, Check } from 'lucide-react';
+import { Film, Share2, Eye, Activity, ExternalLink, Copy, Check, Users, Search } from 'lucide-react';
 import { api } from '../../lib/api';
+
+interface InstagramFollowerUser {
+  id: string;
+  username: string;
+  name?: string;
+  profilePictureUrl?: string;
+  status: 'FOLLOWER' | 'FOLLOWING' | 'MUTUAL';
+  firstObserved: string;
+  lastActive: string;
+  detectionStatus: 'ACTIVE' | 'NEW' | 'UNCERTAIN';
+}
+
+interface FollowersMonitorData {
+  followersCount: number;
+  followingCount: number;
+  mutualCount: number;
+  followers: InstagramFollowerUser[];
+  following: InstagramFollowerUser[];
+  recentEvents: Array<{ type: string; username: string; summary: string; timestamp: string }>;
+  uncertainUnfollowsNote: string;
+}
 
 interface ReelItem {
   id: string;
@@ -39,12 +60,15 @@ interface MonitorSummary {
 }
 
 export const InstagramHubTabs: React.FC = () => {
-  const [section, setSection] = useState<'reels' | 'stories' | 'monitor'>('reels');
+  const [section, setSection] = useState<'reels' | 'stories' | 'followers' | 'monitor'>('reels');
   const [reelsTab, setReelsTab] = useState<'all' | 'my_reels' | 'tagged_reels'>('all');
   const [reelSearch, setReelSearch] = useState('');
   const [reels, setReels] = useState<ReelItem[]>([]);
   const [stories, setStories] = useState<StoryItem[]>([]);
   const [monitor, setMonitor] = useState<MonitorSummary | null>(null);
+  const [followersData, setFollowersData] = useState<FollowersMonitorData | null>(null);
+  const [followTab, setFollowTab] = useState<'followers' | 'following' | 'mutual'>('followers');
+  const [followSearch, setFollowSearch] = useState('');
   const [notesData, setNotesData] = useState<{
     events: Array<{ id: string; activityType: string; actorUsername: string; noteText?: string; replyText?: string; timestampIst: string }>;
     noteLikesSupported: boolean;
@@ -55,8 +79,17 @@ export const InstagramHubTabs: React.FC = () => {
 
   useEffect(() => {
     api
-      .get<{ data: { all: ReelItem[] } }>(`/instagram/reels?source=${reelsTab}&search=${encodeURIComponent(reelSearch)}`)
-      .then((res) => setReels(res.data?.data?.all || []))
+      .get<{ data: { all: ReelItem[]; myReels?: ReelItem[]; taggedReels?: ReelItem[] } }>(
+        `/instagram/reels?source=${reelsTab}&search=${encodeURIComponent(reelSearch)}`
+      )
+      .then((res) => {
+        const payload = res.data?.data;
+        if (reelsTab === 'tagged_reels' && Array.isArray(payload?.taggedReels) && (!payload?.all || payload.all.length === 0)) {
+          setReels(payload.taggedReels);
+        } else {
+          setReels(payload?.all || []);
+        }
+      })
       .catch(() => setReels([]));
   }, [reelsTab, reelSearch]);
 
@@ -66,6 +99,11 @@ export const InstagramHubTabs: React.FC = () => {
         .get<{ data: StoryItem[] }>('/instagram/stories')
         .then((res) => setStories(res.data?.data || []))
         .catch(() => setStories([]));
+    } else if (section === 'followers') {
+      api
+        .get<{ data: FollowersMonitorData }>('/instagram/followers')
+        .then((res) => setFollowersData(res.data?.data || null))
+        .catch(() => setFollowersData(null));
     } else if (section === 'monitor') {
       api
         .get<{ data: MonitorSummary }>('/instagram/monitor')
@@ -98,10 +136,11 @@ export const InstagramHubTabs: React.FC = () => {
     <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b-2 border-ink pb-3">
         <h2 className="text-base font-black uppercase">Instagram Hub: Reels, Stories &amp; Activity</h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {[
             { id: 'reels', label: 'Reels Hub', icon: Film },
             { id: 'stories', label: 'Stories & Analytics', icon: Eye },
+            { id: 'followers', label: 'Followers & Following', icon: Users },
             { id: 'monitor', label: 'Activity Monitor', icon: Activity },
           ].map((t) => {
             const Icon = t.icon;
@@ -109,7 +148,7 @@ export const InstagramHubTabs: React.FC = () => {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setSection(t.id as 'reels' | 'stories' | 'monitor')}
+                onClick={() => setSection(t.id as 'reels' | 'stories' | 'followers' | 'monitor')}
                 className={`px-3 py-1.5 text-xs font-bold border-2 border-ink flex items-center gap-1.5 ${
                   section === t.id ? 'bg-coral text-white' : 'bg-cream-50 hover:bg-yellow/40'
                 }`}
@@ -165,7 +204,12 @@ export const InstagramHubTabs: React.FC = () => {
                     <span>@{r.creatorUsername}</span>
                   </div>
                   {r.thumbnailUrl && (
-                    <img src={r.thumbnailUrl} alt={r.caption.slice(0, 40) || 'Reel'} className="w-full h-36 object-cover border border-ink" />
+                    <img
+                      src={r.thumbnailUrl}
+                      alt={r.caption.slice(0, 40) || 'Reel'}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-36 object-cover border border-ink"
+                    />
                   )}
                   <p className="text-xs line-clamp-2">{r.caption || 'No caption'}</p>
                   <div className="flex items-center justify-between text-[11px] font-mono text-ink-muted">
@@ -254,6 +298,142 @@ export const InstagramHubTabs: React.FC = () => {
                 </div>
               ))}
             </div>
+          )}
+        </div>
+      )}
+
+      {section === 'followers' && (
+        <div className="space-y-4 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-3 border-2 border-ink bg-cream-50">
+              <div className="text-[10px] font-mono text-ink-muted uppercase">Total Followers</div>
+              <div className="text-xl font-black">{followersData?.followersCount ?? 0}</div>
+            </div>
+            <div className="p-3 border-2 border-ink bg-cream-50">
+              <div className="text-[10px] font-mono text-ink-muted uppercase">Following</div>
+              <div className="text-xl font-black">{followersData?.followingCount ?? 0}</div>
+            </div>
+            <div className="p-3 border-2 border-ink bg-mint/30">
+              <div className="text-[10px] font-mono text-ink-muted uppercase">Mutual Connections</div>
+              <div className="text-xl font-black">{followersData?.mutualCount ?? 0}</div>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2 justify-between">
+            <div className="flex gap-1.5">
+              {[
+                { id: 'followers', label: `Followers (${followersData?.followers?.length ?? 0})` },
+                { id: 'following', label: `Following (${followersData?.following?.length ?? 0})` },
+                { id: 'mutual', label: 'Mutuals' },
+              ].map((ft) => (
+                <button
+                  key={ft.id}
+                  type="button"
+                  onClick={() => setFollowTab(ft.id as 'followers' | 'following' | 'mutual')}
+                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink ${
+                    followTab === ft.id ? 'bg-ink text-white' : 'bg-white'
+                  }`}
+                >
+                  {ft.label}
+                </button>
+              ))}
+            </div>
+            <div className="relative sm:w-64">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-ink-muted" />
+              <input
+                type="text"
+                value={followSearch}
+                onChange={(e) => setFollowSearch(e.target.value)}
+                placeholder="Search @username or name..."
+                className="w-full border-2 border-ink pl-8 pr-2.5 py-1 text-xs"
+              />
+            </div>
+          </div>
+
+          {(() => {
+            const baseList =
+              followTab === 'following'
+                ? followersData?.following || []
+                : followTab === 'mutual'
+                  ? (followersData?.followers || []).filter((u) => u.status === 'MUTUAL')
+                  : followersData?.followers || [];
+            const q = followSearch.trim().toLowerCase();
+            const filtered = q
+              ? baseList.filter(
+                  (u) =>
+                    u.username.toLowerCase().includes(q) ||
+                    (u.name || '').toLowerCase().includes(q)
+                )
+              : baseList;
+
+            if (filtered.length === 0) {
+              return (
+                <p className="text-xs font-mono text-ink-muted py-4 text-center border border-ink bg-cream-50">
+                  No matching accounts found in permitted snapshot.
+                </p>
+              );
+            }
+
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {filtered.map((u) => (
+                  <div
+                    key={u.id}
+                    className="p-3 border-2 border-ink bg-cream-50 flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <img
+                        src={
+                          u.profilePictureUrl ||
+                          `https://ui-avatars.com/api/?name=${encodeURIComponent(u.username)}&background=FF6B6B&color=fff`
+                        }
+                        alt={u.username}
+                        referrerPolicy="no-referrer"
+                        className="w-9 h-9 rounded-full object-cover border-2 border-ink shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold truncate">@{u.username}</span>
+                          <span
+                            className={`text-[9px] font-mono font-bold px-1.5 py-0.5 border border-ink ${
+                              u.status === 'MUTUAL'
+                                ? 'bg-mint text-ink'
+                                : u.detectionStatus === 'NEW'
+                                  ? 'bg-yellow text-ink'
+                                  : 'bg-white text-ink'
+                            }`}
+                          >
+                            {u.detectionStatus === 'NEW' ? 'NEW' : u.status}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-ink-muted truncate">
+                          {u.name || 'Instagram User'} • Observed{' '}
+                          {new Date(u.firstObserved).toLocaleDateString('en-IN', {
+                            day: '2-digit',
+                            month: 'short',
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                    <a
+                      href={`https://www.instagram.com/${encodeURIComponent(u.username)}/`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2 py-1 border border-ink bg-white text-[10px] font-bold flex items-center gap-1 shrink-0 hover:bg-yellow/40"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      Profile
+                    </a>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {followersData?.uncertainUnfollowsNote && (
+            <p className="text-[11px] text-ink-muted bg-cream-50 border border-ink p-2">
+              {followersData.uncertainUnfollowsNote}
+            </p>
           )}
         </div>
       )}
