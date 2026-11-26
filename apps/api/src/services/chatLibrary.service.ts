@@ -75,14 +75,19 @@ async function writeSettingsLibrary(store: SettingsLibraryStore): Promise<void> 
 
 export async function listConversations(
   userId?: string,
-  channel?: ChatConversation['channel']
+  channel?: ChatConversation['channel'],
+  options?: { q?: string; limit?: number; offset?: number }
 ): Promise<ChatConversation[]> {
+  const q = options?.q?.trim() || '';
+  const limit = Math.min(Math.max(options?.limit ?? 50, 1), 100);
+  const offset = Math.max(options?.offset ?? 0, 0);
+
   const byId = new Map<string, ChatConversation>();
   const addItems = (items: ChatConversation[]) => {
     for (const c of items) {
-      if (!channel || c.channel === channel) {
-        if (!byId.has(c.id)) byId.set(c.id, c);
-      }
+      if (channel && c.channel !== channel) continue;
+      if (q && !c.title.toLowerCase().includes(q.toLowerCase())) continue;
+      if (!byId.has(c.id)) byId.set(c.id, c);
     }
   };
 
@@ -100,9 +105,10 @@ export async function listConversations(
         .eq('user_id', uid)
         .eq('is_archived', false)
         .order('last_message_at', { ascending: false, nullsFirst: false })
-        .limit(100);
+        .range(offset, offset + limit - 1);
 
       if (channel) query = query.eq('channel', channel);
+      if (q) query = query.ilike('title', `%${q}%`);
 
       const { data, error } = await query;
       if (!error && data) {
@@ -126,9 +132,9 @@ export async function listConversations(
 
   addItems(memoryConversations);
 
-  return Array.from(byId.values()).sort(
-    (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
-  );
+  return Array.from(byId.values())
+    .sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
+    .slice(0, limit);
 }
 
 export async function createConversation(
@@ -201,24 +207,48 @@ export async function createConversation(
 
 export async function getConversationMessages(
   conversationId: string,
-  userId?: string
+  userId?: string,
+  options?: { limit?: number; before?: string }
 ): Promise<StoredChatMessage[]> {
+  const limit = Math.min(Math.max(options?.limit ?? 100, 1), 200);
+  const before = options?.before;
   const uid = await resolveUserId(userId);
   if (uid) {
     try {
-      const { data, error } = await supabaseAdmin
+      // Verify conversation ownership before returning messages
+      const { data: convRow } = await supabaseAdmin
+        .from('conversations')
+        .select('id, user_id')
+        .eq('id', conversationId)
+        .maybeSingle();
+
+      if (convRow && convRow.user_id !== uid) {
+        return [];
+      }
+
+      let query = supabaseAdmin
         .from('messages')
         .select('id, conversation_id, role, content, channel, ai_provider, ai_model, created_at')
         .eq('conversation_id', conversationId)
         .eq('user_id', uid)
-        .order('created_at', { ascending: true });
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (before) {
+        query = query.lt('created_at', before);
+      }
+
+      const { data, error } = await query;
 
       if (!error && data && data.length > 0) {
-        return data as StoredChatMessage[];
+        return (data as StoredChatMessage[]).reverse();
       }
       const backup = await readSettingsLibrary();
       if (backup.messages[conversationId]?.length) {
-        return backup.messages[conversationId];
+        const list = before
+          ? backup.messages[conversationId].filter((m) => m.created_at < before)
+          : backup.messages[conversationId];
+        return list.slice(-limit);
       }
       if (error) {
         logger.warn('Supabase messages read failed, checking user_settings backup', { error });
@@ -228,32 +258,51 @@ export async function getConversationMessages(
       const backup = await readSettingsLibrary().catch(
         (): SettingsLibraryStore => ({ conversations: [], messages: {} })
       );
-      if (backup.messages[conversationId]?.length) return backup.messages[conversationId];
+      if (backup.messages[conversationId]?.length) return backup.messages[conversationId].slice(-limit);
     }
   }
 
-  return [...(memoryMessages.get(conversationId) || [])];
+  return [...(memoryMessages.get(conversationId) || [])].slice(-limit);
 }
 
 export async function appendChatMessage(
   conversationId: string,
   role: 'user' | 'assistant' | 'system',
   content: string,
-  meta?: { channel?: string; provider?: string; model?: string },
+  meta?: { channel?: string; provider?: string; model?: string; clientMessageId?: string },
   userId?: string
 ): Promise<StoredChatMessage> {
   const now = new Date().toISOString();
   const channel = meta?.channel || 'web';
+  const clientMessageId = meta?.clientMessageId?.trim() || undefined;
   const uid = await resolveUserId(userId);
 
   if (uid) {
     try {
-      // Ensure parent conversation exists in case client holds a stale ID
+      // Deduplicate by clientMessageId if already persisted
+      if (clientMessageId) {
+        const { data: existingMsg } = await supabaseAdmin
+          .from('messages')
+          .select('id, conversation_id, role, content, channel, ai_provider, ai_model, created_at')
+          .eq('conversation_id', conversationId)
+          .eq('user_id', uid)
+          .eq('client_message_id', clientMessageId)
+          .maybeSingle();
+        if (existingMsg) {
+          return existingMsg as StoredChatMessage;
+        }
+      }
+
+      // Ensure parent conversation exists and belongs to uid
       const { data: convExists } = await supabaseAdmin
         .from('conversations')
-        .select('id')
+        .select('id, user_id')
         .eq('id', conversationId)
         .maybeSingle();
+
+      if (convExists && convExists.user_id !== uid) {
+        throw new Error('Forbidden: conversation does not belong to authenticated user');
+      }
 
       if (!convExists) {
         await supabaseAdmin.from('conversations').insert({
@@ -266,19 +315,36 @@ export async function appendChatMessage(
         });
       }
 
-      const { data, error } = await supabaseAdmin
+      const insertPayload: Record<string, unknown> = {
+        conversation_id: conversationId,
+        user_id: uid,
+        role,
+        content,
+        channel,
+        ai_provider: meta?.provider || null,
+        ai_model: meta?.model || null,
+      };
+      if (clientMessageId) {
+        insertPayload.client_message_id = clientMessageId;
+      }
+
+      let { data, error } = await supabaseAdmin
         .from('messages')
-        .insert({
-          conversation_id: conversationId,
-          user_id: uid,
-          role,
-          content,
-          channel,
-          ai_provider: meta?.provider || null,
-          ai_model: meta?.model || null,
-        })
+        .insert(insertPayload)
         .select('id, conversation_id, role, content, channel, ai_provider, ai_model, created_at')
         .single();
+
+      // If client_message_id column isn't migrated yet, retry without it
+      if (error && clientMessageId && /client_message_id/i.test(error.message || '')) {
+        delete insertPayload.client_message_id;
+        const retry = await supabaseAdmin
+          .from('messages')
+          .insert(insertPayload)
+          .select('id, conversation_id, role, content, channel, ai_provider, ai_model, created_at')
+          .single();
+        data = retry.data;
+        error = retry.error;
+      }
 
       if (!error && data) {
         const { count } = await supabaseAdmin
@@ -293,7 +359,8 @@ export async function appendChatMessage(
             message_count: count ?? 1,
             updated_at: now,
           })
-          .eq('id', conversationId);
+          .eq('id', conversationId)
+          .eq('user_id', uid);
 
         return data as StoredChatMessage;
       }

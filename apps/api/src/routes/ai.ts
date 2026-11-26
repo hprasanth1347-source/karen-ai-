@@ -45,6 +45,7 @@ const chatSchema = z.object({
   provider: providerSchema.optional(),
   model: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._:/-]+$/).optional(),
   conversationId: z.string().uuid().optional(),
+  clientMessageId: z.string().min(1).max(120).optional(),
   saveToLibrary: z.boolean().optional(),
 });
 
@@ -101,12 +102,24 @@ router.post('/ai/chat', requireAuth, aiLimit, validate(chatSchema), async (req, 
         const created = await createConversation(req.body.message.slice(0, 60), 'web', req.user?.id);
         conversationId = created.id;
       }
-      await appendChatMessage(conversationId, 'user', req.body.message, { channel: 'web' }, req.user?.id);
+      const clientMsgId = typeof req.body.clientMessageId === 'string' ? req.body.clientMessageId : undefined;
+      await appendChatMessage(
+        conversationId,
+        'user',
+        req.body.message,
+        { channel: 'web', clientMessageId: clientMsgId },
+        req.user?.id
+      );
       await appendChatMessage(
         conversationId,
         'assistant',
         result.reply,
-        { channel: 'web', provider: result.provider, model: result.model },
+        {
+          channel: 'web',
+          provider: result.provider,
+          model: result.model,
+          clientMessageId: clientMsgId ? `${clientMsgId}-assistant` : undefined,
+        },
         req.user?.id
       );
     }
@@ -122,7 +135,10 @@ router.post('/ai/chat', requireAuth, aiLimit, validate(chatSchema), async (req, 
 // ─── Chat Library (Database-persisted conversations) ──────────────────────────
 
 router.get('/ai/conversations', requireAuth, async (req, res) => {
-  const conversations = await listConversations(req.user?.id);
+  const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  const offset = req.query.offset ? Number(req.query.offset) : undefined;
+  const conversations = await listConversations(req.user?.id, undefined, { q, limit, offset });
   return success(res, conversations);
 });
 
@@ -133,7 +149,9 @@ router.post('/ai/conversations', requireAuth, async (req, res) => {
 });
 
 router.get('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
-  const messages = await getConversationMessages(String(req.params.id), req.user?.id);
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  const before = typeof req.query.before === 'string' ? req.query.before : undefined;
+  const messages = await getConversationMessages(String(req.params.id), req.user?.id, { limit, before });
   return success(res, messages);
 });
 
@@ -144,6 +162,7 @@ router.post('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
     channel: z.string().optional(),
     provider: z.string().optional(),
     model: z.string().optional(),
+    clientMessageId: z.string().min(1).max(120).optional(),
   });
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) {
@@ -157,6 +176,7 @@ router.post('/ai/conversations/:id/messages', requireAuth, async (req, res) => {
       channel: parsed.data.channel || 'web',
       provider: parsed.data.provider,
       model: parsed.data.model,
+      clientMessageId: parsed.data.clientMessageId,
     },
     req.user?.id
   );

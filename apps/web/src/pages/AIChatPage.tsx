@@ -183,6 +183,8 @@ export const AIChatPage: React.FC = () => {
   const [libraryOpen, setLibraryOpen] = useState<boolean>(true);
   const [libraryLoading, setLibraryLoading] = useState<boolean>(false);
   const [libraryError, setLibraryError] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [saveFailure, setSaveFailure] = useState<{ userText: string; assistantText: string; providerName: string } | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [provider, setProvider] = useState<AIProvider>('groq');
@@ -191,6 +193,7 @@ export const AIChatPage: React.FC = () => {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelError, setModelError] = useState('');
   const sendingInstagramMessages = useRef(new Set<string>());
+  const sendingLockRef = useRef(false);
 
   const persistActiveId = (id: string | null) => {
     activeConvIdRef.current = id;
@@ -210,6 +213,7 @@ export const AIChatPage: React.FC = () => {
 
   const saveTurnToLibrary = async (userText: string, assistantText: string, providerName = 'Karen AI') => {
     try {
+      setSaveFailure(null);
       let cid = activeConvIdRef.current;
       if (!cid) {
         const created = await api.post<{ ok: boolean; data: SavedConversation }>('/ai/conversations', {
@@ -218,17 +222,24 @@ export const AIChatPage: React.FC = () => {
         cid = created.data?.data?.id || null;
         if (cid) persistActiveId(cid);
       }
-      if (!cid) return;
-      await api.post(`/ai/conversations/${cid}/messages`, { role: 'user', content: userText, channel: 'web' });
+      if (!cid) throw new Error('No conversation ID');
+      const clientMsgId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+      await api.post(`/ai/conversations/${cid}/messages`, {
+        role: 'user',
+        content: userText,
+        channel: 'web',
+        clientMessageId: clientMsgId,
+      });
       await api.post(`/ai/conversations/${cid}/messages`, {
         role: 'assistant',
         content: assistantText,
         channel: 'web',
         provider: providerName,
+        clientMessageId: `${clientMsgId}-assistant`,
       });
       void loadConversations(false);
     } catch {
-      // Non-blocking fallback
+      setSaveFailure({ userText, assistantText, providerName });
     }
   };
 
@@ -267,12 +278,18 @@ export const AIChatPage: React.FC = () => {
     }
   };
 
-  const loadConversations = async (restoreActive = false) => {
+  const loadConversations = async (restoreActive = false, qOverride?: string) => {
     setLibraryLoading(true);
     setLibraryError('');
     try {
-      const res = await api.get<{ ok: boolean; data: SavedConversation[] }>('/ai/conversations');
+      const qVal = (qOverride !== undefined ? qOverride : searchQuery).trim();
+      const queryUrl = qVal ? `/ai/conversations?q=${encodeURIComponent(qVal)}` : '/ai/conversations';
+      const res = await api.get<{ ok: boolean; data: SavedConversation[] }>(queryUrl);
       const serverList = Array.isArray(res.data?.data) ? res.data.data : [];
+      if (qVal) {
+        setConversations(serverList);
+        return;
+      }
       const localStore = readLocalLibrary();
       const mergedMap = new Map<string, SavedConversation>();
       for (const c of serverList) mergedMap.set(c.id, c);
@@ -477,7 +494,9 @@ export const AIChatPage: React.FC = () => {
 
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || sendingLockRef.current) return;
+    sendingLockRef.current = true;
+    const clientMessageId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -670,6 +689,7 @@ export const AIChatPage: React.FC = () => {
         provider,
         model: model || undefined,
         conversationId: activeConvIdRef.current || undefined,
+        clientMessageId,
       });
 
       const payload = axiosRes.data;
@@ -740,6 +760,7 @@ export const AIChatPage: React.FC = () => {
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
+      sendingLockRef.current = false;
       setLoading(false);
     }
   };
@@ -828,6 +849,31 @@ export const AIChatPage: React.FC = () => {
               <Plus className="w-3 h-3" /> NEW
             </button>
           </div>
+        </div>
+        <div className="p-2 border-b border-ink/15 bg-cream-50">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSearchQuery(val);
+              void loadConversations(false, val);
+            }}
+            placeholder="Search saved chats..."
+            className="w-full border-2 border-ink bg-white px-2 py-1 text-[11px] outline-none focus:border-coral"
+          />
+          {saveFailure && (
+            <div className="mt-1.5 p-1.5 border border-coral bg-coral/10 text-[10px] font-bold text-coral flex items-center justify-between gap-1">
+              <span>Message could not be saved.</span>
+              <button
+                type="button"
+                onClick={() => void saveTurnToLibrary(saveFailure.userText, saveFailure.assistantText, saveFailure.providerName)}
+                className="underline font-black"
+              >
+                Retry
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {libraryError && (
