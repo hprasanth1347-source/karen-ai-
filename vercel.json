@@ -15,7 +15,7 @@
     },
     {
       "path": "/api/v1/cron/classroom-sync",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 2 * * *"
     }
   ],
   "rewrites": [
