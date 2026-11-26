@@ -410,68 +410,77 @@ export async function syncClassroomData(): Promise<{
     const courses: ClassroomCourse[] = [];
     const assignments: ClassroomAssignment[] = [];
     const announcements: ClassroomAnnouncement[] = [];
+    let firstCourseWorkError: string | null = null;
 
-    for (const c of rawCourses) {
-      const courseId = String(c.id);
-      const courseName = String(c.name || 'Untitled Course');
+    await Promise.all(
+      rawCourses.map(async (c) => {
+        const courseId = String(c.id);
+        const courseName = String(c.name || 'Untitled Course');
+        const isArchived = c.courseState === 'ARCHIVED';
 
-      // Teachers (optional — Workspace admins may restrict roster access)
-      let teacherNames: string[] = [];
-      try {
-        const teachers = await fetchAllPages<Record<string, any>>(
-          `/courses/${encodeURIComponent(courseId)}/teachers?pageSize=10`,
-          'teachers',
-          token,
-          1
-        );
-        teacherNames = teachers
+        const [teachersRes, workRes, subsRes, annRes] = await Promise.all([
+          fetchAllPages<Record<string, any>>(
+            `/courses/${encodeURIComponent(courseId)}/teachers?pageSize=10`,
+            'teachers',
+            token,
+            1
+          ).catch(() => [] as Record<string, any>[]),
+          isArchived
+            ? Promise.resolve([] as Record<string, any>[])
+            : fetchAllPages<Record<string, any>>(
+                `/courses/${encodeURIComponent(courseId)}/courseWork?pageSize=50`,
+                'courseWork',
+                token,
+                2
+              ).catch((err) => {
+                if (!firstCourseWorkError) {
+                  firstCourseWorkError = err instanceof Error ? err.message : 'Failed to fetch assignments';
+                }
+                logger.warn('Classroom courseWork fetch error', { courseId, err });
+                return [] as Record<string, any>[];
+              }),
+          isArchived
+            ? Promise.resolve([] as Record<string, any>[])
+            : fetchAllPages<Record<string, any>>(
+                `/courses/${encodeURIComponent(courseId)}/courseWork/-/studentSubmissions?userId=me&pageSize=100`,
+                'studentSubmissions',
+                token,
+                2
+              ).catch(() => [] as Record<string, any>[]),
+          isArchived
+            ? Promise.resolve([] as Record<string, any>[])
+            : fetchAllPages<Record<string, any>>(
+                `/courses/${encodeURIComponent(courseId)}/announcements?pageSize=25`,
+                'announcements',
+                token,
+                1
+              ).catch(() => [] as Record<string, any>[]),
+        ]);
+
+        const teacherNames = teachersRes
           .map((t) => t.profile?.name?.fullName || t.profile?.emailAddress)
           .filter((n): n is string => Boolean(n));
-      } catch {
-        // Ignore if teacher roster scope is restricted by Workspace admin
-      }
 
-      courses.push({
-        id: courseId,
-        name: courseName,
-        section: c.section,
-        description: c.descriptionHeading || c.description,
-        room: c.room,
-        courseState: c.courseState || 'ACTIVE',
-        alternateLink: c.alternateLink,
-        teacherNames,
-        updateTime: c.updateTime,
-      });
+        courses.push({
+          id: courseId,
+          name: courseName,
+          section: c.section,
+          description: c.descriptionHeading || c.description,
+          room: c.room,
+          courseState: c.courseState || 'ACTIVE',
+          alternateLink: c.alternateLink,
+          teacherNames,
+          updateTime: c.updateTime,
+        });
 
-      if (c.courseState === 'ARCHIVED') continue;
-
-      // CourseWork + Student Submissions
-      try {
-        const rawWork = await fetchAllPages<Record<string, any>>(
-          `/courses/${encodeURIComponent(courseId)}/courseWork?pageSize=50`,
-          'courseWork',
-          token,
-          3
-        );
-
-        let submissionsByWorkId = new Map<string, Record<string, any>>();
-        try {
-          const allSubs = await fetchAllPages<Record<string, any>>(
-            `/courses/${encodeURIComponent(courseId)}/courseWork/-/studentSubmissions?userId=me&pageSize=100`,
-            'studentSubmissions',
-            token,
-            3
-          );
-          for (const sub of allSubs) {
-            if (sub.courseWorkId) {
-              submissionsByWorkId.set(String(sub.courseWorkId), sub);
-            }
+        const submissionsByWorkId = new Map<string, Record<string, any>>();
+        for (const sub of subsRes) {
+          if (sub.courseWorkId) {
+            submissionsByWorkId.set(String(sub.courseWorkId), sub);
           }
-        } catch {
-          // Continue without submission details if restricted
         }
 
-        for (const w of rawWork) {
+        for (const w of workRes) {
           const workId = String(w.id);
           const sub = submissionsByWorkId.get(workId);
           const subState = (sub?.state as ClassroomSubmissionState) || 'UNKNOWN';
@@ -503,19 +512,8 @@ export async function syncClassroomData(): Promise<{
             personalStatus: existingCache.personalStatuses[workId] || 'todo',
           });
         }
-      } catch (err) {
-        logger.warn('Classroom courseWork fetch error', { courseId, err });
-      }
 
-      // Announcements
-      try {
-        const rawAnnouncements = await fetchAllPages<Record<string, any>>(
-          `/courses/${encodeURIComponent(courseId)}/announcements?pageSize=25`,
-          'announcements',
-          token,
-          2
-        );
-        for (const a of rawAnnouncements) {
+        for (const a of annRes) {
           const prev = existingCache.announcements.find((old) => old.id === String(a.id));
           announcements.push({
             id: String(a.id),
@@ -530,10 +528,8 @@ export async function syncClassroomData(): Promise<{
             summary: prev?.summary,
           });
         }
-      } catch (err) {
-        logger.warn('Classroom announcements fetch error', { courseId, err });
-      }
-    }
+      })
+    );
 
     // Sort assignments nearest deadline first (nulls last)
     assignments.sort((a, b) => {
@@ -555,7 +551,7 @@ export async function syncClassroomData(): Promise<{
       exams: existingCache.exams,
       personalStatuses: existingCache.personalStatuses,
       lastSyncedAt: new Date().toISOString(),
-      lastError: null,
+      lastError: assignments.length === 0 && firstCourseWorkError ? firstCourseWorkError : null,
       accountRestrictedNote: null,
     };
 
