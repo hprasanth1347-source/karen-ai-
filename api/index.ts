@@ -44,6 +44,7 @@ let appInstance: ((req: Request, res: Response) => void) | null = null;
 async function getApp(): Promise<(req: Request, res: Response) => void> {
   if (appInstance) return appInstance;
   try {
+    // @ts-ignore -- compiled JS bundle may not emit .d.ts in all environments
     const mod = await import('../apps/api/dist/app.js');
     appInstance = (mod.default || mod) as (req: Request, res: Response) => void;
     return appInstance;
