@@ -575,10 +575,10 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
         ? '✅ WhatsApp is configured via Meta Cloud API.'
         : '❌ WhatsApp not configured. Add WHATSAPP_ACCESS_TOKEN in Vercel env vars.';
 
-    case '/instagram':
-      return config.INSTAGRAM_ACCESS_TOKEN
-        ? `✅ Instagram connected (Account: @${config.INSTAGRAM_PAGE_ID || 'owner'}).`
-        : '❌ Instagram not configured. Add INSTAGRAM_ACCESS_TOKEN in Vercel env vars.';
+    case '/instagram': {
+      const { instagramAutoReplyService } = await import('../services/instagramAutoReply.js');
+      return instagramAutoReplyService.getDmDigestSummary();
+    }
 
     case '/insta': {
       if (!config.INSTAGRAM_ACCESS_TOKEN) {

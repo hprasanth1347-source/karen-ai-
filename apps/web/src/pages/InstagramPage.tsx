@@ -184,16 +184,20 @@ export const InstagramPage: React.FC = () => {
         }
       }
 
-      sessionStorage.setItem(
-        IG_CACHE_KEY,
-        JSON.stringify({
-          profile: nextProfile,
-          vipList: nextVip,
-          autoReplyConfig: nextConfig,
-          autoReplyLogs: nextLogs,
-          loaded: true,
-        })
-      );
+      try {
+        sessionStorage.setItem(
+          IG_CACHE_KEY,
+          JSON.stringify({
+            profile: nextProfile,
+            vipList: nextVip,
+            autoReplyConfig: nextConfig,
+            autoReplyLogs: nextLogs,
+            loaded: true,
+          })
+        );
+      } catch {
+        // Ignore storage quota errors
+      }
     } catch (err: any) {
       console.warn('Fast Instagram load notice:', err?.message);
     } finally {
@@ -710,6 +714,18 @@ export const InstagramPage: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-3">
+            {/* Highlighted Last Auto-DM Sent */}
+            <div className="p-3 bg-mint/25 border-2 border-ink shadow-brutal-sm flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono">
+              <div className="min-w-0">
+                <span className="px-1.5 py-0.5 bg-ink text-white text-[10px] font-bold mr-2">LAST AUTO-DM SENT</span>
+                <span className="font-bold">@{autoReplyLogs[0].senderUsername}:</span>{' '}
+                <span className="text-ink break-words">"{autoReplyLogs[0].replyText}"</span>
+              </div>
+              <span className="text-[10px] text-ink-muted shrink-0">
+                {autoReplyLogs[0].timestamp} • {autoReplyLogs[0].status}
+              </span>
+            </div>
+
             {autoReplyLogs.map((log) => {
               const isUrgent = Boolean(log.isEmergency || log.urgentCategory);
 

@@ -206,6 +206,8 @@ class InstagramAutoReplyService {
   private hydrated = false;
   private lastScanError: string | null = null;
   private totalDmsProcessed = 0;
+  private lastTelegramDigestAt = 0;
+  private pendingDigestCount = 0;
 
   constructor() {
     if (config.INSTAGRAM_AUTO_REPLY_POLLING_ENABLED) {
@@ -227,18 +229,28 @@ class InstagramAutoReplyService {
           loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs'),
           loadUserSetting<string[]>('instagram_replied_ids'),
           loadUserSetting<number>('instagram_total_dms_count'),
+          loadUserSetting<number>('instagram_last_digest_at'),
+          loadUserSetting<number>('instagram_pending_digest_count'),
         ]).then((vals) => {
           completed = true;
           return vals;
         }),
-        new Promise<[null, null, null, null]>((resolve) => setTimeout(() => resolve([null, null, null, null]), 2000)),
+        new Promise<[null, null, null, null, null, null]>((resolve) =>
+          setTimeout(() => resolve([null, null, null, null, null, null]), 2000)
+        ),
       ]);
       if (completed) {
         this.hydrated = true;
       }
-      const [savedConfig, savedLogs, savedIds, savedCount] = result;
+      const [savedConfig, savedLogs, savedIds, savedCount, savedDigestAt, savedPendingCount] = result;
       if (typeof savedCount === 'number') {
         this.totalDmsProcessed = savedCount;
+      }
+      if (typeof savedDigestAt === 'number') {
+        this.lastTelegramDigestAt = savedDigestAt;
+      }
+      if (typeof savedPendingCount === 'number') {
+        this.pendingDigestCount = savedPendingCount;
       }
       if (savedConfig && typeof savedConfig === 'object') {
         this.config = { ...this.config, ...savedConfig };
@@ -585,6 +597,39 @@ Thanglish Style Guide (CRITICAL):
       `🤖 *Karen Auto-Reply:* "${replyText.slice(0, 200)}"\n` +
       `⚡ *Status:* ${sendRes.success ? '✅ Dispatched to Instagram' : '❌ Delivery error: ' + (sendRes.error || 'Meta API error')}`;
 
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const nowMs = Date.now();
+    const isFirstDigestWindow = this.lastTelegramDigestAt === 0;
+    if (isFirstDigestWindow) {
+      this.lastTelegramDigestAt = nowMs;
+    }
+
+    let telegramPromise: Promise<unknown> = Promise.resolve();
+    if (urgentInfo.important) {
+      // Emergency / urgent DMs always notify Telegram immediately
+      telegramPromise = sendTelegramMessage(telegramMessage).catch(() => { });
+    } else {
+      // Normal DMs: batch and notify once per hour (or when user asks)
+      this.pendingDigestCount++;
+      if (nowMs - this.lastTelegramDigestAt >= ONE_HOUR_MS) {
+        const batchCount = Math.min(this.pendingDigestCount, 8);
+        const recentBatch = this.logs.slice(0, batchCount);
+        const digestLines = recentBatch.map(
+          (l, idx) =>
+            `${idx + 1}. *@${l.senderUsername}*: "${(l.incomingText || '[Media]').slice(0, 80)}"\n   🤖 Replied: "${l.replyText.slice(0, 90)}"`
+        );
+        const hourlyMsg =
+          `📸 *Hourly Instagram DM Summary*\n` +
+          `📊 *DMs in last hour:* ${this.pendingDigestCount} (Total: ${this.totalDmsProcessed})\n\n` +
+          `${digestLines.join('\n\n')}`;
+        this.lastTelegramDigestAt = nowMs;
+        this.pendingDigestCount = 0;
+        telegramPromise = sendTelegramMessage(hourlyMsg).catch(() => { });
+      }
+      void saveUserSetting('instagram_last_digest_at', this.lastTelegramDigestAt).catch(() => { });
+      void saveUserSetting('instagram_pending_digest_count', this.pendingDigestCount).catch(() => { });
+    }
+
     if (sendRes.success) {
       logger.info(`Auto-reply sent successfully to @${senderUsername}: "${replyText}"`);
       await Promise.all([
@@ -596,7 +641,7 @@ Thanglish Style Guide (CRITICAL):
           urgentInfo.critical ? 'critical' : urgentInfo.important ? 'high' : 'normal',
           'instagram'
         ).catch(() => { }),
-        sendTelegramMessage(telegramMessage).catch(() => { }),
+        telegramPromise,
       ]);
       return { autoReplied: true, replyText };
     } else {
@@ -610,10 +655,28 @@ Thanglish Style Guide (CRITICAL):
           urgentInfo.important ? 'critical' : 'normal',
           'instagram'
         ).catch(() => { }),
-        sendTelegramMessage(telegramMessage).catch(() => { }),
+        telegramPromise,
       ]);
       return { autoReplied: false, replyText, error: sendRes.error };
     }
+  }
+
+  public async getDmDigestSummary(): Promise<string> {
+    const logs = await this.getLogs();
+    if (logs.length === 0) {
+      return `📸 *Instagram DM Summary*\n\nNo incoming DMs recorded yet. Karen 24/7 Auto-DM is ${this.config.enabled ? 'ACTIVE' : 'PAUSED'}.`;
+    }
+    const latest = logs[0];
+    const recentLines = logs.slice(0, 5).map(
+      (l, i) =>
+        `${i + 1}. *@${l.senderUsername}* (${l.timestamp}): "${(l.incomingText || '[Media]').slice(0, 70)}"\n   🤖 Auto-DM (${l.status}): "${l.replyText.slice(0, 80)}"`
+    );
+    return (
+      `📸 *Instagram DM Summary*\n` +
+      `📊 *Total DMs Processed:* ${this.totalDmsProcessed || logs.length}\n` +
+      `🕒 *Last Auto-DM Sent:* @${latest.senderUsername} — "${latest.replyText.slice(0, 100)}"\n\n` +
+      `*Recent DMs (${Math.min(logs.length, 5)}):*\n${recentLines.join('\n\n')}`
+    );
   }
 
   private rateLimitCooldownUntil: number = 0;
