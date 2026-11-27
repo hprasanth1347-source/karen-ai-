@@ -145,6 +145,19 @@ export const InstagramPage: React.FC = () => {
   const [tokenModalError, setTokenModalError] = useState<string | null>(null);
   const [activeHubSection, setActiveHubSection] = useState<HubSection>('reels');
   const [cacheBackend, setCacheBackend] = useState<{ backend: string; hits: number; misses: number } | null>(null);
+  const [liveThreads, setLiveThreads] = useState<
+    Array<{
+      id: string;
+      updated_time?: string;
+      snippet?: string;
+      participant?: { id?: string; username?: string; name?: string };
+      messages?: Array<{ id: string; message?: string; from?: { username?: string; id?: string }; created_time?: string }>;
+    }>
+  >([]);
+  const [selectedThreadId, setSelectedThreadId] = useState<string>('');
+  const [dmReplyText, setDmReplyText] = useState('');
+  const [sendingDm, setSendingDm] = useState(false);
+  const [dmError, setDmError] = useState<string | null>(null);
   const hubRef = useRef<HTMLDivElement | null>(null);
   const dmRef = useRef<HTMLDivElement | null>(null);
 
@@ -252,8 +265,54 @@ export const InstagramPage: React.FC = () => {
     }
   };
 
+  const loadLiveThreads = async (forceFresh = false) => {
+    try {
+      const res = await authenticatedFetch(
+        `/api/v1/instagram/conversations${forceFresh ? '?fresh=1' : ''}`
+      );
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(d.data)) {
+        setLiveThreads(d.data);
+        setDmError(null);
+        if (d.data.length > 0 && !selectedThreadId) {
+          setSelectedThreadId(d.data[0].id);
+        }
+      } else if (!res.ok) {
+        setDmError(d.error || 'Could not load live Instagram DMs');
+      }
+    } catch {
+      setDmError('Could not load live Instagram DMs');
+    }
+  };
+
+  const handleSendLiveDm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const activeThread = liveThreads.find((t) => t.id === selectedThreadId);
+    const recipientId = activeThread?.participant?.id;
+    if (!recipientId || !dmReplyText.trim() || sendingDm) return;
+    setSendingDm(true);
+    setSendError(null);
+    try {
+      const res = await authenticatedFetch('/api/v1/instagram/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipientId, message: dmReplyText.trim() }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || 'Failed to send DM');
+      setDmReplyText('');
+      setSendSuccess(`Sent live DM to @${activeThread?.participant?.username || recipientId}`);
+      await loadLiveThreads(true);
+    } catch (err: any) {
+      setSendError(err.message || 'Failed to send DM');
+    } finally {
+      setSendingDm(false);
+    }
+  };
+
   useEffect(() => {
     void loadData();
+    void loadLiveThreads(false);
     authenticatedFetch('/api/v1/instagram/cache-status')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
@@ -720,6 +779,85 @@ export const InstagramPage: React.FC = () => {
             <span>{loading ? 'Syncing Live DMs…' : 'Sync Live DMs'}</span>
           </button>
         </div>
+      </div>
+
+      {/* 2.5 LIVE INSTAGRAM DM INBOX & THREAD VIEWER */}
+      <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b-2 border-ink pb-2">
+          <div className="flex items-center gap-2">
+            <MessageSquare className="w-5 h-5 text-coral" />
+            <h2 className="font-black text-sm md:text-base">
+              LIVE INSTAGRAM DM INBOX ({liveThreads.length})
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadLiveThreads(true)}
+            className="btn-ghost text-xs flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh Live DMs</span>
+          </button>
+        </div>
+
+        {dmError && (
+          <div className="p-2.5 bg-yellow/30 border-2 border-ink text-xs font-mono">{dmError}</div>
+        )}
+
+        {liveThreads.length === 0 ? (
+          <div className="p-6 text-center text-xs font-mono text-ink-muted border-2 border-dashed border-ink bg-cream-50">
+            No live DM threads returned yet. Connect a Meta System-User Token with <code className="bg-cream-100 px-1">instagram_manage_messages</code> or click Refresh Live DMs.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+              {liveThreads.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setSelectedThreadId(t.id)}
+                  className={`w-full text-left p-2.5 border-2 border-ink transition-colors ${
+                    selectedThreadId === t.id ? 'bg-yellow shadow-brutal-sm' : 'bg-cream-50 hover:bg-cream-100'
+                  }`}
+                >
+                  <div className="text-xs font-black">@{t.participant?.username || 'instagram_user'}</div>
+                  <div className="text-[11px] text-ink-muted truncate mt-0.5">{t.snippet || 'Open thread'}</div>
+                </button>
+              ))}
+            </div>
+
+            <div className="md:col-span-2 border-2 border-ink bg-cream-50 p-3 flex flex-col justify-between min-h-[240px]">
+              <div className="space-y-2 max-h-60 overflow-y-auto mb-3">
+                {(liveThreads.find((t) => t.id === selectedThreadId)?.messages || []).map((m) => (
+                  <div key={m.id} className="p-2 bg-white border border-ink text-xs">
+                    <div className="flex justify-between text-[10px] font-mono text-ink-muted mb-0.5">
+                      <span className="font-bold text-ink">@{m.from?.username || 'user'}</span>
+                      <span>{m.created_time ? new Date(m.created_time).toLocaleTimeString() : ''}</span>
+                    </div>
+                    <p>{m.message || '[Media]'}</p>
+                  </div>
+                ))}
+              </div>
+              <form onSubmit={handleSendLiveDm} className="flex gap-2">
+                <input
+                  type="text"
+                  value={dmReplyText}
+                  onChange={(e) => setDmReplyText(e.target.value)}
+                  placeholder="Reply directly to this Instagram DM..."
+                  className="flex-1 p-2 bg-white border-2 border-ink text-xs font-mono outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={sendingDm || !dmReplyText.trim()}
+                  className="btn-brutal bg-magenta text-white text-xs font-bold px-3 flex items-center gap-1"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{sendingDm ? 'Sending…' : 'Send DM'}</span>
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 3. LAST INCOMING DMS & AUTO-REPLIED MESSAGES FEED */}

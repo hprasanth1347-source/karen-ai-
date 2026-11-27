@@ -689,15 +689,15 @@ export async function getAccountInsights(
   }
 
   const metricsByPeriod: Record<string, string> = {
-    day: 'impressions,reach,profile_views,website_clicks,email_contacts,follower_count',
-    week: 'impressions,reach,profile_views,website_clicks,email_contacts,follower_count',
-    days_28: 'impressions,reach,profile_views,website_clicks,email_contacts,follower_count',
+    day: 'reach,profile_views,views,accounts_engaged,total_interactions',
+    week: 'reach,profile_views,views,accounts_engaged,total_interactions',
+    days_28: 'reach,profile_views,views,accounts_engaged,total_interactions',
   };
 
   try {
     const metrics = metricsByPeriod[period] || metricsByPeriod.week;
     const res = await fetch(
-      `${META_BASE_URL}/${encodeURIComponent(accountId)}/insights?metric=${metrics}&period=${period}&access_token=${encodeURIComponent(token)}`,
+      `${META_BASE_URL}/${encodeURIComponent(accountId)}/insights?metric=${metrics}&metric_type=total_value&period=${period}&access_token=${encodeURIComponent(token)}`,
       { signal: AbortSignal.timeout(10000) }
     ).catch(() => null);
 
@@ -706,19 +706,26 @@ export async function getAccountInsights(
       return { period, error: (errJson as any).error?.message || `Insights API returned ${res?.status || 'network error'}` };
     }
 
-    const json = (await res.json()) as { data?: Array<{ name: string; values?: Array<{ value: number | Record<string, number> }> }> };
+    const json = (await res.json()) as {
+      data?: Array<{
+        name: string;
+        total_value?: { value?: number };
+        values?: Array<{ value: number | Record<string, number> }>;
+      }>;
+    };
     const getVal = (name: string): number | undefined => {
       const item = json.data?.find((m) => m.name === name);
+      if (typeof item?.total_value?.value === 'number') return item.total_value.value;
       const val = item?.values?.[0]?.value;
       return typeof val === 'number' ? val : undefined;
     };
 
     return {
-      impressions: getVal('impressions'),
+      impressions: getVal('views'),
       reach: getVal('reach'),
       profileViews: getVal('profile_views'),
-      websiteClicks: getVal('website_clicks'),
-      emailContacts: getVal('email_contacts'),
+      websiteClicks: getVal('total_interactions'),
+      emailContacts: getVal('accounts_engaged'),
       followerCount: getVal('follower_count'),
       period,
     };
