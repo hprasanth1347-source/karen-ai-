@@ -71,6 +71,7 @@ import {
   listConversations,
 } from '../services/chatLibrary.service.js';
 import { executeInstagramVoiceCommand } from './instagram.js';
+import { loadUserSetting, saveUserSetting } from '../services/persistence.service.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -125,7 +126,9 @@ interface TelegramUpdate {
 interface TelegramState {
   botUsername: string;
   lastIncoming: string;
+  lastIncomingAt: string | null;
   lastOutgoing: string;
+  lastOutgoingAt: string | null;
   totalReceived: number;
   totalSent: number;
   errors: string[];
@@ -137,7 +140,9 @@ interface TelegramState {
 export const telegramState: TelegramState = {
   botUsername: '',
   lastIncoming: '',
+  lastIncomingAt: null,
   lastOutgoing: '',
+  lastOutgoingAt: null,
   totalReceived: 0,
   totalSent: 0,
   errors: [],
@@ -145,6 +150,68 @@ export const telegramState: TelegramState = {
   webhookSet: false,
   startedAt: null,
 };
+
+interface PersistedTelegramState {
+  lastIncoming: string;
+  lastIncomingAt: string | null;
+  lastOutgoing: string;
+  lastOutgoingAt: string | null;
+  totalReceived: number;
+  totalSent: number;
+  errors: string[];
+}
+
+async function persistTelegramState(patch: Partial<PersistedTelegramState>): Promise<void> {
+  try {
+    const existing = await Promise.race([
+      loadUserSetting<PersistedTelegramState>('telegram_live_state'),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
+    ]);
+    const next: PersistedTelegramState = {
+      lastIncoming: patch.lastIncoming ?? existing?.lastIncoming ?? telegramState.lastIncoming,
+      lastIncomingAt: patch.lastIncomingAt ?? existing?.lastIncomingAt ?? telegramState.lastIncomingAt,
+      lastOutgoing: patch.lastOutgoing ?? existing?.lastOutgoing ?? telegramState.lastOutgoing,
+      lastOutgoingAt: patch.lastOutgoingAt ?? existing?.lastOutgoingAt ?? telegramState.lastOutgoingAt,
+      totalReceived: Math.max(telegramState.totalReceived, (existing?.totalReceived ?? 0) + (patch.totalReceived ?? 0)),
+      totalSent: Math.max(telegramState.totalSent, (existing?.totalSent ?? 0) + (patch.totalSent ?? 0)),
+      errors: patch.errors ?? existing?.errors ?? telegramState.errors,
+    };
+    await saveUserSetting('telegram_live_state', next);
+  } catch {
+    // Non-blocking persistence
+  }
+}
+
+export async function getPersistedTelegramState(): Promise<PersistedTelegramState> {
+  try {
+    const saved = await Promise.race([
+      loadUserSetting<PersistedTelegramState>('telegram_live_state'),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
+    ]);
+    if (saved) {
+      return {
+        lastIncoming: saved.lastIncoming || telegramState.lastIncoming,
+        lastIncomingAt: saved.lastIncomingAt || telegramState.lastIncomingAt,
+        lastOutgoing: saved.lastOutgoing || telegramState.lastOutgoing,
+        lastOutgoingAt: saved.lastOutgoingAt || telegramState.lastOutgoingAt,
+        totalReceived: Math.max(saved.totalReceived || 0, telegramState.totalReceived),
+        totalSent: Math.max(saved.totalSent || 0, telegramState.totalSent),
+        errors: Array.isArray(saved.errors) && saved.errors.length > 0 ? saved.errors : telegramState.errors,
+      };
+    }
+  } catch {
+    // Fall back to in-memory
+  }
+  return {
+    lastIncoming: telegramState.lastIncoming,
+    lastIncomingAt: telegramState.lastIncomingAt,
+    lastOutgoing: telegramState.lastOutgoing,
+    lastOutgoingAt: telegramState.lastOutgoingAt,
+    totalReceived: telegramState.totalReceived,
+    totalSent: telegramState.totalSent,
+    errors: telegramState.errors,
+  };
+}
 
 // Per-chat conversation history (up to 20 messages per chat)
 const chatHistories = new Map<number, Array<{ role: 'user' | 'assistant'; content: string }>>();
@@ -270,7 +337,13 @@ export async function sendTelegramMessage(
 
   if (ok) {
     telegramState.totalSent++;
-    telegramState.lastOutgoing = text.slice(0, 100);
+    telegramState.lastOutgoing = text.slice(0, 120);
+    telegramState.lastOutgoingAt = new Date().toISOString();
+    void persistTelegramState({
+      lastOutgoing: telegramState.lastOutgoing,
+      lastOutgoingAt: telegramState.lastOutgoingAt,
+      totalSent: 1,
+    });
   }
   return ok;
 }
@@ -582,9 +655,13 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     }
 
     case '/classroom': {
-      const ov = await getClassroomOverview();
+      let ov = await getClassroomOverview();
       if (!ov.connected) {
-        return `📚 *Google Classroom*\n\nNot connected yet.\nUse /connectclassroom or open ${config.APP_URL}/classroom to connect your Google account.`;
+        return `📚 *Google Classroom*\n\nNot connected yet.\nUse /connectgoogle or /connectclassroom to connect your Google account.`;
+      }
+      if (ov.stats.totalCourses === 0) {
+        await syncClassroomData().catch(() => { });
+        ov = await getClassroomOverview();
       }
       return [
         `📚 *Karen Google Classroom*`,
@@ -623,7 +700,11 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     case '/deadlines': {
       const cat =
         cmd === '/pending' ? 'pending' : cmd === '/overdue' ? 'overdue' : 'all';
-      const list = await listClassroomAssignments({ category: cat, sortBy: 'deadline' });
+      let list = await listClassroomAssignments({ category: cat, sortBy: 'deadline' });
+      if (list.length === 0) {
+        await syncClassroomData().catch(() => { });
+        list = await listClassroomAssignments({ category: cat, sortBy: 'deadline' });
+      }
       const filtered =
         cmd === '/deadlines'
           ? list.filter((a) => a.dueIso && a.category !== 'submitted' && a.category !== 'graded')
@@ -716,13 +797,22 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       return res.explanation;
     }
 
+    case '/connectgoogle':
     case '/connectclassroom': {
       if (!config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET) {
         return '❌ Google OAuth is not configured on the server yet.';
       }
-      const base = config.APP_URL.replace(/\/$/, '');
-      const url = buildGoogleAuthUrl(`${base}/api/v1/auth/google/callback`, 'classroom');
-      return `🔗 *Connect Google Classroom*\n\nOpen this link to authorize read-only Classroom access:\n${url}`;
+      const { getOwnerUserId } = await import('../services/persistence.service.js');
+      const ownerUserId = (await getOwnerUserId().catch(() => null)) || 'owner';
+      const redirectUri =
+        config.GOOGLE_REDIRECT_URI && !config.GOOGLE_REDIRECT_URI.includes('localhost')
+          ? config.GOOGLE_REDIRECT_URI
+          : config.NODE_ENV === 'production'
+            ? 'https://karen-ai-me.vercel.app/api/v1/auth/google/callback'
+            : `${config.APP_URL.replace(/\/$/, '')}/api/v1/auth/google/callback`;
+      const target = cmd === '/connectclassroom' ? 'classroom' : 'drive';
+      const url = buildGoogleAuthUrl(redirectUri, target, ownerUserId);
+      return `🔗 *Connect All Google Services*\n(Gmail, Drive, Calendar, Sheets, Contacts, Tasks & Classroom)\n\nOpen this link to authorize:\n${url}`;
     }
 
     case '/disconnectclassroom': {
@@ -754,7 +844,11 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
   const chatId = msg.chat.id;
 
   if (!isAuthorized(chatId)) {
-    logger.warn('Telegram: unauthorized message from chat', { chatId });
+    const errText = `Unauthorized message from chatId ${chatId} (expected TELEGRAM_OWNER_CHAT_ID=${ownerId() || 'UNSET'})`;
+    logger.warn(errText);
+    telegramState.errors.unshift(`${new Date().toISOString()}: ${errText}`);
+    if (telegramState.errors.length > 20) telegramState.errors.length = 20;
+    void persistTelegramState({ errors: telegramState.errors });
     await tgApiCall('sendMessage', {
       chat_id: chatId,
       text: '🔒 Unauthorized. This is a private assistant.',
@@ -763,6 +857,13 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
   }
 
   telegramState.totalReceived++;
+  telegramState.lastIncoming = (msg.text || msg.caption || '[media]').slice(0, 120);
+  telegramState.lastIncomingAt = new Date().toISOString();
+  void persistTelegramState({
+    lastIncoming: telegramState.lastIncoming,
+    lastIncomingAt: telegramState.lastIncomingAt,
+    totalReceived: 1,
+  });
   void sendTyping(chatId); // fire-and-forget — don't block AI on typing indicator
   await hydrateGoogleTokensFromRequest().catch(() => { });
 
@@ -994,14 +1095,11 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
 
     await Promise.all([
       reply
-        ? replyButtons && replyButtons.length > 0
-          ? tgApiCall('sendMessage', {
-            chat_id: chatId,
-            text: reply,
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: replyButtons },
-          })
-          : sendTelegramMessage(reply, chatId)
+        ? sendTelegramMessage(
+            reply,
+            chatId,
+            replyButtons && replyButtons.length > 0 ? { inlineKeyboard: replyButtons } : undefined
+          )
         : Promise.resolve(false),
       addNotification('telegram', 'Telegram Message', `"${(msg.text || '[media]').slice(0, 60)}"`, 'normal', 'telegram').catch(() => { }),
       (async () => {
@@ -1166,19 +1264,21 @@ export async function telegramWebhook(req: Request, res: Response): Promise<void
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET || config.TELEGRAM_WEBHOOK_SECRET;
   const received = req.header('x-telegram-bot-api-secret-token');
 
-  if (config.NODE_ENV === 'production' && !expected) {
-    res.sendStatus(401);
-    return;
-  }
-
   if (expected) {
-    if (!received) { res.sendStatus(401); return; }
-    const exp = Buffer.from(expected);
-    const rec = Buffer.from(received);
-    if (exp.length !== rec.length || !timingSafeEqual(exp, rec)) {
+    if (!received) {
+      logger.warn('Telegram webhook rejected: missing x-telegram-bot-api-secret-token header');
       res.sendStatus(401);
       return;
     }
+    const exp = Buffer.from(expected);
+    const rec = Buffer.from(received);
+    if (exp.length !== rec.length || !timingSafeEqual(exp, rec)) {
+      logger.warn('Telegram webhook rejected: secret token mismatch');
+      res.sendStatus(401);
+      return;
+    }
+  } else if (config.NODE_ENV === 'production') {
+    logger.warn('Telegram webhook processed without TELEGRAM_WEBHOOK_SECRET (not configured)');
   }
 
   const update: TelegramUpdate = req.body || {};
@@ -1316,6 +1416,7 @@ export async function setTelegramCommands(): Promise<void> {
       { command: 'endlove', description: 'Exit Love Mode, back to normal' },
       { command: 'normal', description: 'Switch back to normal mode' },
       { command: 'insta', description: 'Instagram: /insta send raghul hello' },
+      { command: 'connectgoogle', description: 'Connect Gmail, Drive, Calendar, Sheets & Classroom' },
       { command: 'classroom', description: 'Google Classroom overview' },
       { command: 'assignments', description: 'Show Classroom assignments' },
       { command: 'pending', description: 'Pending Classroom work' },
@@ -1324,6 +1425,30 @@ export async function setTelegramCommands(): Promise<void> {
       { command: 'examprep', description: 'Last-minute exam preparation' },
     ],
   });
+}
+
+export async function getTelegramWebhookInfo(): Promise<{
+  url: string;
+  pendingUpdateCount: number;
+  lastErrorMessage?: string;
+} | null> {
+  if (!isConfigured()) return null;
+  try {
+    const result = (await tgApiCall('getWebhookInfo', {})) as {
+      url?: string;
+      pending_update_count?: number;
+      last_error_message?: string;
+    } | null;
+    if (!result) return null;
+    telegramState.webhookSet = Boolean(result.url);
+    return {
+      url: result.url || '',
+      pendingUpdateCount: result.pending_update_count ?? 0,
+      lastErrorMessage: result.last_error_message || undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function getTelegramBotInfo(): Promise<{ username: string; name: string } | null> {

@@ -36,6 +36,9 @@ interface TelegramStatus {
   ownerChatId: string | null;
   pollingActive: boolean;
   webhookSet: boolean;
+  webhookUrl?: string | null;
+  pendingUpdateCount?: number;
+  webhookLastError?: string | null;
   lastIncoming: TelegramMessagePreview | null;
   lastOutgoing: TelegramMessagePreview | null;
   totalReceived: number;
@@ -110,7 +113,16 @@ const BOT_COMMANDS = [
   { cmd: '/reject <id>', desc: 'Cancel a pending automated send' },
   { cmd: '/whatsapp', desc: 'WhatsApp integration status' },
   { cmd: '/instagram', desc: 'Instagram activity & status' },
-  { cmd: '/drive', desc: 'Google Drive files & status' },
+  { cmd: '/connectgoogle', desc: 'Connect all Google services (OAuth link)' },
+  { cmd: '/drive', desc: 'List or download Google Drive files' },
+  { cmd: '/gmail', desc: 'List, search, or send Gmail' },
+  { cmd: '/calendar', desc: 'View or add Google Calendar events' },
+  { cmd: '/sheets', desc: 'List, read, create, or append Google Sheets' },
+  { cmd: '/contacts', desc: 'Search or add Google Contacts' },
+  { cmd: '/classroom', desc: 'Google Classroom overview' },
+  { cmd: '/assignments', desc: 'Classroom assignments & deadlines' },
+  { cmd: '/grades', desc: 'Classroom grades & submissions' },
+  { cmd: '/alerts', desc: 'Live Calendar, Tasks & Classroom alerts' },
   { cmd: '/settings', desc: 'Assistant settings & mode' },
 ];
 
@@ -155,6 +167,7 @@ export const TelegramPage: React.FC = () => {
   useEffect(() => {
     void fetchAll();
     const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       void fetchAll();
     }, 5000);
     return () => clearInterval(interval);
@@ -352,6 +365,19 @@ export const TelegramPage: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {status?.webhookSet && (
+            <div className="p-2.5 border-2 border-ink bg-cream-50 text-[11px] font-mono space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-ink-muted">WEBHOOK URL</span>
+                <span className="font-bold">Pending: {status.pendingUpdateCount ?? 0}</span>
+              </div>
+              <div className="truncate font-bold text-teal">{status.webhookUrl}</div>
+              {status.webhookLastError && (
+                <div className="text-coral font-bold">Last Error: {status.webhookLastError}</div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-4">
