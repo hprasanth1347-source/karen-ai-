@@ -15,6 +15,8 @@ import {
   executeInstagramVoiceCommand,
   lookupInstagramUserById,
   invalidateInstagramCache,
+  sanitizeMetaToken,
+  verifyMetaAccessToken,
 } from '../providers/instagram.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
 import {
@@ -171,22 +173,39 @@ router.post(
       accessToken: z.string().min(10),
       accountId: z.string().optional(),
       pageId: z.string().optional(),
-      expiresInDays: z.number().min(1).max(365).optional(),
+      expiresInDays: z.number().min(1).max(3650).optional(),
     })
   ),
   async (req, res) => {
-    const expiresAt = Date.now() + (req.body.expiresInDays ?? 60) * 24 * 60 * 60 * 1000;
+    const cleanToken = sanitizeMetaToken(req.body.accessToken);
+    if (!cleanToken) {
+      return error(res, 'Invalid Meta Access Token format. Please paste the full token (starting with EAA... or IG...).', 400);
+    }
+
+    const verification = await verifyMetaAccessToken(cleanToken);
+    if (!verification.valid) {
+      return error(res, `Meta rejected this token: ${verification.error}`, 400);
+    }
+
+    const expiresAt = Date.now() + (req.body.expiresInDays ?? 365) * 24 * 60 * 60 * 1000;
+    const resolvedAccountId = (req.body.accountId || verification.accountId || config.INSTAGRAM_ACCOUNT_ID || '').trim();
     await saveInstagramTokensToDb(
       {
-        accessToken: req.body.accessToken.trim(),
-        accountId: (req.body.accountId || config.INSTAGRAM_ACCOUNT_ID || '').trim(),
+        accessToken: cleanToken,
+        accountId: resolvedAccountId,
         pageId: (req.body.pageId || config.INSTAGRAM_PAGE_ID || '').trim(),
         expiresAt,
       },
       req.user?.id
     );
     invalidateInstagramCache();
-    return success(res, { connected: true, status: 'connected', expiresAt: new Date(expiresAt).toISOString() });
+    return success(res, {
+      connected: true,
+      status: 'connected',
+      accountId: resolvedAccountId || null,
+      username: verification.username || null,
+      expiresAt: new Date(expiresAt).toISOString(),
+    });
   }
 );
 
@@ -463,9 +482,9 @@ router.post('/auto-reply/toggle', async (_req, res) => {
   return success(res, updated);
 });
 
-router.post('/auto-reply/poll', async (_req, res) => {
+router.post('/auto-reply/poll', async (req, res) => {
   try {
-    const repliesSent = await instagramAutoReplyService.scanAndAutoReply();
+    const repliesSent = await instagramAutoReplyService.scanAndAutoReply(req.user?.id);
     const scanError = instagramAutoReplyService.getLastScanError();
     if (scanError && repliesSent === 0) {
       return error(res, scanError, 400, 'INSTAGRAM_POLL_ERROR');

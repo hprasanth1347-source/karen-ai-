@@ -326,10 +326,15 @@ export async function saveInstagramTokensToDb(
   tokens: StoredInstagramTokens,
   explicitUserId?: string
 ): Promise<void> {
+  const encrypted = encryptJson(tokens);
+  await saveUserSetting('instagram_oauth_tokens', {
+    payload: encrypted,
+    updatedAt: new Date().toISOString(),
+  }).catch(() => { });
+
   const userId = explicitUserId || (await getOwnerUserId());
   if (!userId) return;
   await ensureProfileRow(userId);
-  const encrypted = encryptJson(tokens);
   await supabaseAdmin.from('provider_connections').upsert(
     {
       user_id: userId,
@@ -349,28 +354,51 @@ export async function loadInstagramTokensWithStatus(
 ): Promise<{ tokens: StoredInstagramTokens | null; status: ConnectionStatus }> {
   try {
     const userId = explicitUserId || (await getOwnerUserId());
+    let data: { config: unknown; status: string } | null = null;
+
     if (userId) {
-      const { data } = await supabaseAdmin
+      const res = await supabaseAdmin
         .from('provider_connections')
         .select('config, status')
         .eq('user_id', userId)
         .eq('provider', 'instagram')
         .maybeSingle();
+      data = res.data;
+    }
 
-      if (data) {
-        if (data.status === 'inactive') return { tokens: null, status: 'disconnected' };
-        const payload = (data.config as { payload?: string } | null)?.payload;
-        const parsed = decryptJson<StoredInstagramTokens>(payload);
-        if (data.status === 'expired' || data.status === 'error') {
-          return { tokens: parsed, status: 'needs_reauth' };
-        }
-        if (parsed?.accessToken) {
-          return { tokens: parsed, status: 'connected' };
-        }
+    // Single-owner fallback across user_ids (e.g. webhook/poller vs authenticated request)
+    if (!data) {
+      const fallback = await supabaseAdmin
+        .from('provider_connections')
+        .select('config, status')
+        .eq('provider', 'instagram')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      data = fallback.data;
+    }
+
+    if (data) {
+      if (data.status === 'inactive') return { tokens: null, status: 'disconnected' };
+      const payload = (data.config as { payload?: string } | null)?.payload;
+      const parsed = decryptJson<StoredInstagramTokens>(payload);
+      if (data.status === 'expired' || data.status === 'error') {
+        return { tokens: parsed, status: 'needs_reauth' };
+      }
+      if (parsed?.accessToken) {
+        return { tokens: parsed, status: 'connected' };
       }
     }
   } catch (err) {
     logger.warn('loadInstagramTokensWithStatus failed', { err });
+  }
+
+  const fallbackSetting = await loadUserSetting<{ payload?: string }>('instagram_oauth_tokens').catch(() => null);
+  if (fallbackSetting?.payload) {
+    const parsedFallback = decryptJson<StoredInstagramTokens>(fallbackSetting.payload);
+    if (parsedFallback?.accessToken) {
+      return { tokens: parsedFallback, status: 'connected' };
+    }
   }
 
   if (config.INSTAGRAM_ACCESS_TOKEN) {
@@ -402,6 +430,7 @@ export async function markInstagramNeedsReauth(explicitUserId?: string): Promise
 
 export async function clearInstagramTokensFromDb(explicitUserId?: string): Promise<void> {
   try {
+    await saveUserSetting('instagram_oauth_tokens', null);
     const userId = explicitUserId || (await getOwnerUserId());
     if (!userId) return;
     await supabaseAdmin

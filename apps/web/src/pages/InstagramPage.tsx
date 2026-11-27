@@ -22,6 +22,8 @@ import {
   AlertTriangle,
   PhoneCall,
   Flame,
+  KeyRound,
+  X,
 } from 'lucide-react';
 
 interface InstagramProfile {
@@ -135,6 +137,13 @@ export const InstagramPage: React.FC = () => {
   const [sendError, setSendError] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
 
+  // Meta Token (SUAT) Modal State
+  const [showTokenModal, setShowTokenModal] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [accountIdInput, setAccountIdInput] = useState('');
+  const [savingToken, setSavingToken] = useState(false);
+  const [tokenModalError, setTokenModalError] = useState<string | null>(null);
+
   // Ultra-fast data loader: only loads profile & auto-reply data (no heavy thread loading)
   const loadData = async () => {
     try {
@@ -144,27 +153,44 @@ export const InstagramPage: React.FC = () => {
         authenticatedFetch('/api/v1/instagram/favourites'),
       ]);
 
+      let nextProfile = profile;
+      let nextConfig = autoReplyConfig;
+      let nextLogs = autoReplyLogs;
+      let nextVip = vipList;
+
       if (pRes.ok) {
         const p = (await pRes.json()).data;
-        if (p) setProfile(p);
+        if (p) {
+          nextProfile = p;
+          setProfile(p);
+        }
       }
       if (aRes.ok) {
         const aData = await aRes.json();
-        if (aData.data?.config) setAutoReplyConfig(aData.data.config);
-        if (Array.isArray(aData.data?.logs)) setAutoReplyLogs(aData.data.logs);
+        if (aData.data?.config) {
+          nextConfig = aData.data.config;
+          setAutoReplyConfig(aData.data.config);
+        }
+        if (Array.isArray(aData.data?.logs)) {
+          nextLogs = aData.data.logs;
+          setAutoReplyLogs(aData.data.logs);
+        }
       }
       if (vRes.ok) {
         const vData = await vRes.json();
-        if (Array.isArray(vData.data)) setVipList(vData.data);
+        if (Array.isArray(vData.data)) {
+          nextVip = vData.data;
+          setVipList(vData.data);
+        }
       }
 
       sessionStorage.setItem(
         IG_CACHE_KEY,
         JSON.stringify({
-          profile,
-          vipList,
-          autoReplyConfig,
-          autoReplyLogs,
+          profile: nextProfile,
+          vipList: nextVip,
+          autoReplyConfig: nextConfig,
+          autoReplyLogs: nextLogs,
           loaded: true,
         })
       );
@@ -172,6 +198,40 @@ export const InstagramPage: React.FC = () => {
       console.warn('Fast Instagram load notice:', err?.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveMetaToken = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tokenInput.trim() || savingToken) return;
+    setSavingToken(true);
+    setTokenModalError(null);
+    try {
+      const res = await authenticatedFetch('/api/v1/instagram/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: tokenInput.trim(),
+          accountId: accountIdInput.trim() || undefined,
+          expiresInDays: 365,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok || !d.ok) {
+        throw new Error(d.error || 'Failed to verify and save Meta token.');
+      }
+      setShowTokenModal(false);
+      setTokenInput('');
+      setAccountIdInput('');
+      setSendError(null);
+      setSendSuccess(
+        `Meta Token verified & connected${d.data?.username ? ` (@${d.data.username})` : ''}!`
+      );
+      void loadData();
+    } catch (err: any) {
+      setTokenModalError(err.message || 'Invalid token');
+    } finally {
+      setSavingToken(false);
     }
   };
 
@@ -367,6 +427,17 @@ export const InstagramPage: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => {
+              setTokenModalError(null);
+              setShowTokenModal(true);
+            }}
+            className="btn-ghost text-xs flex items-center gap-1.5"
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>Meta Token</span>
+          </button>
+          <button
+            type="button"
             onClick={() => void loadData()}
             className="btn-ghost text-xs flex items-center gap-1.5"
             disabled={loading}
@@ -399,14 +470,28 @@ export const InstagramPage: React.FC = () => {
         </div>
       )}
       {sendError && (
-        <div className="p-3 bg-red-100 text-red-900 border-3 border-ink shadow-brutal text-xs font-bold flex items-center justify-between">
+        <div className="p-3 bg-red-100 text-red-900 border-3 border-ink shadow-brutal text-xs font-bold flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-red-700 shrink-0" />
             <span>{sendError}</span>
           </div>
-          <button onClick={() => setSendError(null)} className="text-xs font-mono underline">
-            Dismiss
-          </button>
+          <div className="flex items-center gap-2">
+            {/token|oauth|connect/i.test(sendError) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setTokenModalError(null);
+                  setShowTokenModal(true);
+                }}
+                className="px-2.5 py-1 bg-ink text-white text-[11px] font-mono font-bold border border-ink hover:bg-ink/80"
+              >
+                Update Meta Token
+              </button>
+            )}
+            <button onClick={() => setSendError(null)} className="text-xs font-mono underline">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -812,6 +897,83 @@ export const InstagramPage: React.FC = () => {
 
       {/* 5. INSTAGRAM HUB (Reels Hub, Stories, Publish Content, Account Insights, Ads Manager, Followers, Activity) */}
       <InstagramHubTabs />
+
+      {/* Meta System-User Access Token Modal */}
+      {showTokenModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white border-3 border-ink shadow-brutal max-w-md w-full p-5 space-y-4">
+            <div className="flex items-center justify-between border-b-2 border-ink pb-2">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-magenta" />
+                <h3 className="font-black text-sm">UPDATE META ACCESS TOKEN (SUAT)</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTokenModal(false)}
+                className="p-1 hover:bg-cream-100 border border-ink"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-ink-muted font-mono">
+              Paste your Meta System-User Access Token (starts with <code className="bg-cream-100 px-1">EAA...</code> or <code className="bg-cream-100 px-1">IG...</code>). Karen verifies it with Meta Graph API before saving.
+            </p>
+
+            {tokenModalError && (
+              <div className="p-2.5 bg-red-100 border-2 border-ink text-red-900 text-xs font-bold">
+                {tokenModalError}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveMetaToken} className="space-y-3">
+              <div>
+                <label className="text-[11px] font-mono font-bold block mb-1">
+                  System-User Access Token *
+                </label>
+                <textarea
+                  value={tokenInput}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  rows={3}
+                  required
+                  placeholder="EAA... or IG..."
+                  className="w-full p-2 bg-cream-50 border-2 border-ink text-xs font-mono outline-none focus:border-magenta"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-mono font-bold block mb-1">
+                  Instagram Account ID (optional — auto-detected)
+                </label>
+                <input
+                  type="text"
+                  value={accountIdInput}
+                  onChange={(e) => setAccountIdInput(e.target.value)}
+                  placeholder="e.g. 178414..."
+                  className="w-full p-2 bg-cream-50 border-2 border-ink text-xs font-mono outline-none focus:border-magenta"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowTokenModal(false)}
+                  className="btn-ghost text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingToken || !tokenInput.trim()}
+                  className="btn-brutal bg-magenta text-white text-xs font-bold px-4"
+                >
+                  {savingToken ? 'Verifying…' : 'Verify & Save Token'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

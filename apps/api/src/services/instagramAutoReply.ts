@@ -277,6 +277,26 @@ class InstagramAutoReplyService {
 
   public async getLogs(): Promise<AutoReplyLog[]> {
     await this.ensureHydrated();
+    try {
+      const freshLogs = await Promise.race([
+        loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs'),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
+      if (Array.isArray(freshLogs) && freshLogs.length > 0) {
+        // Merge in-memory logs and persisted logs by id, preserving newest order
+        const seen = new Set<string>();
+        const merged: AutoReplyLog[] = [];
+        for (const item of [...this.logs, ...freshLogs]) {
+          if (item?.id && !seen.has(item.id)) {
+            seen.add(item.id);
+            merged.push(item);
+          }
+        }
+        this.logs = merged.slice(0, 30);
+      }
+    } catch {
+      // Fall back to in-memory logs
+    }
     return [...this.logs].slice(0, 30);
   }
 
@@ -601,7 +621,7 @@ Thanglish Style Guide (CRITICAL):
   /**
    * Scans latest incoming conversation threads to catch unreplied messages
    */
-  public async scanAndAutoReply(): Promise<number> {
+  public async scanAndAutoReply(userId?: string): Promise<number> {
     await this.ensureHydrated();
     if (!this.config.enabled) return 0;
     if (this.scanInProgress) return 0;
@@ -618,8 +638,8 @@ Thanglish Style Guide (CRITICAL):
     let repliesCount = 0;
     try {
       const [threads, profile] = await Promise.all([
-        getInstagramConversations({ forceFresh: true }),
-        getInstagramProfile().catch(() => null),
+        getInstagramConversations({ forceFresh: true, userId }),
+        getInstagramProfile(userId).catch(() => null),
       ]);
       const normOwnerUsername = (config.INSTAGRAM_USERNAME || profile?.username || '')
         .trim()
