@@ -264,10 +264,29 @@ export async function saveGoogleTokensToDb(
   }
 }
 
+async function loadGoogleTokensFromRedis(explicitUserId?: string): Promise<StoredGoogleTokens | null> {
+  if (!cacheService.isRedisConfigured()) return null;
+  try {
+    const uid = explicitUserId || (await getOwnerUserId().catch(() => null));
+    const redisCipher =
+      (uid ? await cacheService.get<string>(`google:oauth:tokens:${uid}`) : null) ||
+      (await cacheService.get<string>('google:oauth:tokens:owner'));
+    if (redisCipher) {
+      const parsedRedis = decryptJson<StoredGoogleTokens>(redisCipher);
+      if (parsedRedis?.accessToken) return parsedRedis;
+    }
+  } catch {
+    // Ignore Redis read error
+  }
+  return null;
+}
+
 export async function loadGoogleTokensWithStatus(
   explicitUserId?: string
 ): Promise<{ tokens: StoredGoogleTokens | null; status: ConnectionStatus }> {
   if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('example.supabase.co')) {
+    const redisTokens = await loadGoogleTokensFromRedis(explicitUserId);
+    if (redisTokens) return { tokens: redisTokens, status: 'connected' };
     if (memoryGoogleTokens?.accessToken && memoryGoogleStatus === 'connected') {
       return { tokens: memoryGoogleTokens, status: 'connected' };
     }
@@ -303,13 +322,17 @@ export async function loadGoogleTokensWithStatus(
     }
 
     if (!data || data.status === 'inactive') {
-      // Check user_settings fallback before returning disconnected
       const fallbackSetting = await loadUserSetting<{ payload?: string }>('google_oauth_tokens');
       if (fallbackSetting?.payload) {
         const parsedFallback = decryptJson<StoredGoogleTokens>(fallbackSetting.payload);
         if (parsedFallback?.accessToken) {
           return { tokens: parsedFallback, status: 'connected' };
         }
+      }
+      // Always check Upstash Redis before returning disconnected (when Supabase tables are absent/empty)
+      const redisTokens = await loadGoogleTokensFromRedis(explicitUserId);
+      if (redisTokens) {
+        return { tokens: redisTokens, status: 'connected' };
       }
       return { tokens: null, status: 'disconnected' };
     }

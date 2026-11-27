@@ -223,8 +223,29 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
         });
     }
 }
+async function loadGoogleTokensFromRedis(explicitUserId) {
+    if (!cacheService.isRedisConfigured())
+        return null;
+    try {
+        const uid = explicitUserId || (await getOwnerUserId().catch(() => null));
+        const redisCipher = (uid ? await cacheService.get(`google:oauth:tokens:${uid}`) : null) ||
+            (await cacheService.get('google:oauth:tokens:owner'));
+        if (redisCipher) {
+            const parsedRedis = decryptJson(redisCipher);
+            if (parsedRedis?.accessToken)
+                return parsedRedis;
+        }
+    }
+    catch {
+        // Ignore Redis read error
+    }
+    return null;
+}
 export async function loadGoogleTokensWithStatus(explicitUserId) {
     if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('example.supabase.co')) {
+        const redisTokens = await loadGoogleTokensFromRedis(explicitUserId);
+        if (redisTokens)
+            return { tokens: redisTokens, status: 'connected' };
         if (memoryGoogleTokens?.accessToken && memoryGoogleStatus === 'connected') {
             return { tokens: memoryGoogleTokens, status: 'connected' };
         }
@@ -257,13 +278,17 @@ export async function loadGoogleTokensWithStatus(explicitUserId) {
             }
         }
         if (!data || data.status === 'inactive') {
-            // Check user_settings fallback before returning disconnected
             const fallbackSetting = await loadUserSetting('google_oauth_tokens');
             if (fallbackSetting?.payload) {
                 const parsedFallback = decryptJson(fallbackSetting.payload);
                 if (parsedFallback?.accessToken) {
                     return { tokens: parsedFallback, status: 'connected' };
                 }
+            }
+            // Always check Upstash Redis before returning disconnected (when Supabase tables are absent/empty)
+            const redisTokens = await loadGoogleTokensFromRedis(explicitUserId);
+            if (redisTokens) {
+                return { tokens: redisTokens, status: 'connected' };
             }
             return { tokens: null, status: 'disconnected' };
         }
