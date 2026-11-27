@@ -205,6 +205,7 @@ class InstagramAutoReplyService {
   private scanInProgress = false;
   private hydrated = false;
   private lastScanError: string | null = null;
+  private totalDmsProcessed = 0;
 
   constructor() {
     if (config.INSTAGRAM_AUTO_REPLY_POLLING_ENABLED) {
@@ -225,16 +226,20 @@ class InstagramAutoReplyService {
           loadUserSetting<Partial<AutoReplyConfig>>('instagram_auto_reply_config'),
           loadUserSetting<AutoReplyLog[]>('instagram_auto_reply_logs'),
           loadUserSetting<string[]>('instagram_replied_ids'),
+          loadUserSetting<number>('instagram_total_dms_count'),
         ]).then((vals) => {
           completed = true;
           return vals;
         }),
-        new Promise<[null, null, null]>((resolve) => setTimeout(() => resolve([null, null, null]), 2000)),
+        new Promise<[null, null, null, null]>((resolve) => setTimeout(() => resolve([null, null, null, null]), 2000)),
       ]);
       if (completed) {
         this.hydrated = true;
       }
-      const [savedConfig, savedLogs, savedIds] = result;
+      const [savedConfig, savedLogs, savedIds, savedCount] = result;
+      if (typeof savedCount === 'number') {
+        this.totalDmsProcessed = savedCount;
+      }
       if (savedConfig && typeof savedConfig === 'object') {
         this.config = { ...this.config, ...savedConfig };
       }
@@ -460,14 +465,15 @@ class InstagramAutoReplyService {
           'Understand the sender’s actual need from the message/media context, answer only what can be answered safely, and ask one concise follow-up question if more context is required.',
       };
       const customTraining = this.config.customInstructions?.trim()
-        ? `\nOwner's Custom DM Training Rules (follow strictly):\n${this.config.customInstructions.trim()}\n`
+        ? `\nCRITICAL OWNER CUSTOM TRAINING RULES (Follow strictly):\n${this.config.customInstructions.trim()}\n`
         : '';
 
-      const prompt = `User @${senderUsername} sent this Instagram DM (${detectedType}) to Hari: "${effectiveText}".
+      const prompt = `${customTraining}
+User @${senderUsername} sent this Instagram DM (${detectedType}) to Hari: "${effectiveText}".
 Hari is currently away. You are Karen AI, Hari's personal female AI assistant.
 Detected intent: ${intent}.
 Goal: ${intentInstructions[intent]}${urgentInstruction}
-${customTraining}
+
 Thanglish Style Guide (CRITICAL):
 - Reply in natural, everyday Chennai/Tamil conversational Thanglish (Tamil written in Latin script mixed naturally with English).
 - Keep it warm, friendly, and under 2 sentences. Do not invent facts or share private phone numbers/details.`;
@@ -516,11 +522,13 @@ Thanglish Style Guide (CRITICAL):
       error: sendRes.error,
     };
 
+    this.totalDmsProcessed++;
     this.logs.unshift(logEntry);
     if (this.logs.length > 30) this.logs.length = 30;
     const recentIds = Array.from(this.repliedMessageIds).slice(-120);
     const persistPromise = Promise.all([
       saveUserSetting('instagram_auto_reply_logs', this.logs),
+      saveUserSetting('instagram_total_dms_count', this.totalDmsProcessed),
       ...(sendRes.success ? [saveUserSetting('instagram_replied_ids', recentIds)] : []),
     ]).catch(() => { });
 
@@ -531,44 +539,59 @@ Thanglish Style Guide (CRITICAL):
           ? '📞 PHONE NUMBER REQUEST (INSTAGRAM DM)'
           : urgentInfo.category === 'URGENT_HELP'
             ? '⚠️ URGENT HELP REQUEST (INSTAGRAM DM)'
-            : '⚡ IMPORTANT INSTAGRAM DM';
+            : sendRes.success
+              ? '📸 INSTAGRAM DM AUTO-REPLIED'
+              : '⚠️ INSTAGRAM DM AUTO-REPLY FAILED';
+
+    const shortSummary = intent === 'greeting'
+      ? 'Greeting / friendly check-in'
+      : intent === 'availability'
+        ? 'Asking about availability / schedule'
+        : intent === 'project'
+          ? 'Project / assignment inquiry'
+          : intent === 'help'
+            ? 'Help / assistance requested'
+            : intent === 'thanks'
+              ? 'Appreciation / thank you note'
+              : 'General message / inquiry';
+
+    const telegramMessage =
+      `${badge}\n\n` +
+      `👤 *From:* @${senderUsername}\n` +
+      `📊 *Total DMs Processed:* #${this.totalDmsProcessed}\n` +
+      `🕒 *Time:* ${istTime} IST\n` +
+      `💬 *Incoming DM:* "${(messageText || '[Media]').slice(0, 240)}"\n` +
+      `📝 *Summary:* ${shortSummary}\n` +
+      `🤖 *Karen Auto-Reply:* "${replyText.slice(0, 200)}"\n` +
+      `⚡ *Status:* ${sendRes.success ? '✅ Dispatched to Instagram' : '❌ Delivery error: ' + (sendRes.error || 'Meta API error')}`;
 
     if (sendRes.success) {
       logger.info(`Auto-reply sent successfully to @${senderUsername}: "${replyText}"`);
-      if (urgentInfo.important) {
-        await Promise.all([
-          persistPromise,
-          addNotification(
-            'instagram',
-            `${badge}: @${senderUsername}`,
-            `${(messageText || '[Media]').slice(0, 180)} — Replied: "${replyText.slice(0, 120)}"`,
-            urgentInfo.critical ? 'critical' : 'high',
-            'instagram'
-          ).catch(() => { }),
-          sendTelegramMessage(
-            `${badge}\n\n` +
-            `👤 From: *@${senderUsername}*\n` +
-            `🕒 Time: ${istTime} IST\n` +
-            `💬 Message: "${(messageText || '[Media]').slice(0, 260)}"\n` +
-            `🤖 Auto-Reply Sent: "${replyText.slice(0, 220)}"`
-          ).catch(() => { }),
-        ]);
-      } else {
-        await persistPromise;
-      }
+      await Promise.all([
+        persistPromise,
+        addNotification(
+          'instagram',
+          `${badge}: @${senderUsername}`,
+          `${(messageText || '[Media]').slice(0, 160)} — Replied: "${replyText.slice(0, 100)}"`,
+          urgentInfo.critical ? 'critical' : urgentInfo.important ? 'high' : 'normal',
+          'instagram'
+        ).catch(() => { }),
+        sendTelegramMessage(telegramMessage).catch(() => { }),
+      ]);
       return { autoReplied: true, replyText };
     } else {
       logger.error(`Failed to send auto-reply to @${senderUsername}:`, sendRes.error);
-      if (urgentInfo.important) {
-        await Promise.all([
-          persistPromise,
-          sendTelegramMessage(
-            `${badge} (AUTO-REPLY FAILED)\n\n👤 From: *@${senderUsername}*\n🕒 Time: ${istTime} IST\n💬 Message: "${(messageText || '[Media]').slice(0, 260)}"\n❌ Error: ${sendRes.error || 'Meta send failed'}`
-          ).catch(() => { }),
-        ]);
-      } else {
-        await persistPromise;
-      }
+      await Promise.all([
+        persistPromise,
+        addNotification(
+          'instagram',
+          `❌ Instagram Auto-Reply Failed: @${senderUsername}`,
+          `Incoming: "${(messageText || '[Media]').slice(0, 120)}" — Error: ${sendRes.error || 'Meta API error'}`,
+          urgentInfo.important ? 'critical' : 'normal',
+          'instagram'
+        ).catch(() => { }),
+        sendTelegramMessage(telegramMessage).catch(() => { }),
+      ]);
       return { autoReplied: false, replyText, error: sendRes.error };
     }
   }

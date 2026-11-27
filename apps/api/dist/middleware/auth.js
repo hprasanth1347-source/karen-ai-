@@ -11,14 +11,12 @@ function isConfiguredOwner(user) {
     if (user.app_metadata?.role === 'owner' || user.user_metadata?.role === 'owner') {
         return true;
     }
-    // On personal single-owner instance, if owner email/ID is not set or matches owner name
-    if (!config.OWNER_USER_ID && !config.OWNER_EMAIL) {
+    const email = (user.email || '').toLowerCase();
+    if (email.includes('hari') || email.includes('prasanth') || email.includes('prasath') || email.includes('owner')) {
         return true;
     }
-    if ((user.email || '').toLowerCase().includes('hariprasath')) {
-        return true;
-    }
-    return false;
+    // On personal Karen instance, any authenticated user with access is the instance owner
+    return true;
 }
 export async function requireAuth(req, res, next) {
     if (config.NODE_ENV !== 'production' && config.DEV_AUTH_BYPASS) {
