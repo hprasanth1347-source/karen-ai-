@@ -238,16 +238,19 @@ export async function loadGoogleTokensWithStatus(
       data = res.data;
     }
 
-    // Single-owner fallback: if userId didn't match (e.g. callback vs auth token userId), load latest active Google row
-    if (!data) {
+    // Single-owner fallback: if userId didn't have an active row, load latest active Google row across users
+    if (!data || data.status !== 'active') {
       const fallback = await supabaseAdmin
         .from('provider_connections')
         .select('config, status')
         .eq('provider', 'google')
+        .eq('status', 'active')
         .order('updated_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      data = fallback.data;
+      if (fallback.data) {
+        data = fallback.data;
+      }
     }
 
     if (!data || data.status === 'inactive') {

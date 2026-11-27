@@ -225,33 +225,38 @@ async function getValidAccessToken(req?: Request): Promise<string | null> {
   status = dbRes.status;
 
   // Fallback to encrypted HttpOnly cookie if DB persistence was unavailable
-  if ((!tokens || status !== 'connected') && req) {
+  if ((!tokens || (status !== 'connected' && !tokens.refreshToken)) && req) {
     const cookieTokens = readGoogleTokensFromCookie(req);
     if (cookieTokens?.accessToken) {
       tokens = cookieTokens;
       status = 'connected';
+      if (userId) {
+        void saveGoogleTokensToDb(cookieTokens, userId).catch(() => { });
+      }
     }
   }
 
-  if (!tokens || status !== 'connected') return null;
+  if (!tokens) return null;
+  if (status !== 'connected' && !tokens.refreshToken) return null;
 
-  // Refresh 5 minutes before expiry
-  if (Date.now() < tokens.expiresAt - 300_000) {
+  // Refresh 5 minutes before expiry (or whenever status was marked needs_reauth but we still have a refreshToken)
+  if (status === 'connected' && Date.now() < tokens.expiresAt - 300_000) {
     return tokens.accessToken;
   }
 
-  const existingRefresh = refreshMutexes.get(userId);
+  const refreshKey = userId || 'default-owner';
+  const existingRefresh = refreshMutexes.get(refreshKey);
   if (existingRefresh) {
     return existingRefresh;
   }
 
   const refreshPromise = performGoogleTokenRefresh(userId, tokens).finally(() => {
-    refreshMutexes.delete(userId);
+    refreshMutexes.delete(refreshKey);
   });
-  refreshMutexes.set(userId, refreshPromise);
+  refreshMutexes.set(refreshKey, refreshPromise);
   const refreshedToken = await refreshPromise;
   if (refreshedToken) return refreshedToken;
-  return tokens.expiresAt > Date.now() ? tokens.accessToken : null;
+  return status === 'connected' && tokens.expiresAt > Date.now() ? tokens.accessToken : null;
 }
 
 export { getValidAccessToken as getValidGoogleAccessToken };
@@ -267,11 +272,13 @@ export async function getGoogleAccessToken(userId?: string, req?: Request): Prom
   if (req) {
     return getValidAccessToken(req);
   }
-  const { tokens, status } = await loadGoogleTokensWithStatus(userId);
-  if (status !== 'connected' || !tokens?.accessToken) return null;
-  if (tokens.expiresAt && Date.now() >= tokens.expiresAt - 5 * 60 * 1000) {
-    const refreshed = await performGoogleTokenRefresh(userId || 'owner', tokens);
-    return refreshed || (tokens.expiresAt > Date.now() ? tokens.accessToken : null);
+  const effectiveUserId = userId || (await getOwnerUserId()) || '';
+  const { tokens, status } = await loadGoogleTokensWithStatus(effectiveUserId || undefined);
+  if (!tokens?.accessToken) return null;
+  if (status !== 'connected' && !tokens.refreshToken) return null;
+  if (status !== 'connected' || (tokens.expiresAt && Date.now() >= tokens.expiresAt - 5 * 60 * 1000)) {
+    const refreshed = await performGoogleTokenRefresh(effectiveUserId, tokens);
+    return refreshed || (status === 'connected' && tokens.expiresAt > Date.now() ? tokens.accessToken : null);
   }
   return tokens.accessToken;
 }
