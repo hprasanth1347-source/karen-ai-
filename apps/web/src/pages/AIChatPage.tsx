@@ -242,6 +242,34 @@ export const AIChatPage: React.FC = () => {
         provider: providerName,
         clientMessageId: `${clientMsgId}-assistant`,
       });
+      if (cid) {
+        const store = readLocalLibrary();
+        store.messages[cid] = (store.messages[cid] || []).concat([
+          {
+            id: `u-${Date.now()}`,
+            role: 'user',
+            content: userText,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+          {
+            id: `a-${Date.now() + 1}`,
+            role: 'assistant',
+            content: assistantText,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            provider: providerName,
+          },
+        ]);
+        if (!store.conversations.some((c) => c.id === cid)) {
+          store.conversations.unshift({
+            id: cid,
+            title: userText.trim().slice(0, 60) || 'New Chat',
+            channel: 'web',
+            message_count: store.messages[cid].length,
+            last_message_at: new Date().toISOString(),
+          });
+        }
+        writeLocalLibrary(store);
+      }
       void loadConversations(false);
     } catch {
       setSaveFailure({ userText, assistantText, providerName });
@@ -271,7 +299,8 @@ export const AIChatPage: React.FC = () => {
         store.messages[id] = mapped;
         writeLocalLibrary(store);
       } else {
-        setMessages([initialGreeting]);
+        const localMsgs = readLocalLibrary().messages[id];
+        setMessages(localMsgs?.length ? localMsgs : [initialGreeting]);
       }
     } catch {
       const localMsgs = readLocalLibrary().messages[id];

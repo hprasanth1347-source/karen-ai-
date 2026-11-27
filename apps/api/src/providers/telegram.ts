@@ -1466,6 +1466,11 @@ export async function telegramWebhook(req: Request, res: Response): Promise<void
   if (!res.headersSent) {
     res.sendStatus(200);
   }
+
+  // Opportunistic hourly Instagram DM summary (strictly 1h Redis-locked, works on Vercel Hobby)
+  void import('../routes/cron.js')
+    .then(({ sendHourlyInstagramDmSummary }) => sendHourlyInstagramDmSummary(false))
+    .catch(() => {});
 }
 
 // ─── Polling (development / fallback) ────────────────────────────────────────
