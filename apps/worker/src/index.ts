@@ -12,6 +12,9 @@ import { webhookProcessorJob } from './jobs/webhookProcessor.js';
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 const WORKER_VERSION = '0.1.0';
+let isShuttingDown = false;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+const activeJobs = new Set<Promise<void>>();
 
 async function bootstrap(): Promise<void> {
   console.log(`🤖 Karen Ultra Worker v${WORKER_VERSION} starting…`);
@@ -27,14 +30,29 @@ async function bootstrap(): Promise<void> {
     webhookProcessorJob,
   ];
 
+  const jobMap = new Map(jobs.map((j) => [j.name, j]));
   for (const job of jobs) {
     console.log(`  ✓ Registered job: ${job.name}`);
   }
 
-  console.log('✅ Worker ready. Waiting for jobs…');
+  console.log(`✅ Worker ready (${jobMap.size} handlers). Polling interval active.`);
 
-  // TODO: Connect to job queue (BullMQ / pg-boss / Supabase Realtime)
-  // await setupBullMQ();
+  const tick = async () => {
+    if (isShuttingDown) return;
+    const p = reminderSchedulerJob
+      .process({ look_ahead_minutes: 5 })
+      .then(() => {})
+      .catch((err: unknown) => {
+        console.error('Worker tick error:', err);
+      });
+    activeJobs.add(p);
+    void p.finally(() => activeJobs.delete(p));
+  };
+
+  pollTimer = setInterval(() => {
+    void tick();
+  }, 60_000);
+  pollTimer.unref?.();
 }
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
@@ -42,7 +60,14 @@ async function bootstrap(): Promise<void> {
 function setupGracefulShutdown(): void {
   const shutdown = async (signal: string) => {
     console.log(`\n⚡ Received ${signal}. Shutting down worker gracefully…`);
-    // TODO: Drain job queues before exiting
+    isShuttingDown = true;
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    if (activeJobs.size > 0) {
+      await Promise.allSettled(Array.from(activeJobs));
+    }
     process.exit(0);
   };
 

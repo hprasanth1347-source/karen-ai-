@@ -5,6 +5,7 @@ import { loadInstagramTokensWithStatus } from './persistence.service.js';
 import { sendTelegramMessage } from '../providers/telegram.js';
 import { generateAIReply } from './ai.service.js';
 import { wrapUntrustedContent } from './actionPolicy.service.js';
+import { cacheService } from './cache.service.js';
 
 const META_BASE_URL = `https://graph.facebook.com/${config.META_GRAPH_API_VERSION || 'v21.0'}`;
 
@@ -372,33 +373,38 @@ export async function getActiveStories(userId?: string): Promise<StoryHubItem[]>
   const { token, accountId } = await getIgCredentials(userId);
   if (!token || !accountId) return [];
 
-  const res = await fetch(
-    `${META_BASE_URL}/${encodeURIComponent(accountId)}/stories?fields=id,media_type,media_url,thumbnail_url,permalink,timestamp&access_token=${encodeURIComponent(token)}`,
-    { signal: AbortSignal.timeout(8000) }
-  ).catch(() => null);
+  const cacheKey = cacheService.buildKey('instagram', userId || 'owner', 'stories', { accountId });
+  return cacheService.getOrSet(
+    cacheKey,
+    async () => {
+      const res = await fetch(
+        `${META_BASE_URL}/${encodeURIComponent(accountId)}/stories?fields=id,media_type,media_url,thumbnail_url,permalink,timestamp&access_token=${encodeURIComponent(token)}`,
+        { signal: AbortSignal.timeout(8000) }
+      ).catch(() => null);
 
-  if (!res?.ok) return [];
-  const json = (await res.json().catch(() => ({}))) as { data?: any[] };
-  const raw = json.data || [];
+      if (!res?.ok) return [];
+      const json = (await res.json().catch(() => ({}))) as { data?: any[] };
+      const raw = json.data || [];
 
-  const stories = await Promise.all(
-    raw.map(async (s): Promise<StoryHubItem> => {
-      const insights = await getStoryInsights(s.id, token).catch(() => undefined);
-      const publishedMs = s.timestamp ? new Date(s.timestamp).getTime() : Date.now();
-      return {
-        id: s.id,
-        mediaType: s.media_type || 'IMAGE',
-        mediaUrl: s.media_url,
-        thumbnailUrl: s.thumbnail_url || s.media_url,
-        permalink: s.permalink,
-        publishedAt: s.timestamp,
-        expiresAt: new Date(publishedMs + 24 * 60 * 60 * 1000).toISOString(),
-        insights,
-      };
-    })
+      return Promise.all(
+        raw.map(async (s): Promise<StoryHubItem> => {
+          const insights = await getStoryInsights(s.id, token).catch(() => undefined);
+          const publishedMs = s.timestamp ? new Date(s.timestamp).getTime() : Date.now();
+          return {
+            id: s.id,
+            mediaType: s.media_type || 'IMAGE',
+            mediaUrl: s.media_url,
+            thumbnailUrl: s.thumbnail_url || s.media_url,
+            permalink: s.permalink,
+            publishedAt: s.timestamp,
+            expiresAt: new Date(publishedMs + 24 * 60 * 60 * 1000).toISOString(),
+            insights,
+          };
+        })
+      );
+    },
+    { ttlSeconds: 60, tags: ['instagram'] }
   );
-
-  return stories;
 }
 
 // ─── Follower & Unfollower Monitor (Permitted Data Only) ─────────────────────
@@ -878,30 +884,37 @@ export async function getAdsSummary(userId?: string): Promise<{ accounts: AdAcco
   const { token } = await getIgCredentials(userId);
   if (!token) return { accounts: [], error: 'Instagram/Meta not connected' };
 
-  try {
-    const res = await fetch(
-      `${META_BASE_URL}/me/adaccounts?fields=id,name,account_status,amount_spent,currency&access_token=${encodeURIComponent(token)}`,
-      { signal: AbortSignal.timeout(6000) }
-    ).catch(() => null);
+  const cacheKey = cacheService.buildKey('instagram', userId || 'owner', 'ads');
+  return cacheService.getOrSet(
+    cacheKey,
+    async () => {
+      try {
+        const res = await fetch(
+          `${META_BASE_URL}/me/adaccounts?fields=id,name,account_status,amount_spent,currency&access_token=${encodeURIComponent(token)}`,
+          { signal: AbortSignal.timeout(6000) }
+        ).catch(() => null);
 
-    if (!res?.ok) {
-      const errJson = res ? await res.json().catch(() => ({})) : {};
-      return { accounts: [], error: (errJson as any).error?.message || 'No linked ad accounts found' };
-    }
+        if (!res?.ok) {
+          const errJson = res ? await res.json().catch(() => ({})) : {};
+          return { accounts: [], error: (errJson as any).error?.message || 'No linked ad accounts found' };
+        }
 
-    const json = (await res.json()) as { data?: any[] };
-    return {
-      accounts: (json.data || []).map((a: any) => ({
-        id: a.id,
-        name: a.name || 'Ad Account',
-        account_status: a.account_status,
-        amount_spent: a.amount_spent,
-        currency: a.currency || 'USD',
-      })),
-    };
-  } catch (err) {
-    return { accounts: [], error: err instanceof Error ? err.message : 'Failed to query ads' };
-  }
+        const json = (await res.json()) as { data?: any[] };
+        return {
+          accounts: (json.data || []).map((a: any) => ({
+            id: a.id,
+            name: a.name || 'Ad Account',
+            account_status: a.account_status,
+            amount_spent: a.amount_spent,
+            currency: a.currency || 'USD',
+          })),
+        };
+      } catch (err) {
+        return { accounts: [], error: err instanceof Error ? err.message : 'Failed to query ads' };
+      }
+    },
+    { ttlSeconds: 120, tags: ['instagram'] }
+  );
 }
 
 // ─── Instagram Notes Activity Monitor ─────────────────────────────────────────

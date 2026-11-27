@@ -51,6 +51,7 @@ import router from './routes/index.js';
 const app = express();
 // Trust the first proxy (Vercel / reverse proxy) so req.ip reflects X-Forwarded-For.
 app.set('trust proxy', 1);
+app.set('etag', 'strong');
 const helmetMiddleware = helmet({
     hsts: config.NODE_ENV === 'production' ? { maxAge: 31536000, includeSubDomains: true } : false,
     frameguard: { action: 'deny' },
