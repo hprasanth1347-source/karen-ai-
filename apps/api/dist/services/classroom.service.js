@@ -12,6 +12,7 @@ import { logAudit } from '../utils/audit.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateAIReply } from './ai.service.js';
+import { aiProviderManager } from './aiProviderManager.service.js';
 import { addNotification } from './approval.service.js';
 import { loadUserSetting, saveUserSetting } from './persistence.service.js';
 import { sendTelegramMessage } from '../providers/telegram.js';
@@ -1032,15 +1033,45 @@ Include:
 2. Structured Outline matching required sections
 3. Draft content with clear explanations
 4. Pre-submission checklist`;
-    const ai = await generateAIReply(prompt, [], 'gemini');
     const safeName = assignment.title
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '')
         .slice(0, 40) || 'assignment';
+    let draftText = '';
+    try {
+        const ai = await aiProviderManager.generateText({
+            prompt,
+            provider: 'gemini',
+            timeoutMs: 25000,
+        });
+        draftText = ai.reply;
+    }
+    catch {
+        draftText = [
+            '[AI-GENERATED STUDY DRAFT — REVIEW, UNDERSTAND & VERIFY BEFORE SUBMISSION]',
+            '',
+            `# ${assignment.title}`,
+            `Course: ${assignment.courseName}`,
+            `Max Marks: ${assignment.maxPoints ?? 'Not specified'}`,
+            '',
+            '## 1. Assignment Instructions',
+            assignment.description || 'No detailed instructions provided.',
+            '',
+            '## 2. Structured Outline',
+            '- Introduction: [INSERT YOUR INTRODUCTION / PROBLEM STATEMENT]',
+            '- Core Analysis / Solution: [INSERT YOUR MAIN WORK & STEPS]',
+            '- Conclusion / Summary: [INSERT YOUR KEY TAKEAWAYS]',
+            '',
+            '## 3. Pre-Submission Checklist',
+            '- [ ] Verify all rubric requirements and formatting',
+            '- [ ] Add your own examples, citations, or outputs',
+            '- [ ] Proofread before turning in on Google Classroom',
+        ].join('\n');
+    }
     return {
         assignment,
-        draft: ai.reply,
+        draft: draftText,
         filename: `${safeName}-draft.${format}`,
     };
 }

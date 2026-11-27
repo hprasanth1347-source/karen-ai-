@@ -36,7 +36,13 @@ function redactObject(val: unknown, depth = 0): unknown {
   return val;
 }
 
-const redactFormat = winston.format((info) => redactObject(info) as winston.Logform.TransformableInfo);
+const redactFormat = winston.format((info) => {
+  const redacted = redactObject(info) as winston.Logform.TransformableInfo;
+  for (const sym of Object.getOwnPropertySymbols(info)) {
+    (redacted as Record<symbol, unknown>)[sym] = (info as unknown as Record<symbol, unknown>)[sym];
+  }
+  return redacted;
+});
 
 const logFormat = printf(({ level, message, timestamp, ...meta }) => {
   const metaString = Object.keys(meta).length ? JSON.stringify(meta) : '';

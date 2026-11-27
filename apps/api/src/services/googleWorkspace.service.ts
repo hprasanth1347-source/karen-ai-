@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import { getGoogleAccessToken } from '../routes/googleDrive.js';
+import { cacheService } from './cache.service.js';
 
 export interface CalendarEventItem {
   id: string;
@@ -284,6 +285,10 @@ export async function listGoogleSheets(query?: string, userId?: string, req?: Re
   const token = await getGoogleAccessToken(userId, req);
   if (!token) return { ok: false, sheets: [], error: 'Google is not connected.' };
 
+  const cacheKey = cacheService.buildKey('sheets', userId || 'owner', 'list', { query: query?.trim() || '' });
+  const cached = await cacheService.get<{ ok: boolean; sheets: GoogleSheetSummary[] }>(cacheKey);
+  if (cached) return cached;
+
   const escaped = query?.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'") || '';
   const qParts = ["mimeType = 'application/vnd.google-apps.spreadsheet'", 'trashed = false'];
   if (escaped) qParts.push(`name contains '${escaped}'`);
@@ -306,7 +311,7 @@ export async function listGoogleSheets(query?: string, userId?: string, req?: Re
     };
   }
   const json = (await res.json()) as { files?: any[] };
-  return {
+  const result = {
     ok: true,
     sheets: (json.files || []).map((f) => ({
       id: String(f.id),
@@ -315,6 +320,8 @@ export async function listGoogleSheets(query?: string, userId?: string, req?: Re
       webViewLink: f.webViewLink,
     })),
   };
+  await cacheService.set(cacheKey, result, 60, ['google', 'sheets']);
+  return result;
 }
 
 export async function getGoogleSheetMeta(input: {
@@ -485,6 +492,10 @@ export async function listGoogleContacts(query?: string, userId?: string, req?: 
   const token = await getGoogleAccessToken(userId, req);
   if (!token) return { ok: false, contacts: [], needsReconnect: true, error: 'Google is not connected.' };
 
+  const cacheKey = cacheService.buildKey('contacts', userId || 'owner', 'list', { query: query?.trim() || '' });
+  const cached = await cacheService.get<{ ok: boolean; contacts: GoogleContactItem[] }>(cacheKey);
+  if (cached) return cached;
+
   const isSearch = Boolean(query?.trim());
   const url = isSearch
     ? `https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(query!.trim())}&readMask=names,emailAddresses,phoneNumbers&pageSize=30`
@@ -512,7 +523,7 @@ export async function listGoogleContacts(query?: string, userId?: string, req?: 
       const otherJson = (await otherRes.json().catch(() => ({}))) as { otherContacts?: any[] };
       const fallbackPeople = otherJson.otherContacts || [];
       if (fallbackPeople.length > 0) {
-        return {
+        const out = {
           ok: true,
           contacts: fallbackPeople.map((p: any) => ({
             resourceName: p.resourceName || '',
@@ -521,6 +532,8 @@ export async function listGoogleContacts(query?: string, userId?: string, req?: 
             phones: (p.phoneNumbers || []).map((ph: any) => ph.value).filter(Boolean),
           })),
         };
+        await cacheService.set(cacheKey, out, 120, ['google', 'contacts']);
+        return out;
       }
     }
     return {
@@ -558,7 +571,9 @@ export async function listGoogleContacts(query?: string, userId?: string, req?: 
       combined.set(dedupKey, item);
     }
   }
-  return { ok: true, contacts: Array.from(combined.values()) };
+  const result = { ok: true, contacts: Array.from(combined.values()) };
+  await cacheService.set(cacheKey, result, 120, ['google', 'contacts']);
+  return result;
 }
 
 export async function createGoogleContact(input: {
@@ -585,6 +600,7 @@ export async function createGoogleContact(input: {
     }),
     signal: AbortSignal.timeout(8000),
   });
+  cacheService.invalidateTag('contacts');
   if (!res.ok) {
     return {
       ok: false,

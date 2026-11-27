@@ -41,6 +41,7 @@ import {
   getAdsSummary,
 } from '../services/instagramHub.service.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
+import { cacheService } from '../services/cache.service.js';
 import {
   clearInstagramTokensFromDb,
   loadInstagramTokensWithStatus,
@@ -60,6 +61,11 @@ router.use((req, res, next) => {
 
 // Default empty VIP list unless persisted in user_settings
 const vipContacts: string[] = [];
+
+// 0. Upstash Redis Cache Status for Instagram
+router.get('/cache-status', (_req, res) => {
+  return success(res, cacheService.stats());
+});
 
 // 1. Live Profile
 router.get('/profile', async (req, res) => {

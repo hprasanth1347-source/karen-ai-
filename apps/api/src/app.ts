@@ -57,29 +57,35 @@ const helmetMiddleware = (helmet as unknown as (opts?: unknown) => express.Reque
 });
 app.use(helmetMiddleware);
 
-function isOriginAllowed(origin: string): boolean {
-  const allowed = config.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
-  if (allowed.includes(origin)) return true;
-  if (config.APP_URL && origin === config.APP_URL.replace(/\/$/, '')) return true;
-  if (config.WEB_ORIGIN && origin === config.WEB_ORIGIN.replace(/\/$/, '')) return true;
-  if (config.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+function isOriginAllowed(origin: string, reqHost?: string): boolean {
+  const cleanOrigin = origin.replace(/\/$/, '');
+  const allowed = config.ALLOWED_ORIGINS.split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean);
+  if (allowed.includes(cleanOrigin)) return true;
+  if (config.APP_URL && cleanOrigin === config.APP_URL.replace(/\/$/, '')) return true;
+  if (config.WEB_ORIGIN && cleanOrigin === config.WEB_ORIGIN.replace(/\/$/, '')) return true;
+  if (process.env.VERCEL_URL && cleanOrigin === `https://${process.env.VERCEL_URL}`) return true;
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL && cleanOrigin === `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`) return true;
+  if (reqHost && (cleanOrigin === `https://${reqHost}` || cleanOrigin === `http://${reqHost}`)) return true;
+  if (cleanOrigin.endsWith('.vercel.app') && cleanOrigin.startsWith('https://karen-ai')) return true;
+  if (config.NODE_ENV !== 'production' && (cleanOrigin.includes('localhost') || cleanOrigin.includes('127.0.0.1'))) {
     return true;
   }
   return false;
 }
 
-app.use(
-  cors({
+app.use((req, res, next) => {
+  const reqHost = req.get('x-forwarded-host') || req.get('host');
+  return cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (isOriginAllowed(origin)) {
+      if (isOriginAllowed(origin, reqHost)) {
         return callback(null, true);
       }
       return callback(new Error('CORS origin denied'));
     },
     credentials: true,
-  })
-);
+  })(req, res, next);
+});
 app.use(
   express.json({
     limit: '10mb',
@@ -96,7 +102,8 @@ app.use((req, res, next) => {
   if (req.path.endsWith('/webhook') || req.path.includes('/auth/google/callback')) return next();
   if (req.headers.authorization?.startsWith('Bearer ')) return next();
   const origin = req.header('origin');
-  if (origin && !isOriginAllowed(origin)) {
+  const reqHost = req.get('x-forwarded-host') || req.get('host');
+  if (origin && !isOriginAllowed(origin, reqHost)) {
     return res.status(403).json({ ok: false, error: 'CSRF origin check failed', code: 'FORBIDDEN', requestId: req.requestId });
   }
   return next();

@@ -243,14 +243,14 @@ export const InstagramPage: React.FC = () => {
     void loadData();
   }, []);
 
-  // Poll for new auto-replies every 5 seconds so user sees incoming DMs and replies live
+  // Poll for live DMs & auto-replies every 5 seconds when tab is visible
   useEffect(() => {
     const timer = setInterval(async () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
-        const res = await authenticatedFetch('/api/v1/instagram/auto-reply');
-        if (res.ok) {
-          const d = await res.json();
+        const autoRes = await authenticatedFetch('/api/v1/instagram/auto-reply');
+        if (autoRes.ok) {
+          const d = await autoRes.json();
           if (Array.isArray(d.data?.logs)) {
             setAutoReplyLogs(d.data.logs);
           }
@@ -640,54 +640,21 @@ export const InstagramPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Live Simulator & Testing Bar */}
-        <div className="p-3.5 bg-yellow/20 border-2 border-ink space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-mono font-black flex items-center gap-1.5 text-ink">
-              <Sparkles className="w-4 h-4 text-coral" />
-              TEST AUTO-REPLY PIPELINE
-            </span>
-            <span className="text-[10px] font-mono text-ink-muted">
-              Simulates DM from Raghul (@_.raghul._.15)
-            </span>
+        {/* Live DM Stream Controls */}
+        <div className="p-3 bg-mint/20 border-2 border-ink flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs font-mono font-bold text-ink">
+            <span className="inline-block w-2.5 h-2.5 rounded-full bg-mint border border-ink animate-pulse" />
+            <span>LIVE INSTAGRAM DM STREAM ACTIVE (AUTO-SYNC EVERY 5s)</span>
           </div>
-
-          <div className="flex flex-col sm:flex-row gap-2">
-            <input
-              type="text"
-              value={simulatedMessage}
-              onChange={(e) => setSimulatedMessage(e.target.value)}
-              placeholder="e.g. 'hi karen', 'urgent hospital emergency', 'bro give phone number'..."
-              className="flex-1 p-2 bg-white border-2 border-ink text-xs font-mono outline-none shadow-brutal-sm focus:border-coral"
-            />
-            <button
-              type="button"
-              onClick={() => handleSimulateAutoReply()}
-              disabled={simulatingAutoReply || !simulatedMessage.trim()}
-              className="btn-brutal bg-coral text-white text-xs font-bold px-4 flex items-center gap-1.5 whitespace-nowrap shadow-brutal-sm"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>{simulatingAutoReply ? 'Replying…' : 'Simulate & Test'}</span>
-            </button>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-            <span className="text-[10px] font-mono font-bold text-ink-muted">PRESETS:</span>
-            {['hi karen', 'urgent hospital emergency', 'please send phone number', 'vanakkam'].map((msg, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => {
-                  setSimulatedMessage(msg);
-                  handleSimulateAutoReply(msg);
-                }}
-                disabled={simulatingAutoReply}
-                className="px-2 py-0.5 bg-white border border-ink text-[10px] font-mono hover:bg-yellow transition-colors font-bold"
-              >
-                Test "{msg}"
-              </button>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={() => void loadData()}
+            disabled={loading}
+            className="btn-brutal bg-teal text-ink text-xs font-bold px-3 py-1.5 flex items-center gap-1.5 shadow-brutal-sm"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>{loading ? 'Syncing Live DMs…' : 'Sync Live DMs'}</span>
+          </button>
         </div>
       </div>
 

@@ -1,6 +1,7 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateAIReply } from '../services/ai.service.js';
+import { cacheService } from '../services/cache.service.js';
 import { loadInstagramTokensWithStatus } from '../services/persistence.service.js';
 
 const META_BASE_URL = `https://graph.facebook.com/${config.META_GRAPH_API_VERSION || 'v21.0'}`;
@@ -75,6 +76,7 @@ export function invalidateInstagramCache(): void {
   profileCache = null;
   mediaCache = null;
   usernameCache.clear();
+  cacheService.invalidateTag('instagram');
 }
 
 function sortMessagesNewestFirst(msgs: InstagramMessage[]): InstagramMessage[] {
@@ -194,6 +196,13 @@ export async function getInstagramProfile(userId?: string): Promise<InstagramPro
     return profileCache.data;
   }
 
+  const redisKey = cacheService.buildKey('instagram', userId || 'owner', 'profile', { tokenSig });
+  const redisHit = await cacheService.get<InstagramProfile>(redisKey);
+  if (redisHit) {
+    profileCache = { expiresAt: Date.now() + 60_000, data: redisHit, tokenSig };
+    return redisHit;
+  }
+
   if (!token) {
     return {
       id: accountId,
@@ -240,6 +249,7 @@ export async function getInstagramProfile(userId?: string): Promise<InstagramPro
         media_count: data.media_count,
       };
       profileCache = { expiresAt: Date.now() + 60_000, data: profile, tokenSig };
+      await cacheService.set(redisKey, profile, 60, ['instagram']);
       return profile;
     }
   } catch (err) {
@@ -331,6 +341,13 @@ export async function getInstagramMedia(userId?: string): Promise<InstagramMedia
     return mediaCache.data;
   }
 
+  const redisKey = cacheService.buildKey('instagram', userId || 'owner', 'media', { tokenSig });
+  const redisHit = await cacheService.get<InstagramMediaItem[]>(redisKey);
+  if (redisHit) {
+    mediaCache = { expiresAt: Date.now() + 30_000, data: redisHit, tokenSig };
+    return redisHit;
+  }
+
   if (!token) return [];
 
   const fields = 'id,caption,media_type,media_url,permalink,thumbnail_url,timestamp,like_count,comments_count';
@@ -351,6 +368,7 @@ export async function getInstagramMedia(userId?: string): Promise<InstagramMedia
       const json = (await res.json().catch(() => ({}))) as { data?: InstagramMediaItem[] };
       const media = json.data || [];
       mediaCache = { expiresAt: Date.now() + 30_000, data: media, tokenSig };
+      await cacheService.set(redisKey, media, 30, ['instagram']);
       return media;
     }
     return [];
@@ -373,6 +391,15 @@ export async function getInstagramConversations(
     conversationsCache.tokenSig === tokenSig
   ) {
     return conversationsCache.data;
+  }
+
+  const redisKey = cacheService.buildKey('instagram', options?.userId || 'owner', 'conversations', { tokenSig });
+  if (!options?.forceFresh) {
+    const redisHit = await cacheService.get<InstagramThread[]>(redisKey);
+    if (redisHit) {
+      conversationsCache = { expiresAt: Date.now() + 10_000, data: redisHit, tokenSig };
+      return redisHit;
+    }
   }
 
   if (!token) {
@@ -520,7 +547,8 @@ export async function getInstagramConversations(
       };
     });
 
-    conversationsCache = { expiresAt: Date.now() + 3000, data: threads, tokenSig };
+    conversationsCache = { expiresAt: Date.now() + 10_000, data: threads, tokenSig };
+    await cacheService.set(redisKey, threads, 15, ['instagram']);
     return threads;
   } catch (err) {
     logger.error('Error fetching Instagram conversations:', err);

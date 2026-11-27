@@ -414,6 +414,7 @@ export default function ClassroomPage() {
 
   const handleDraft = async (a: ClassroomAssignment, format: 'md' | 'txt') => {
     setAiBusy(true);
+    setError(null);
     try {
       const res = await api.post<{ data: { draft: string; filename: string } }>(
         `/classroom/assignments/${a.id}/draft`,
@@ -424,8 +425,9 @@ export default function ClassroomPage() {
         content: res.data.data.draft,
         filename: res.data.data.filename,
       });
-    } catch {
-      setError('Failed to prepare assignment draft.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Failed to prepare assignment draft.');
     } finally {
       setAiBusy(false);
     }

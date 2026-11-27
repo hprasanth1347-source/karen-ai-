@@ -10,6 +10,7 @@ import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
 import { deleteContactData, getContactCompanionProfile, setContactBlocked, } from '../services/instagramCompanion.service.js';
 import { getActiveStories, getAllReels, getFollowerMonitorSummary, getFollowersAndFollowing, getInstagramConnectionHealth, getInstagramNotesActivity, handleInstagramCommentEvent, handleInstagramMentionEvent, handleInstagramNoteActivityEvent, publishInstagramContent, getAccountInsights, getMediaComments, replyToInstagramComment, getAdsSummary, } from '../services/instagramHub.service.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
+import { cacheService } from '../services/cache.service.js';
 import { clearInstagramTokensFromDb, loadInstagramTokensWithStatus, loadUserSetting, saveInstagramTokensToDb, saveUserSetting, } from '../services/persistence.service.js';
 const router = Router();
 router.use((req, res, next) => {
@@ -20,6 +21,10 @@ router.use((req, res, next) => {
 });
 // Default empty VIP list unless persisted in user_settings
 const vipContacts = [];
+// 0. Upstash Redis Cache Status for Instagram
+router.get('/cache-status', (_req, res) => {
+    return success(res, cacheService.stats());
+});
 // 1. Live Profile
 router.get('/profile', async (req, res) => {
     try {

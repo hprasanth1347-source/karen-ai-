@@ -16,6 +16,7 @@ import {
 import { extractTextFromBuffer } from '../utils/docParser.js';
 import { encryptJson, decryptJson } from '../utils/crypto.js';
 import { logger } from '../config/logger.js';
+import { cacheService } from '../services/cache.service.js';
 import { success, error } from '../utils/response.js';
 
 const GOOGLE_COOKIE_NAME = 'karen_google_tokens';
@@ -441,6 +442,12 @@ router.get('/drive/files', async (req, res) => {
   });
 
   try {
+    const forceFresh = req.query.fresh === '1' || req.query.fresh === 'true';
+    const cacheKey = cacheService.buildKey('drive', req.user?.id || 'owner', 'files', { q: search });
+    if (!forceFresh) {
+      const cached = await cacheService.get<unknown[]>(cacheKey);
+      if (cached) return success(res, cached);
+    }
     const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -448,7 +455,9 @@ router.get('/drive/files', async (req, res) => {
     if (!driveRes.ok) {
       return error(res, json.error?.message || 'Google Drive API error', driveRes.status);
     }
-    return success(res, json.files || []);
+    const files = json.files || [];
+    await cacheService.set(cacheKey, files, 45, ['google', 'drive']);
+    return success(res, files);
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Failed to list Drive files', 502);
   }
@@ -821,9 +830,16 @@ router.get('/gmail/messages', async (req, res) => {
     return error(res, 'Gmail is not connected yet. Click "Connect Google / Gmail" first.', 401, 'GMAIL_NOT_CONNECTED');
   }
   try {
+    const forceFresh = req.query.fresh === '1' || req.query.fresh === 'true';
     const importantOnly = req.query.important === '1' || req.query.important === 'true';
     const q = typeof req.query.q === 'string' ? req.query.q : importantOnly ? 'is:important' : '';
+    const cacheKey = cacheService.buildKey('gmail', req.user?.id || 'owner', 'messages', { q });
+    if (!forceFresh) {
+      const cached = await cacheService.get<unknown[]>(cacheKey);
+      if (cached) return success(res, cached);
+    }
     const messages = await fetchRecentGmailMessages(token, q);
+    await cacheService.set(cacheKey, messages, 30, ['google', 'gmail']);
     return success(res, messages);
   } catch (err) {
     return error(res, err instanceof Error ? err.message : 'Failed to fetch Gmail messages', 502);
@@ -840,6 +856,7 @@ router.post('/gmail/send', async (req, res) => {
   if (!result.success) {
     return error(res, result.error || 'Failed to send email', 502);
   }
+  cacheService.invalidateTag('gmail');
   return success(res, { sent: true });
 });
 

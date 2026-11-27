@@ -52,6 +52,7 @@ const routePrefetchMap: Record<string, () => Promise<unknown>> = {
   '/notifications': () => import('../../pages/NotificationsPage'),
   '/contacts': () => import('../../pages/ContactsPage'),
   '/automation': () => import('../../pages/AutomationPage'),
+  '/newsroom': () => import('../../pages/NewsroomPage'),
   '/tasks': () => import('../../pages/TasksPage'),
   '/reminders': () => import('../../pages/RemindersPage'),
   '/security': () => import('../../pages/SecurityPage'),

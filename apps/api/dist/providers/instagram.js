@@ -1,6 +1,7 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { generateAIReply } from '../services/ai.service.js';
+import { cacheService } from '../services/cache.service.js';
 import { loadInstagramTokensWithStatus } from '../services/persistence.service.js';
 const META_BASE_URL = `https://graph.facebook.com/${config.META_GRAPH_API_VERSION || 'v21.0'}`;
 const IG_BASE_URL = `https://graph.instagram.com/${config.META_GRAPH_API_VERSION || 'v21.0'}`;
@@ -63,6 +64,7 @@ export function invalidateInstagramCache() {
     profileCache = null;
     mediaCache = null;
     usernameCache.clear();
+    cacheService.invalidateTag('instagram');
 }
 function sortMessagesNewestFirst(msgs) {
     return [...msgs].sort((a, b) => {
@@ -128,6 +130,12 @@ export async function getInstagramProfile(userId) {
     if (profileCache && profileCache.expiresAt > Date.now() && profileCache.tokenSig === tokenSig) {
         return profileCache.data;
     }
+    const redisKey = cacheService.buildKey('instagram', userId || 'owner', 'profile', { tokenSig });
+    const redisHit = await cacheService.get(redisKey);
+    if (redisHit) {
+        profileCache = { expiresAt: Date.now() + 60_000, data: redisHit, tokenSig };
+        return redisHit;
+    }
     if (!token) {
         return {
             id: accountId,
@@ -174,6 +182,7 @@ export async function getInstagramProfile(userId) {
                 media_count: data.media_count,
             };
             profileCache = { expiresAt: Date.now() + 60_000, data: profile, tokenSig };
+            await cacheService.set(redisKey, profile, 60, ['instagram']);
             return profile;
         }
     }
@@ -253,6 +262,12 @@ export async function getInstagramMedia(userId) {
     if (mediaCache && mediaCache.expiresAt > Date.now() && mediaCache.tokenSig === tokenSig) {
         return mediaCache.data;
     }
+    const redisKey = cacheService.buildKey('instagram', userId || 'owner', 'media', { tokenSig });
+    const redisHit = await cacheService.get(redisKey);
+    if (redisHit) {
+        mediaCache = { expiresAt: Date.now() + 30_000, data: redisHit, tokenSig };
+        return redisHit;
+    }
     if (!token)
         return [];
     const fields = 'id,caption,media_type,media_url,permalink,thumbnail_url,timestamp,like_count,comments_count';
@@ -273,6 +288,7 @@ export async function getInstagramMedia(userId) {
             const json = (await res.json().catch(() => ({})));
             const media = json.data || [];
             mediaCache = { expiresAt: Date.now() + 30_000, data: media, tokenSig };
+            await cacheService.set(redisKey, media, 30, ['instagram']);
             return media;
         }
         return [];
@@ -292,6 +308,14 @@ export async function getInstagramConversations(options) {
         conversationsCache.expiresAt > Date.now() &&
         conversationsCache.tokenSig === tokenSig) {
         return conversationsCache.data;
+    }
+    const redisKey = cacheService.buildKey('instagram', options?.userId || 'owner', 'conversations', { tokenSig });
+    if (!options?.forceFresh) {
+        const redisHit = await cacheService.get(redisKey);
+        if (redisHit) {
+            conversationsCache = { expiresAt: Date.now() + 10_000, data: redisHit, tokenSig };
+            return redisHit;
+        }
     }
     if (!token) {
         throw new Error('Instagram is not connected. Add a valid Instagram/Meta access token first.');
@@ -420,7 +444,8 @@ export async function getInstagramConversations(options) {
                 messages: msgs,
             };
         });
-        conversationsCache = { expiresAt: Date.now() + 3000, data: threads, tokenSig };
+        conversationsCache = { expiresAt: Date.now() + 10_000, data: threads, tokenSig };
+        await cacheService.set(redisKey, threads, 15, ['instagram']);
         return threads;
     }
     catch (err) {

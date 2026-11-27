@@ -52,19 +52,20 @@ router.get('/ai/models', requireAuth, requireOwner, aiLimit, async (req, res) =>
     }
 });
 router.post('/ai/chat', requireAuth, requireOwner, aiLimit, validate(chatSchema), async (req, res) => {
-    await hydrateGoogleTokensFromRequest(req);
     try {
         const ownerChatKey = config.TELEGRAM_OWNER_CHAT_ID || req.user?.id || 'owner';
         let promptText = req.body.message.replace(/^\[LOVE_MODE\]\s*/i, '');
         let isLoveMode = false;
-        if (detectLoveModeDeactivation(promptText)) {
-            await setLoveModeActive(ownerChatKey, false);
-        }
-        else {
-            const loveState = await getLoveModeState(ownerChatKey);
+        const [, loveState] = await Promise.all([
+            hydrateGoogleTokensFromRequest(req).catch(() => { }),
+            detectLoveModeDeactivation(promptText)
+                ? setLoveModeActive(ownerChatKey, false).then(() => ({ active: false }))
+                : getLoveModeState(ownerChatKey),
+        ]);
+        if (!detectLoveModeDeactivation(promptText)) {
             const shouldActivate = !loveState.active && detectLoveModeActivation(promptText);
             if (shouldActivate) {
-                await setLoveModeActive(ownerChatKey, true);
+                void setLoveModeActive(ownerChatKey, true).catch(() => { });
             }
             if (loveState.active || shouldActivate) {
                 isLoveMode = true;
@@ -87,7 +88,7 @@ router.post('/ai/chat', requireAuth, requireOwner, aiLimit, validate(chatSchema)
                 buttons: engineRes.buttons,
                 outcome: engineRes.outcome,
             }
-            : await generateAIReply(promptText, req.body.history, req.body.provider, req.body.model, undefined, {
+            : await generateAIReply(promptText, req.body.history, req.body.provider, req.body.model, AbortSignal.timeout(18000), {
                 loveMode: isLoveMode,
                 currentPage: req.body.currentPage,
                 userId: req.user?.id,
@@ -99,13 +100,15 @@ router.post('/ai/chat', requireAuth, requireOwner, aiLimit, validate(chatSchema)
                 conversationId = created.id;
             }
             const clientMsgId = typeof req.body.clientMessageId === 'string' ? req.body.clientMessageId : undefined;
-            await appendChatMessage(conversationId, 'user', req.body.message, { channel: 'web', clientMessageId: clientMsgId }, req.user?.id);
-            await appendChatMessage(conversationId, 'assistant', result.reply, {
-                channel: 'web',
-                provider: result.provider,
-                model: result.model,
-                clientMessageId: clientMsgId ? `${clientMsgId}-assistant` : undefined,
-            }, req.user?.id);
+            await Promise.all([
+                appendChatMessage(conversationId, 'user', req.body.message, { channel: 'web', clientMessageId: clientMsgId }, req.user?.id),
+                appendChatMessage(conversationId, 'assistant', result.reply, {
+                    channel: 'web',
+                    provider: result.provider,
+                    model: result.model,
+                    clientMessageId: clientMsgId ? `${clientMsgId}-assistant` : undefined,
+                }, req.user?.id),
+            ]);
         }
         return success(res, { ...result, conversationId });
     }
