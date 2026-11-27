@@ -238,7 +238,13 @@ function botToken(): string {
 }
 
 function ownerId(): string {
-  return config.TELEGRAM_OWNER_CHAT_ID || process.env.TELEGRAM_OWNER_CHAT_ID || '';
+  return (config.TELEGRAM_OWNER_CHAT_ID || process.env.TELEGRAM_OWNER_CHAT_ID || '').trim();
+}
+
+function webhookSecret(): string {
+  const raw = (process.env.TELEGRAM_WEBHOOK_SECRET || config.TELEGRAM_WEBHOOK_SECRET || '').trim();
+  if (!raw) return '';
+  return raw.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 256);
 }
 
 function isConfigured(): boolean {
@@ -1261,19 +1267,27 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
 }
 
 export async function telegramWebhook(req: Request, res: Response): Promise<void> {
-  const expected = process.env.TELEGRAM_WEBHOOK_SECRET || config.TELEGRAM_WEBHOOK_SECRET;
+  const expected = webhookSecret();
   const received = req.header('x-telegram-bot-api-secret-token');
 
   if (expected) {
     if (!received) {
-      logger.warn('Telegram webhook rejected: missing x-telegram-bot-api-secret-token header');
+      const msg = 'Telegram webhook 401: missing secret header. Click REGISTER WEBHOOK on /telegram to sync secret.';
+      logger.warn(msg);
+      telegramState.errors.unshift(`${new Date().toISOString()}: ${msg}`);
+      if (telegramState.errors.length > 20) telegramState.errors.length = 20;
+      void persistTelegramState({ errors: telegramState.errors });
       res.sendStatus(401);
       return;
     }
     const exp = Buffer.from(expected);
     const rec = Buffer.from(received);
     if (exp.length !== rec.length || !timingSafeEqual(exp, rec)) {
-      logger.warn('Telegram webhook rejected: secret token mismatch');
+      const msg = 'Telegram webhook 401: secret token mismatch. Click REGISTER WEBHOOK on /telegram to re-sync.';
+      logger.warn(msg);
+      telegramState.errors.unshift(`${new Date().toISOString()}: ${msg}`);
+      if (telegramState.errors.length > 20) telegramState.errors.length = 20;
+      void persistTelegramState({ errors: telegramState.errors });
       res.sendStatus(401);
       return;
     }
@@ -1365,19 +1379,44 @@ export function stopTelegramPolling(): void {
 
 // ─── Webhook registration ─────────────────────────────────────────────────────
 
-export async function registerTelegramWebhook(webhookUrl: string): Promise<boolean> {
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET || config.TELEGRAM_WEBHOOK_SECRET;
-  const body: Record<string, unknown> = { url: webhookUrl };
+export async function registerTelegramWebhook(
+  webhookUrl: string
+): Promise<{ ok: boolean; error?: string }> {
+  const token = botToken();
+  if (!token) return { ok: false, error: 'TELEGRAM_BOT_TOKEN is not configured.' };
+  const secret = webhookSecret();
+  const body: Record<string, unknown> = {
+    url: webhookUrl,
+    allowed_updates: ['message', 'edited_message', 'callback_query'],
+  };
   if (secret) body.secret_token = secret;
-  body.allowed_updates = ['message', 'edited_message', 'callback_query'];
-  const result = await tgApiCall('setWebhook', body);
-  if (result) {
-    telegramState.webhookSet = true;
-    await setTelegramCommands();
-    logger.info('Telegram webhook registered', { webhookUrl });
-    return true;
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      result?: boolean;
+      description?: string;
+    };
+    if (res.ok && json.ok) {
+      telegramState.webhookSet = true;
+      await setTelegramCommands();
+      logger.info('Telegram webhook registered', { webhookUrl });
+      return { ok: true };
+    }
+    const errDesc = json.description || `Telegram setWebhook failed (${res.status})`;
+    logger.warn('Telegram setWebhook failed', { status: res.status, description: errDesc });
+    return { ok: false, error: errDesc };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : 'Network error calling Telegram setWebhook';
+    logger.warn('Telegram setWebhook error', { errMsg });
+    return { ok: false, error: errMsg };
   }
-  return false;
 }
 
 export async function deleteTelegramWebhook(): Promise<boolean> {

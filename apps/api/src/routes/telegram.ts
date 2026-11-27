@@ -103,11 +103,11 @@ router.post('/telegram/register-webhook', async (req, res) => {
       : 'https://karen-ai-me.vercel.app/api/v1/telegram/webhook';
   const webhookUrl = parsed.success && parsed.data.url ? parsed.data.url : defaultUrl;
 
-  const ok = await registerTelegramWebhook(webhookUrl);
-  if (ok) {
+  const reg = await registerTelegramWebhook(webhookUrl);
+  if (reg.ok) {
     return success(res, { registered: true, webhookUrl });
   }
-  return error(res, 'Failed to register webhook with Telegram.', 502);
+  return error(res, reg.error || 'Failed to register webhook with Telegram.', 502);
 });
 
 /** POST /telegram/delete-webhook — remove webhook (use polling) */
