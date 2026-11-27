@@ -1,5 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { InstagramHubTabs, type HubSection } from '../components/instagram/InstagramHubTabs';
+import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   Instagram,
@@ -143,7 +142,6 @@ export const InstagramPage: React.FC = () => {
   const [accountIdInput, setAccountIdInput] = useState('');
   const [savingToken, setSavingToken] = useState(false);
   const [tokenModalError, setTokenModalError] = useState<string | null>(null);
-  const [activeHubSection, setActiveHubSection] = useState<HubSection>('reels');
   const [cacheBackend, setCacheBackend] = useState<{ backend: string; hits: number; misses: number } | null>(null);
   const [liveThreads, setLiveThreads] = useState<
     Array<{
@@ -158,17 +156,6 @@ export const InstagramPage: React.FC = () => {
   const [dmReplyText, setDmReplyText] = useState('');
   const [sendingDm, setSendingDm] = useState(false);
   const [dmError, setDmError] = useState<string | null>(null);
-  const hubRef = useRef<HTMLDivElement | null>(null);
-  const dmRef = useRef<HTMLDivElement | null>(null);
-
-  const jumpToFeature = (target: 'dm' | HubSection) => {
-    if (target === 'dm') {
-      dmRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      return;
-    }
-    setActiveHubSection(target);
-    hubRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
 
   // Ultra-fast data loader: only loads profile & auto-reply data (no heavy thread loading)
   const loadData = async () => {
@@ -542,49 +529,7 @@ export const InstagramPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 1.5. 8-Feature Meta SUAT Command Bar */}
-      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs font-mono font-black uppercase flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-mint" />
-            8 META INSTAGRAM CAPABILITIES (SUAT ACTIVE)
-          </span>
-          <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-mint border border-ink">
-            ALL 8 PERMISSIONS CONNECTED
-          </span>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
-          {[
-            { label: 'Live Auto-DM', scope: 'instagram_manage_messages', target: 'dm' as const },
-            { label: 'Comments AI', scope: 'instagram_manage_comments', target: 'comments' as HubSection },
-            { label: 'Reels & Media', scope: 'instagram_basic', target: 'reels' as HubSection },
-            { label: 'Stories Stats', scope: 'instagram_basic', target: 'stories' as HubSection },
-            { label: 'Publish Studio', scope: 'instagram_content_publish', target: 'publish' as HubSection },
-            { label: 'Insights', scope: 'instagram_manage_insights', target: 'insights' as HubSection },
-            { label: 'Ads Manager', scope: 'ads_management', target: 'ads' as HubSection },
-            { label: 'Events & Logs', scope: 'instagram_manage_events', target: 'monitor' as HubSection },
-          ].map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={() => jumpToFeature(item.target)}
-              className={`p-2 border-2 border-ink text-left transition-all shadow-brutal-sm ${
-                item.target === activeHubSection
-                  ? 'bg-magenta text-white'
-                  : 'bg-cream-50 hover:bg-yellow/40 text-ink'
-              }`}
-            >
-              <div className="text-[11px] font-black leading-tight">{item.label}</div>
-              <div className={`text-[9px] font-mono truncate mt-0.5 ${item.target === activeHubSection ? 'text-white/80' : 'text-ink-muted'}`}>
-                {item.scope}
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-
       {/* Notifications */}
-      <div ref={dmRef} />
       {sendSuccess && (
         <div className="p-3 bg-mint text-ink border-3 border-ink shadow-brutal text-xs font-bold flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -1007,87 +952,6 @@ export const InstagramPage: React.FC = () => {
             })}
           </div>
         )}
-      </div>
-
-      {/* 4. VIP Contacts & 8 Permitted Meta Skills */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-3">
-          <div className="flex items-center justify-between border-b-2 border-ink pb-2">
-            <h3 className="font-extrabold text-sm flex items-center gap-2">
-              <Heart className="w-4 h-4 text-magenta" />
-              VIP &amp; PRIORITY CONTACTS
-            </h3>
-            <span className="text-[10px] font-mono text-ink-muted">PRIORITY NOTIFICATIONS</span>
-          </div>
-
-          <form onSubmit={handleAddVip} className="flex gap-2">
-            <input
-              type="text"
-              value={newVip}
-              onChange={(e) => setNewVip(e.target.value)}
-              placeholder="Add handle e.g. 'raghul'"
-              className="flex-1 p-2 bg-cream-50 border-2 border-ink text-xs outline-none"
-            />
-            <button type="submit" className="btn-ghost text-xs flex items-center gap-1">
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add VIP</span>
-            </button>
-          </form>
-
-          <div className="flex flex-wrap gap-2 pt-1">
-            {vipList.map((handle) => (
-              <span
-                key={handle}
-                className="px-2.5 py-1 bg-cream-100 border-2 border-ink text-xs font-mono font-bold flex items-center gap-1.5 shadow-brutal-sm"
-              >
-                <span>@{handle}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-3">
-          <h3 className="font-extrabold text-sm border-b-2 border-ink pb-2 flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-mint" />
-              8 META-PERMITTED INSTAGRAM SKILLS
-            </span>
-            <span className="text-[10px] font-mono text-mint font-bold px-1.5 py-0.5 bg-ink text-white">8/8 OPERATIONAL</span>
-          </h3>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
-            {[
-              { name: 'ads_management', desc: 'Manage and optimize Meta Ad campaigns', status: 'ACTIVE', target: 'ads' as HubSection },
-              { name: 'ads_read', desc: 'Read ad spend, reach, and conversion analytics', status: 'ACTIVE', target: 'ads' as HubSection },
-              { name: 'instagram_basic', desc: 'Read creator profile info, media ID & feed', status: 'ACTIVE', target: 'reels' as HubSection },
-              { name: 'instagram_manage_messages', desc: '24/7 Autonomous Auto-DM Engine (<10s)', status: 'ACTIVE', target: 'dm' as const },
-              { name: 'instagram_manage_comments', desc: 'Moderate, monitor & auto-reply to comments', status: 'ACTIVE', target: 'comments' as HubSection },
-              { name: 'instagram_content_publish', desc: 'Publish Photos, Reels & Stories via API', status: 'ACTIVE', target: 'publish' as HubSection },
-              { name: 'instagram_manage_insights', desc: 'Profile reach, impressions & follower stats', status: 'ACTIVE', target: 'insights' as HubSection },
-              { name: 'instagram_manage_events', desc: 'Real-time webhook events & note activities', status: 'ACTIVE', target: 'monitor' as HubSection },
-            ].map((p, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => jumpToFeature(p.target)}
-                className="p-2 border border-ink bg-cream-50 hover:bg-yellow/30 flex items-center justify-between text-left transition-colors"
-              >
-                <div>
-                  <span className="font-bold text-ink">{p.name}</span>
-                  <span className="text-[10px] text-ink-muted block font-sans">{p.desc}</span>
-                </div>
-                <span className="px-1.5 py-0.5 border border-ink bg-mint text-ink font-bold text-[9px]">
-                  {p.status}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* 5. INSTAGRAM HUB (All 8 Meta Capabilities) */}
-      <div ref={hubRef}>
-        <InstagramHubTabs activeSection={activeHubSection} onSectionChange={setActiveHubSection} />
       </div>
 
       {/* Meta System-User Access Token Modal */}
