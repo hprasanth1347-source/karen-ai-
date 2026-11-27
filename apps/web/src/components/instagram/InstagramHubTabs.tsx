@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Film, Share2, Eye, Activity, ExternalLink, Copy, Check, Users, Search, Upload, BarChart3, Megaphone, Send, Loader2 } from 'lucide-react';
+import { Film, Share2, Eye, Activity, ExternalLink, Copy, Check, Users, Search, Upload, BarChart3, Megaphone, Send, Loader2, MessageCircle } from 'lucide-react';
 import { api } from '../../lib/api';
+
+export type HubSection = 'reels' | 'stories' | 'comments' | 'followers' | 'monitor' | 'publish' | 'insights' | 'ads';
 
 interface InstagramFollowerUser {
   id: string;
@@ -59,8 +61,16 @@ interface MonitorSummary {
   uncertainUnfollowsNote: string;
 }
 
-export const InstagramHubTabs: React.FC = () => {
-  const [section, setSection] = useState<'reels' | 'stories' | 'followers' | 'monitor' | 'publish' | 'insights' | 'ads'>('reels');
+export const InstagramHubTabs: React.FC<{
+  activeSection?: HubSection;
+  onSectionChange?: (s: HubSection) => void;
+}> = ({ activeSection, onSectionChange }) => {
+  const [internalSection, setInternalSection] = useState<HubSection>('reels');
+  const section = activeSection ?? internalSection;
+  const setSection = (next: HubSection) => {
+    setInternalSection(next);
+    onSectionChange?.(next);
+  };
   const [reelsTab, setReelsTab] = useState<'all' | 'my_reels' | 'tagged_reels'>('all');
   const [reelSearch, setReelSearch] = useState('');
   const [reels, setReels] = useState<ReelItem[]>([]);
@@ -90,6 +100,13 @@ export const InstagramHubTabs: React.FC = () => {
 
   // Ads Summary State (ads_read / ads_management)
   const [adsData, setAdsData] = useState<{ accounts: any[]; error?: string } | null>(null);
+
+  // Comments Manager State (instagram_manage_comments)
+  const [mediaForComments, setMediaForComments] = useState<Array<{ id: string; caption?: string; media_type?: string; comments_count?: number }>>([]);
+  const [selectedMediaId, setSelectedMediaId] = useState<string>('');
+  const [commentsList, setCommentsList] = useState<Array<{ id: string; text: string; username?: string; timestamp?: string }>>([]);
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [commentNotice, setCommentNotice] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -137,8 +154,40 @@ export const InstagramHubTabs: React.FC = () => {
         .get<{ data: { accounts: any[]; error?: string } }>('/instagram/ads')
         .then((res) => setAdsData(res.data?.data || null))
         .catch(() => setAdsData({ accounts: [], error: 'Failed to load ad accounts' }));
+    } else if (section === 'comments') {
+      api
+        .get<{ data: Array<{ id: string; caption?: string; media_type?: string; comments_count?: number }> }>('/instagram/media')
+        .then((res) => {
+          const items = res.data?.data || [];
+          setMediaForComments(items);
+          if (items.length > 0 && !selectedMediaId) {
+            setSelectedMediaId(items[0].id);
+          }
+        })
+        .catch(() => setMediaForComments([]));
     }
   }, [section, insightsPeriod]);
+
+  useEffect(() => {
+    if (section !== 'comments' || !selectedMediaId) return;
+    api
+      .get<{ data: { comments?: Array<{ id: string; text: string; username?: string; timestamp?: string }> } }>(`/instagram/media/${selectedMediaId}/comments`)
+      .then((res) => setCommentsList(res.data?.data?.comments || []))
+      .catch(() => setCommentsList([]));
+  }, [section, selectedMediaId]);
+
+  const handleReplyComment = async (commentId: string) => {
+    const msg = (replyDrafts[commentId] || '').trim();
+    if (!msg) return;
+    setCommentNotice(null);
+    try {
+      await api.post(`/instagram/comments/${commentId}/reply`, { message: msg });
+      setReplyDrafts((prev) => ({ ...prev, [commentId]: '' }));
+      setCommentNotice('Reply posted to Instagram comment!');
+    } catch {
+      setCommentNotice('Could not post reply — check instagram_manage_comments permission.');
+    }
+  };
 
   const handlePublishContent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -191,6 +240,7 @@ export const InstagramHubTabs: React.FC = () => {
           {[
             { id: 'reels', label: 'Reels Hub', icon: Film },
             { id: 'stories', label: 'Stories & Analytics', icon: Eye },
+            { id: 'comments', label: 'Comments & AI Reply', icon: MessageCircle },
             { id: 'publish', label: 'Publish Content', icon: Upload },
             { id: 'insights', label: 'Account Insights', icon: BarChart3 },
             { id: 'ads', label: 'Ads Manager', icon: Megaphone },
@@ -202,7 +252,7 @@ export const InstagramHubTabs: React.FC = () => {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setSection(t.id as 'reels' | 'stories' | 'followers' | 'monitor' | 'publish' | 'insights' | 'ads')}
+                onClick={() => setSection(t.id as HubSection)}
                 className={`px-3 py-1.5 text-xs font-bold border-2 border-ink flex items-center gap-1.5 ${section === t.id ? 'bg-coral text-white' : 'bg-cream-50 hover:bg-yellow/40'
                   }`}
               >
@@ -213,6 +263,66 @@ export const InstagramHubTabs: React.FC = () => {
           })}
         </div>
       </div>
+
+      {section === 'comments' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="text-xs font-mono font-bold text-ink-muted">
+              SELECT POST / REEL TO MANAGE COMMENTS (<code className="bg-cream-100 px-1">instagram_manage_comments</code>):
+            </div>
+            <select
+              value={selectedMediaId}
+              onChange={(e) => setSelectedMediaId(e.target.value)}
+              className="p-2 bg-cream-50 border-2 border-ink text-xs font-mono max-w-md"
+            >
+              {mediaForComments.length === 0 && <option value="">No media loaded yet</option>}
+              {mediaForComments.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {(m.caption || m.media_type || m.id).slice(0, 60)} ({m.comments_count ?? 0} comments)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {commentNotice && (
+            <div className="p-2.5 bg-mint border-2 border-ink text-xs font-bold">{commentNotice}</div>
+          )}
+
+          {commentsList.length === 0 ? (
+            <div className="p-6 bg-cream-50 border-2 border-ink text-center text-xs font-mono text-ink-muted">
+              No comments found on this post yet.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {commentsList.map((c) => (
+                <div key={c.id} className="p-3 bg-cream-50 border-2 border-ink space-y-2">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="font-black">@{c.username || 'user'}</span>
+                    <span className="text-[10px] text-ink-muted">{c.timestamp ? new Date(c.timestamp).toLocaleString() : ''}</span>
+                  </div>
+                  <p className="text-xs">{c.text}</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={replyDrafts[c.id] || ''}
+                      onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                      placeholder="Write a reply..."
+                      className="flex-1 p-1.5 bg-white border-2 border-ink text-xs font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleReplyComment(c.id)}
+                      className="btn-brutal bg-coral text-white text-xs font-bold px-3 py-1 flex items-center gap-1"
+                    >
+                      <Send className="w-3 h-3" /> Reply
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {section === 'reels' && (
         <div className="space-y-4">

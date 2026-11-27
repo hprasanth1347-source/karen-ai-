@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { InstagramHubTabs } from '../components/instagram/InstagramHubTabs';
+import React, { useEffect, useRef, useState } from 'react';
+import { InstagramHubTabs, type HubSection } from '../components/instagram/InstagramHubTabs';
 import { supabase } from '../lib/supabase';
 import {
   Instagram,
@@ -143,6 +143,19 @@ export const InstagramPage: React.FC = () => {
   const [accountIdInput, setAccountIdInput] = useState('');
   const [savingToken, setSavingToken] = useState(false);
   const [tokenModalError, setTokenModalError] = useState<string | null>(null);
+  const [activeHubSection, setActiveHubSection] = useState<HubSection>('reels');
+  const [cacheBackend, setCacheBackend] = useState<{ backend: string; hits: number; misses: number } | null>(null);
+  const hubRef = useRef<HTMLDivElement | null>(null);
+  const dmRef = useRef<HTMLDivElement | null>(null);
+
+  const jumpToFeature = (target: 'dm' | HubSection) => {
+    if (target === 'dm') {
+      dmRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    setActiveHubSection(target);
+    hubRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   // Ultra-fast data loader: only loads profile & auto-reply data (no heavy thread loading)
   const loadData = async () => {
@@ -241,6 +254,12 @@ export const InstagramPage: React.FC = () => {
 
   useEffect(() => {
     void loadData();
+    authenticatedFetch('/api/v1/instagram/cache-status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.data) setCacheBackend(d.data);
+      })
+      .catch(() => {});
   }, []);
 
   // Poll for live DMs & auto-replies every 5 seconds when tab is visible
@@ -423,7 +442,10 @@ export const InstagramPage: React.FC = () => {
               </span>
             </h1>
             <p className="text-xs text-ink-muted font-mono">
-              Meta Graph API v21.0 • Response SLA: &lt;10s • Emergency Alerting via Telegram
+              Meta Graph API v21.0 • Response SLA: &lt;10s • Cache:{' '}
+              <span className="font-bold text-ink">
+                {cacheBackend ? `${cacheBackend.backend.toUpperCase()} (${cacheBackend.hits} hits)` : 'UPSTASH / LRU'}
+              </span>
             </p>
           </div>
         </div>
@@ -461,7 +483,49 @@ export const InstagramPage: React.FC = () => {
         </div>
       </div>
 
+      {/* 1.5. 8-Feature Meta SUAT Command Bar */}
+      <div className="bg-white border-3 border-ink p-4 shadow-brutal space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-mono font-black uppercase flex items-center gap-1.5">
+            <ShieldCheck className="w-4 h-4 text-mint" />
+            8 META INSTAGRAM CAPABILITIES (SUAT ACTIVE)
+          </span>
+          <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-mint border border-ink">
+            ALL 8 PERMISSIONS CONNECTED
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+          {[
+            { label: 'Live Auto-DM', scope: 'instagram_manage_messages', target: 'dm' as const },
+            { label: 'Comments AI', scope: 'instagram_manage_comments', target: 'comments' as HubSection },
+            { label: 'Reels & Media', scope: 'instagram_basic', target: 'reels' as HubSection },
+            { label: 'Stories Stats', scope: 'instagram_basic', target: 'stories' as HubSection },
+            { label: 'Publish Studio', scope: 'instagram_content_publish', target: 'publish' as HubSection },
+            { label: 'Insights', scope: 'instagram_manage_insights', target: 'insights' as HubSection },
+            { label: 'Ads Manager', scope: 'ads_management', target: 'ads' as HubSection },
+            { label: 'Events & Logs', scope: 'instagram_manage_events', target: 'monitor' as HubSection },
+          ].map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => jumpToFeature(item.target)}
+              className={`p-2 border-2 border-ink text-left transition-all shadow-brutal-sm ${
+                item.target === activeHubSection
+                  ? 'bg-magenta text-white'
+                  : 'bg-cream-50 hover:bg-yellow/40 text-ink'
+              }`}
+            >
+              <div className="text-[11px] font-black leading-tight">{item.label}</div>
+              <div className={`text-[9px] font-mono truncate mt-0.5 ${item.target === activeHubSection ? 'text-white/80' : 'text-ink-muted'}`}>
+                {item.scope}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Notifications */}
+      <div ref={dmRef} />
       {sendSuccess && (
         <div className="p-3 bg-mint text-ink border-3 border-ink shadow-brutal text-xs font-bold flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -855,16 +919,21 @@ export const InstagramPage: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
             {[
-              { name: 'ads_management', desc: 'Manage and optimize Meta Ad campaigns', status: 'ACTIVE' },
-              { name: 'ads_read', desc: 'Read ad spend, reach, and conversion analytics', status: 'ACTIVE' },
-              { name: 'instagram_basic', desc: 'Read creator profile info, media ID & feed', status: 'ACTIVE' },
-              { name: 'instagram_manage_messages', desc: '24/7 Autonomous Auto-DM Engine (<10s)', status: 'ACTIVE' },
-              { name: 'instagram_manage_comments', desc: 'Moderate, monitor & auto-reply to comments', status: 'ACTIVE' },
-              { name: 'instagram_content_publish', desc: 'Publish Photos, Reels & Stories via API', status: 'ACTIVE' },
-              { name: 'instagram_manage_insights', desc: 'Profile reach, impressions & follower stats', status: 'ACTIVE' },
-              { name: 'instagram_manage_events', desc: 'Real-time webhook events & note activities', status: 'ACTIVE' },
+              { name: 'ads_management', desc: 'Manage and optimize Meta Ad campaigns', status: 'ACTIVE', target: 'ads' as HubSection },
+              { name: 'ads_read', desc: 'Read ad spend, reach, and conversion analytics', status: 'ACTIVE', target: 'ads' as HubSection },
+              { name: 'instagram_basic', desc: 'Read creator profile info, media ID & feed', status: 'ACTIVE', target: 'reels' as HubSection },
+              { name: 'instagram_manage_messages', desc: '24/7 Autonomous Auto-DM Engine (<10s)', status: 'ACTIVE', target: 'dm' as const },
+              { name: 'instagram_manage_comments', desc: 'Moderate, monitor & auto-reply to comments', status: 'ACTIVE', target: 'comments' as HubSection },
+              { name: 'instagram_content_publish', desc: 'Publish Photos, Reels & Stories via API', status: 'ACTIVE', target: 'publish' as HubSection },
+              { name: 'instagram_manage_insights', desc: 'Profile reach, impressions & follower stats', status: 'ACTIVE', target: 'insights' as HubSection },
+              { name: 'instagram_manage_events', desc: 'Real-time webhook events & note activities', status: 'ACTIVE', target: 'monitor' as HubSection },
             ].map((p, i) => (
-              <div key={i} className="p-2 border border-ink bg-cream-50 flex items-center justify-between">
+              <button
+                key={i}
+                type="button"
+                onClick={() => jumpToFeature(p.target)}
+                className="p-2 border border-ink bg-cream-50 hover:bg-yellow/30 flex items-center justify-between text-left transition-colors"
+              >
                 <div>
                   <span className="font-bold text-ink">{p.name}</span>
                   <span className="text-[10px] text-ink-muted block font-sans">{p.desc}</span>
@@ -872,14 +941,16 @@ export const InstagramPage: React.FC = () => {
                 <span className="px-1.5 py-0.5 border border-ink bg-mint text-ink font-bold text-[9px]">
                   {p.status}
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         </div>
       </div>
 
-      {/* 5. INSTAGRAM HUB (Reels Hub, Stories, Publish Content, Account Insights, Ads Manager, Followers, Activity) */}
-      <InstagramHubTabs />
+      {/* 5. INSTAGRAM HUB (All 8 Meta Capabilities) */}
+      <div ref={hubRef}>
+        <InstagramHubTabs activeSection={activeHubSection} onSectionChange={setActiveHubSection} />
+      </div>
 
       {/* Meta System-User Access Token Modal */}
       {showTokenModal && (
