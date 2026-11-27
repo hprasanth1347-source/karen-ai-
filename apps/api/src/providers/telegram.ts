@@ -591,7 +591,7 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     case '/tamil':
     case '/english':
     case '/latest': {
-      const { generateDailyEditions, listEditions } = await import('../services/newsroom.service.js');
+      const { generateDailyEditions, listEditions, renderEditionPdf } = await import('../services/newsroom.service.js');
       const lang = cmd === '/tamil' ? 'ta' : 'en';
       let ed = listEditions().find((e) => e.language === lang);
       if (!ed) {
@@ -599,7 +599,19 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
         ed = lang === 'ta' ? gen.ta : gen.en;
       }
       const brand = ed.language === 'ta' ? 'கரென் டைம்ஸ் (KAREN TIMES)' : 'KAREN TIMES';
-      return `📰 *${brand}* — ${ed.editionDate} (Issue #${ed.issueNumber})\n_KNOWLEDGE IS WISDOM._\n\n${ed.summary}`;
+      const caption = `📰 *${brand}* — ${ed.editionDate} (Issue #${ed.issueNumber})\n_KNOWLEDGE IS WISDOM._`;
+      try {
+        const pdfBuf = await renderEditionPdf(ed);
+        await sendTelegramDocument(
+          String(chatId),
+          pdfBuf,
+          `KAREN_TIMES_${ed.editionDate}_${ed.language.toUpperCase()}.pdf`,
+          `${brand} — ${ed.editionDate}`
+        );
+      } catch {
+        // Text summary still returned below if PDF attachment fails
+      }
+      return `${caption}\n\n${ed.summary}`;
     }
 
     case '/ig_stop': {
@@ -1538,10 +1550,18 @@ export async function setTelegramCommands(): Promise<void> {
       { command: 'endlove', description: 'Exit Love Mode, back to normal' },
       { command: 'normal', description: 'Switch back to normal mode' },
       { command: 'insta', description: 'Instagram: /insta send raghul hello' },
+      { command: 'ig_stop', description: 'Emergency stop Instagram Auto-DM' },
+      { command: 'google', description: '1-tap Sign in with Google (Drive/Gmail/Classroom)' },
       { command: 'connectgoogle', description: 'Connect Gmail, Drive, Calendar, Sheets & Classroom' },
+      { command: 'newspaper', description: 'KAREN TIMES daily newspaper PDF (English)' },
+      { command: 'tamil', description: 'KAREN TIMES Tamil newspaper PDF' },
+      { command: 'remind', description: 'Set or list reminders (/remind in 30m ...)' },
       { command: 'classroom', description: 'Google Classroom overview' },
       { command: 'assignments', description: 'Show Classroom assignments' },
       { command: 'pending', description: 'Pending Classroom work' },
+      { command: 'submitted', description: 'Submitted Classroom work' },
+      { command: 'overdue', description: 'Overdue Classroom work' },
+      { command: 'joinclass', description: 'Join a Google Classroom' },
       { command: 'grades', description: 'Show Classroom grades' },
       { command: 'exams', description: 'Tracked exam dates' },
       { command: 'examprep', description: 'Last-minute exam preparation' },

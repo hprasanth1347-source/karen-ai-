@@ -107,8 +107,9 @@ export function planDeterministicCommand(text, lastResults, hasUploadedFile) {
             ];
         }
     }
-    // 5. Classroom assignments / grades / exam prep (with typo tolerance: assignmnt, assigment, pendng, overdu, tomorow)
-    if (/\b(pending|pendng|overdue|overdu|due|assignments?|assigments?|assignmnts?|homework|submitted|graded|classroom)\b/i.test(lower)) {
+    // 5. Classroom assignments / grades / exam prep (skip if user specifically asked about "task(s)" without classroom/assignment)
+    if ((/\b(pending|pendng|overdue|overdu|due|assignments?|assigments?|assignmnts?|homework|submitted|graded|classroom)\b/i.test(lower)) &&
+        (!/\btasks?\b/i.test(lower) || /\b(classroom|assignments?|homework)\b/i.test(lower))) {
         if (/\bexplain\b/i.test(lower)) {
             return [{ tool: 'classroom_explain', args: { query: clean } }];
         }
