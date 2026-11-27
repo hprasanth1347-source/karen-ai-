@@ -432,8 +432,14 @@ async function handleCommand(cmd, args, chatId, fromId, username) {
         case '/tamil':
         case '/english':
         case '/latest': {
-            const { generateDailyEditions, listEditions, renderEditionPdf } = await import('../services/newsroom.service.js');
+            const { cacheService } = await import('../services/cache.service.js');
             const lang = cmd === '/tamil' ? 'ta' : 'en';
+            const npLockKey = `tg:newspaper_cd:${chatId}:${lang}`;
+            if (await cacheService.get(npLockKey)) {
+                return '';
+            }
+            await cacheService.set(npLockKey, true, 180).catch(() => { });
+            const { generateDailyEditions, listEditions, renderEditionPdf } = await import('../services/newsroom.service.js');
             let ed = listEditions().find((e) => e.language === lang);
             if (!ed) {
                 const gen = await generateDailyEditions();
@@ -1228,6 +1234,13 @@ export async function telegramWebhook(req, res) {
             return;
         }
     }
+    // Drop stale retried updates (>90s old) so Telegram webhook retries never re-run old commands
+    const incomingMsg = update.message || update.edited_message;
+    if (incomingMsg?.date && Math.floor(Date.now() / 1000) - incomingMsg.date > 90) {
+        logger.info('Dropping stale retried Telegram update', { updateId: update.update_id, ageSec: Math.floor(Date.now() / 1000) - incomingMsg.date });
+        res.sendStatus(200);
+        return;
+    }
     try {
         if (update.callback_query) {
             await handleCallbackQuery(update.callback_query);
@@ -1311,6 +1324,7 @@ export async function registerTelegramWebhook(webhookUrl) {
     const body = {
         url: webhookUrl,
         allowed_updates: ['message', 'edited_message', 'callback_query'],
+        drop_pending_updates: true,
     };
     if (secret)
         body.secret_token = secret;
@@ -1373,7 +1387,9 @@ export async function setTelegramCommands() {
             { command: 'endlove', description: 'Exit Love Mode, back to normal' },
             { command: 'normal', description: 'Switch back to normal mode' },
             { command: 'insta', description: 'Instagram: /insta send raghul hello' },
+            { command: 'instasummary', description: 'Hourly Instagram DM chat summary list' },
             { command: 'ig_stop', description: 'Emergency stop Instagram Auto-DM' },
+            { command: 'link', description: 'Link Telegram to Karen AI (/link CODE)' },
             { command: 'google', description: '1-tap Sign in with Google (Drive/Gmail/Classroom)' },
             { command: 'connectgoogle', description: 'Connect Gmail, Drive, Calendar, Sheets & Classroom' },
             { command: 'newspaper', description: 'KAREN TIMES daily newspaper PDF (English)' },

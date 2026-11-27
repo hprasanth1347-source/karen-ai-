@@ -33,6 +33,16 @@ export async function markTelegramUpdateProcessed(updateId: number): Promise<boo
         .from('telegram_updates_dedupe')
         .insert({ update_id: updateId });
       if (error && error.code === '23505') return false;
+      if (!error) return true;
+    } catch {
+      // Fall through to user_settings dedupe
+    }
+    try {
+      const { loadUserSetting, saveUserSetting } = await import('../services/persistence.service.js');
+      const recent = (await loadUserSetting<number[]>('telegram_recent_updates')) || [];
+      if (recent.includes(updateId)) return false;
+      const next = [...recent.slice(-199), updateId];
+      await saveUserSetting('telegram_recent_updates', next);
     } catch {
       // Non-fatal
     }
