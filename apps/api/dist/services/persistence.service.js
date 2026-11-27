@@ -2,6 +2,7 @@ import { supabaseAdmin } from '../config/supabase.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { encryptJson, decryptJson } from '../utils/crypto.js';
+import { cacheService } from './cache.service.js';
 export { encryptJson, decryptJson };
 let cachedOwnerId = null;
 const ensuredProfiles = new Set();
@@ -165,6 +166,19 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
             ...config.GOOGLE_CLASSROOM_SCOPES.split(/[\s,]+/).filter(Boolean),
         ];
     const encrypted = encryptJson(finalTokens);
+    let persisted = false;
+    // 1. Always persist in Upstash Redis (survives across all Vercel serverless instances & Telegram)
+    if (cacheService.isRedisConfigured()) {
+        try {
+            await cacheService.set(`google:oauth:tokens:${userId}`, encrypted, 2592000);
+            await cacheService.set('google:oauth:tokens:owner', encrypted, 2592000);
+            persisted = true;
+        }
+        catch (redisErr) {
+            logger.warn('saveGoogleTokensToDb Redis persist failed', { redisErr });
+        }
+    }
+    // 2. Persist in Supabase provider_connections + user_settings
     const { error: upsertErr } = await supabaseAdmin.from('provider_connections').upsert({
         user_id: userId,
         provider: 'google',
@@ -192,11 +206,15 @@ export async function saveGoogleTokensToDb(tokens, explicitUserId) {
             },
             updated_at: new Date().toISOString(),
         }, { onConflict: 'user_id,key' });
-        if (settingErr) {
-            throw new Error(`Failed to persist Google tokens to Supabase: ${settingErr.message}`);
+        if (!settingErr) {
+            persisted = true;
+        }
+        else if (!persisted) {
+            throw new Error(`Failed to persist Google tokens to Supabase or Redis: ${settingErr.message}`);
         }
     }
     else {
+        persisted = true;
         // Also mirror in user_settings for fast/resilient fallback
         void saveUserSetting('google_oauth_tokens', {
             payload: encrypted,
@@ -268,6 +286,23 @@ export async function loadGoogleTokensWithStatus(explicitUserId) {
             return { tokens: parsedFallback, status: 'connected' };
         }
     }
+    // Upstash Redis fallback (persists across Vercel serverless cold starts even without DB tables)
+    if (cacheService.isRedisConfigured()) {
+        try {
+            const uid = explicitUserId || (await getOwnerUserId().catch(() => null));
+            const redisCipher = (uid ? await cacheService.get(`google:oauth:tokens:${uid}`) : null) ||
+                (await cacheService.get('google:oauth:tokens:owner'));
+            if (redisCipher) {
+                const parsedRedis = decryptJson(redisCipher);
+                if (parsedRedis?.accessToken) {
+                    return { tokens: parsedRedis, status: 'connected' };
+                }
+            }
+        }
+        catch {
+            // Ignore Redis read error
+        }
+    }
     if (memoryGoogleTokens?.accessToken && memoryGoogleStatus === 'connected') {
         return { tokens: memoryGoogleTokens, status: 'connected' };
     }
@@ -299,6 +334,11 @@ export async function clearGoogleTokensFromDb(explicitUserId) {
     try {
         await saveUserSetting('google_oauth_tokens', null);
         const userId = explicitUserId || (await getOwnerUserId());
+        if (cacheService.isRedisConfigured()) {
+            if (userId)
+                await cacheService.del(`google:oauth:tokens:${userId}`).catch(() => { });
+            await cacheService.del('google:oauth:tokens:owner').catch(() => { });
+        }
         if (!userId)
             return;
         await supabaseAdmin
