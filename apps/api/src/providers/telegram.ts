@@ -876,6 +876,8 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       return res.explanation;
     }
 
+    case '/google':
+    case '/connect':
     case '/connectgoogle':
     case '/connectclassroom': {
       if (!config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET) {
@@ -891,7 +893,15 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
             : `${config.APP_URL.replace(/\/$/, '')}/api/v1/auth/google/callback`;
       const target = cmd === '/connectclassroom' ? 'classroom' : 'drive';
       const url = buildGoogleAuthUrl(redirectUri, target, ownerUserId);
-      return `🔗 *Connect All Google Services*\n(Gmail, Drive, Calendar, Sheets, Contacts, Tasks & Classroom)\n\nOpen this link to authorize:\n${url}`;
+      await tgApiCall('sendMessage', {
+        chat_id: chatId,
+        text: '🔗 *Connect Google Account*\n(Gmail, Drive, Calendar, Sheets, Contacts, Tasks & Classroom)\n\nTap the button below to sign in with Google:',
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔗 Sign in with Google', url }]],
+        },
+      });
+      return '';
     }
 
     case '/disconnectclassroom': {
