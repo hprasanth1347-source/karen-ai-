@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { supabaseAdmin } from '../config/supabase.js';
+import { cacheService } from '../services/cache.service.js';
 const pendingStore = new Map();
 const chatResultsStore = new Map();
 const chatUploadStore = new Map();
@@ -13,6 +14,17 @@ export async function markTelegramUpdateProcessed(updateId) {
         const first = telegramDedupeSet.values().next().value;
         if (first !== undefined)
             telegramDedupeSet.delete(first);
+    }
+    // Persistent Redis deduplication across Vercel serverless cold starts
+    const redisKey = `tg:update_dedupe:${updateId}`;
+    try {
+        const existing = await cacheService.get(redisKey);
+        if (existing)
+            return false;
+        await cacheService.set(redisKey, true, 86400);
+    }
+    catch {
+        // Continue to DB dedupe fallback
     }
     if (supabaseAdmin) {
         try {

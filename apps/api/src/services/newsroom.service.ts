@@ -912,7 +912,19 @@ export function renderEditionPdf(edition: NewspaperEdition): Promise<Buffer> {
   });
 }
 
-export async function deliverEditionToTelegram(edition: NewspaperEdition): Promise<boolean> {
+export async function deliverEditionToTelegram(
+  edition: NewspaperEdition,
+  options?: { force?: boolean; autoScheduled?: boolean }
+): Promise<boolean> {
+  const { cacheService } = await import('./cache.service.js');
+  const dedupeKey = `newsroom:delivered:${edition.editionDate}:${edition.language}`;
+  if (options?.autoScheduled && !options?.force) {
+    const alreadySent = await cacheService.get<boolean>(dedupeKey).catch(() => false);
+    if (alreadySent) {
+      logger.info(`Skipping duplicate automatic newspaper delivery for ${edition.editionDate} (${edition.language})`);
+      return false;
+    }
+  }
   await saveEditionToDrive(edition).catch(() => {});
   const brand = edition.language === 'ta' ? newsroomConfig.brandTamil : newsroomConfig.brandEnglish;
   const header = `📰 *${brand}* — ${edition.editionDate} (Issue #${edition.issueNumber})\n_${newsroomConfig.tagline}_\n\n`;
@@ -933,6 +945,9 @@ export async function deliverEditionToTelegram(edition: NewspaperEdition): Promi
     pdfOk = false;
   }
   const ok = textOk || pdfOk;
+  if (ok) {
+    await cacheService.set(dedupeKey, true, 86400).catch(() => {});
+  }
   await supabaseAdmin
     .from('karen_times_deliveries')
     .insert({

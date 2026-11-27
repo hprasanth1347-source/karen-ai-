@@ -140,13 +140,16 @@ api.delete = (async (url: string, ...rest: any[]) => {
   return (rawDelete as any)(url, ...rest);
 }) as typeof api.delete;
 
-// Inject auth token synchronously from sessionStorage first, falling back to Supabase
+// Inject auth token synchronously from localStorage/sessionStorage first, falling back to Supabase
 api.interceptors.request.use(async (config) => {
   let token: string | undefined;
 
   if (typeof window !== 'undefined') {
     try {
-      const raw = window.sessionStorage.getItem('karen_auth_session');
+      // Check sessionStorage first (fast), then localStorage (persistent across tab closes)
+      const raw =
+        window.sessionStorage.getItem('karen_auth_session') ||
+        window.localStorage.getItem('karen_auth_session');
       if (raw) {
         const parsed = JSON.parse(raw) as { accessToken?: string };
         token = parsed.accessToken;
@@ -188,6 +191,7 @@ api.interceptors.response.use(
       getCache.clear();
       try {
         window.sessionStorage.removeItem('karen_auth_session');
+        window.localStorage.removeItem('karen_auth_session');
       } catch {
         // Ignore storage errors
       }

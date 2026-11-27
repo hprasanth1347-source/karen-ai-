@@ -146,9 +146,20 @@ export function planDeterministicCommand(
     }
   }
 
-  // 5. Classroom assignments / grades / exam prep (skip if user specifically asked about "task(s)" without classroom/assignment)
+  // 4b. "pending task" or "pending" alone → Karen task list (NOT classroom)
   if (
-    (/\b(pending|pendng|overdue|overdu|due|assignments?|assigments?|assignmnts?|homework|submitted|graded|classroom)\b/i.test(lower)) &&
+    /\b(pending\s+tasks?|show\s+pending|list\s+pending|my\s+pending|pending\s+items?)\b/i.test(lower) ||
+    (/\bpending\b/i.test(lower) && !/\b(assignment|homework|classroom|class|overdue|due)\b/i.test(lower))
+  ) {
+    return [{ tool: 'google_tasks_list', args: {} }];
+  }
+
+  // 5. Classroom assignments / grades / exam prep
+  // Only route to classroom if there is an explicit classroom/assignment keyword.
+  // "pending task" or "pending" alone → Karen task list (handled later), NOT classroom.
+  if (
+    (/\b(overdue|overdu|due|assignments?|assigments?|assignmnts?|homework|submitted|graded|classroom)\b/i.test(lower) ||
+      (/\b(pending|pendng)\b/i.test(lower) && /\b(assignment|homework|classroom|class)\b/i.test(lower))) &&
     (!/\btasks?\b/i.test(lower) || /\b(classroom|assignments?|homework)\b/i.test(lower))
   ) {
     if (/\bexplain\b/i.test(lower)) {

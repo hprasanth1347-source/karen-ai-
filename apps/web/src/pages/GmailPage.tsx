@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Mail, Sparkles, RefreshCw, Loader2, X } from 'lucide-react';
 import { api, readCachedGet } from '../lib/api';
+import { useGoogleIntegration } from '../hooks/useGoogleIntegration';
 
 interface EmailSummary {
   id: string;
@@ -16,10 +17,12 @@ interface FullEmail extends EmailSummary {
 }
 
 export const GmailPage: React.FC = () => {
-  const cachedStatus = readCachedGet<{ data?: { configured?: boolean; connected?: boolean } }>('/drive/status')?.data;
   const cachedEmails = readCachedGet<{ data?: EmailSummary[] }>('/gmail/messages')?.data;
-  const [configured, setConfigured] = useState(() => Boolean(cachedStatus?.configured));
-  const [connected, setConnected] = useState(() => Boolean(cachedStatus?.connected));
+  const { status: googleStatus, loading: googleLoading, error: googleError, connect } = useGoogleIntegration();
+  const configured = googleStatus.configured;
+  const gmailService = googleStatus.services.gmail;
+  const connected = googleStatus.connected && gmailService.connected;
+
   const [loading, setLoading] = useState(() => !(cachedEmails && cachedEmails.length > 0));
   const [digestLoading, setDigestLoading] = useState(false);
   const [emails, setEmails] = useState<EmailSummary[]>(() => cachedEmails ?? []);
@@ -41,45 +44,25 @@ export const GmailPage: React.FC = () => {
     }
   }, []);
 
-  const refreshStatus = useCallback(async (force = false) => {
-    if (!cachedEmails?.length || force) setLoading(true);
-    try {
-      const res = await api.get('/drive/status', force ? ({ skipCache: true } as any) : undefined);
-      const status = res.data?.data;
-      setConfigured(Boolean(status?.configured));
-      setConnected(Boolean(status?.connected));
-      if (status?.connected) {
-        await fetchEmails(force);
-      } else {
-        setLoading(false);
-      }
-    } catch (err: any) {
-      setError(
-        err?.response?.status === 401
-          ? 'Sign in at /auth first to connect and view Gmail.'
-          : err?.response?.data?.error || 'Failed to check Gmail status.'
-      );
-      setLoading(false);
+  useEffect(() => {
+    if (googleError) {
+      setError(googleError);
+    } else if (googleStatus.connected && gmailService.status === 'permission_required') {
+      setError(gmailService.error || 'Gmail permission required. Click Connect / Reconnect to grant Gmail scope.');
     }
-  }, [fetchEmails]);
+  }, [googleError, googleStatus.connected, gmailService.status, gmailService.error]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const oauthErr = params.get('error');
-    if (oauthErr) setError(`Google OAuth error: ${oauthErr}`);
-    refreshStatus();
-  }, [refreshStatus]);
+    if (googleLoading) return;
+    if (connected) {
+      void fetchEmails(false);
+    } else {
+      setLoading(false);
+    }
+  }, [connected, googleLoading, fetchEmails]);
 
   const handleConnect = async () => {
-    setError(null);
-    try {
-      const res = await api.get('/drive/auth-url', { params: { source: 'gmail' } });
-      if (res.data?.data?.url) {
-        window.location.href = res.data.data.url;
-      }
-    } catch (err: any) {
-      setError(err?.response?.data?.error || 'Could not start Google OAuth.');
-    }
+    await connect('gmail');
   };
 
   const handleRunDigest = async () => {

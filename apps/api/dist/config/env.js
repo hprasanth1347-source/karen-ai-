@@ -15,14 +15,32 @@ const envSchema = z.object({
     ALLOWED_ORIGINS: z.string().default('http://localhost:5173,http://localhost:3000'),
     WEB_ORIGIN: z
         .string()
-        .default(process.env.VERCEL
-        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || 'karen-ai-me.vercel.app'}`
-        : 'http://localhost:5173'),
+        .default((() => {
+        if (process.env.WEB_ORIGIN)
+            return process.env.WEB_ORIGIN;
+        if (process.env.APP_URL)
+            return process.env.APP_URL;
+        if (process.env.VERCEL_PROJECT_PRODUCTION_URL)
+            return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+        if (process.env.VERCEL_URL)
+            return `https://${process.env.VERCEL_URL}`;
+        if (process.env.VERCEL)
+            return 'https://karen-ai-me.vercel.app';
+        return 'http://localhost:5173';
+    })()),
     APP_URL: z
         .string()
-        .default(process.env.VERCEL
-        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || 'karen-ai-me.vercel.app'}`
-        : 'http://localhost:5173'),
+        .default((() => {
+        if (process.env.APP_URL)
+            return process.env.APP_URL;
+        if (process.env.VERCEL_PROJECT_PRODUCTION_URL)
+            return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+        if (process.env.VERCEL_URL)
+            return `https://${process.env.VERCEL_URL}`;
+        if (process.env.VERCEL)
+            return 'https://karen-ai-me.vercel.app';
+        return 'http://localhost:5173';
+    })()),
     // Supabase
     SUPABASE_URL: z.string().url().optional(),
     SUPABASE_ANON_KEY: z.string().optional(),
@@ -69,7 +87,19 @@ const envSchema = z.object({
     // Google
     GOOGLE_CLIENT_ID: z.string().optional().default(''),
     GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
-    GOOGLE_REDIRECT_URI: z.string().default('http://localhost:8080/api/v1/auth/google/callback'),
+    GOOGLE_REDIRECT_URI: z.string().default((() => {
+        if (process.env.GOOGLE_REDIRECT_URI)
+            return process.env.GOOGLE_REDIRECT_URI;
+        if (process.env.APP_URL)
+            return `${process.env.APP_URL.replace(/\/$/, '')}/api/v1/auth/google/callback`;
+        if (process.env.VERCEL_PROJECT_PRODUCTION_URL)
+            return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/v1/auth/google/callback`;
+        if (process.env.VERCEL_URL)
+            return `https://${process.env.VERCEL_URL}/api/v1/auth/google/callback`;
+        if (process.env.VERCEL)
+            return 'https://karen-ai-me.vercel.app/api/v1/auth/google/callback';
+        return 'http://localhost:8080/api/v1/auth/google/callback';
+    })()),
     GOOGLE_SEARCH_API_KEY: z.string().optional().default(''),
     GOOGLE_SEARCH_ENGINE_ID: z.string().optional().default(''),
     SEARCH_DAILY_LIMIT: z.coerce.number().int().positive().max(10000).default(90),
@@ -127,8 +157,8 @@ const envData = parsed.success ? parsed.data : {
     PORT: process.env.PORT || '8080',
     API_PORT: process.env.API_PORT || '8080',
     ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || 'http://localhost:5173',
-    WEB_ORIGIN: process.env.WEB_ORIGIN || 'http://localhost:5173',
-    APP_URL: process.env.APP_URL || 'http://localhost:5173',
+    WEB_ORIGIN: process.env.WEB_ORIGIN || process.env.APP_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : process.env.VERCEL ? 'https://karen-ai-me.vercel.app' : 'http://localhost:5173'),
+    APP_URL: process.env.APP_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : process.env.VERCEL ? 'https://karen-ai-me.vercel.app' : 'http://localhost:5173'),
     SUPABASE_URL: process.env.SUPABASE_URL,
     SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -165,7 +195,7 @@ const envData = parsed.success ? parsed.data : {
     WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN || '',
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
     GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || '',
-    GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || 'http://localhost:8080/api/v1/auth/google/callback',
+    GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL.replace(/\/$/, '')}/api/v1/auth/google/callback` : process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/v1/auth/google/callback` : process.env.VERCEL ? 'https://karen-ai-me.vercel.app/api/v1/auth/google/callback' : 'http://localhost:8080/api/v1/auth/google/callback'),
     GOOGLE_SEARCH_API_KEY: process.env.GOOGLE_SEARCH_API_KEY || '',
     GOOGLE_SEARCH_ENGINE_ID: process.env.GOOGLE_SEARCH_ENGINE_ID || '',
     SEARCH_DAILY_LIMIT: parseInt(process.env.SEARCH_DAILY_LIMIT || '90'),
@@ -218,7 +248,7 @@ if (process.env.NODE_ENV === 'production') {
         const value = process.env[key];
         return !value || value.includes('placeholder') || value.includes('replace-with');
     });
-    if (missingSecrets.length > 0) {
+    if (missingSecrets.length > 0 && process.env.NODE_ENV !== 'production') {
         console.warn(`Optional/feature secrets not configured (those endpoints will fail closed): ${missingSecrets.join(', ')}`);
     }
 }

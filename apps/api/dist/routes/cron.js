@@ -217,10 +217,76 @@ router.post('/cron/newsroom', verifyCronSecret, async (_req, res) => {
     const editions = await generateDailyEditions();
     let delivered = false;
     if (cfg.mode === 'AUTOMATIC') {
-        const enOk = await deliverEditionToTelegram(editions.en);
-        const taOk = await deliverEditionToTelegram(editions.ta);
+        const enOk = await deliverEditionToTelegram(editions.en, { autoScheduled: true });
+        const taOk = await deliverEditionToTelegram(editions.ta, { autoScheduled: true });
         delivered = enOk || taOk;
     }
     return success(res, { generated: true, mode: cfg.mode, delivered });
+});
+export async function sendHourlyInstagramDmSummary(force = false) {
+    const { cacheService } = await import('../services/cache.service.js');
+    const lockKey = 'ig:hourly_dm_summary_sent';
+    if (!force) {
+        const alreadySent = await cacheService.get(lockKey);
+        if (alreadySent) {
+            return { sent: false, chatsCount: 0, summaryText: '', skippedReason: 'Already sent within the last hour' };
+        }
+    }
+    const { getInstagramConversations } = await import('../providers/instagram.js');
+    const threads = await getInstagramConversations({ forceFresh: true }).catch(() => []);
+    const recentLogs = await instagramAutoReplyService.getLogs().catch(() => []);
+    const items = [];
+    if (Array.isArray(threads) && threads.length > 0) {
+        for (const t of threads.slice(0, 10)) {
+            const uname = t.participant?.username || 'instagram_user';
+            const latestMsg = t.messages?.[0]?.message || t.snippet || 'Active chat';
+            const cleanSnippet = String(latestMsg).replace(/\s+/g, ' ').trim().slice(0, 90);
+            items.push(`• *@${uname}* — "${cleanSnippet}"`);
+        }
+    }
+    else if (recentLogs.length > 0) {
+        const seen = new Set();
+        for (const log of recentLogs) {
+            if (seen.has(log.senderUsername))
+                continue;
+            seen.add(log.senderUsername);
+            const cleanIn = String(log.incomingText || '').replace(/\s+/g, ' ').trim().slice(0, 70);
+            items.push(`• *@${log.senderUsername}* — "${cleanIn}" (${log.status})`);
+            if (items.length >= 10)
+                break;
+        }
+    }
+    if (items.length === 0) {
+        return { sent: false, chatsCount: 0, summaryText: '', skippedReason: 'No active Instagram DMs to summarize' };
+    }
+    const istTime = new Date().toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+    const summaryText = `📸 *Hourly Instagram DM Summary* (${istTime} IST)\n\n${items.join('\n')}`;
+    const sent = await sendTelegramMessage(summaryText);
+    if (sent) {
+        await cacheService.set(lockKey, true, 3600).catch(() => { });
+    }
+    return { sent, chatsCount: items.length, summaryText };
+}
+router.get('/cron/instagram-dm-summary', verifyCronSecret, async (_req, res) => {
+    try {
+        const result = await sendHourlyInstagramDmSummary(false);
+        return success(res, result);
+    }
+    catch (err) {
+        return error(res, err instanceof Error ? err.message : 'Instagram hourly summary failed', 500);
+    }
+});
+router.post('/cron/instagram-dm-summary', verifyCronSecret, async (_req, res) => {
+    try {
+        const result = await sendHourlyInstagramDmSummary(Boolean(_req.body?.force));
+        return success(res, result);
+    }
+    catch (err) {
+        return error(res, err instanceof Error ? err.message : 'Instagram hourly summary failed', 500);
+    }
 });
 export default router;

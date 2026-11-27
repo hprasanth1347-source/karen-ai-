@@ -779,7 +779,16 @@ export function renderEditionPdf(edition) {
         doc.end();
     });
 }
-export async function deliverEditionToTelegram(edition) {
+export async function deliverEditionToTelegram(edition, options) {
+    const { cacheService } = await import('./cache.service.js');
+    const dedupeKey = `newsroom:delivered:${edition.editionDate}:${edition.language}`;
+    if (options?.autoScheduled && !options?.force) {
+        const alreadySent = await cacheService.get(dedupeKey).catch(() => false);
+        if (alreadySent) {
+            logger.info(`Skipping duplicate automatic newspaper delivery for ${edition.editionDate} (${edition.language})`);
+            return false;
+        }
+    }
     await saveEditionToDrive(edition).catch(() => { });
     const brand = edition.language === 'ta' ? newsroomConfig.brandTamil : newsroomConfig.brandEnglish;
     const header = `📰 *${brand}* — ${edition.editionDate} (Issue #${edition.issueNumber})\n_${newsroomConfig.tagline}_\n\n`;
@@ -796,6 +805,9 @@ export async function deliverEditionToTelegram(edition) {
         pdfOk = false;
     }
     const ok = textOk || pdfOk;
+    if (ok) {
+        await cacheService.set(dedupeKey, true, 86400).catch(() => { });
+    }
     await supabaseAdmin
         .from('karen_times_deliveries')
         .insert({

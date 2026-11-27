@@ -3,6 +3,8 @@ import type { User, Session } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { api } from '../lib/api';
 
+// Use localStorage so session survives tab close & browser refresh.
+// sessionStorage wipes on tab close — that's what caused "ask to reconnect every time".
 const SESSION_STORAGE_KEY = 'karen_auth_session';
 
 interface StoredSession {
@@ -39,12 +41,17 @@ function isJwtExpired(token: string): boolean {
 function readStoredSession(): StoredSession | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+    // Try localStorage first (persists across tab closes), fall back to sessionStorage
+    const raw =
+      window.localStorage.getItem(SESSION_STORAGE_KEY) ||
+      window.sessionStorage.getItem(SESSION_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredSession;
     if (parsed?.user && parsed?.accessToken && !isJwtExpired(parsed.accessToken)) {
       return parsed;
     }
+    // Token expired — clear both stores
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
     window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
     return null;
   } catch {
@@ -55,10 +62,11 @@ function readStoredSession(): StoredSession | null {
 function writeStoredSession(user: User, accessToken: string) {
   if (typeof window === 'undefined') return;
   try {
-    window.sessionStorage.setItem(
-      SESSION_STORAGE_KEY,
-      JSON.stringify({ user, accessToken })
-    );
+    const payload = JSON.stringify({ user, accessToken });
+    // Write to both so it persists across tab closes (localStorage) and
+    // is accessible to the api interceptor (sessionStorage read first).
+    window.localStorage.setItem(SESSION_STORAGE_KEY, payload);
+    window.sessionStorage.setItem(SESSION_STORAGE_KEY, payload);
   } catch {
     // Ignore storage quota errors
   }
@@ -67,6 +75,7 @@ function writeStoredSession(user: User, accessToken: string) {
 function clearStoredSession() {
   if (typeof window === 'undefined') return;
   try {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
     window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
   } catch {
     // Ignore
@@ -97,6 +106,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           return;
         } catch {
+          // If Supabase is configured, try refreshing the session before clearing
+          if (isSupabaseConfigured && supabase) {
+            const { data } = await supabase.auth.refreshSession().catch(() => ({ data: { session: null } }));
+            if (data.session?.access_token && data.session.user) {
+              writeStoredSession(data.session.user, data.session.access_token);
+              if (mounted) {
+                setUser(data.session.user);
+                setSession(data.session);
+                setLoading(false);
+              }
+              return;
+            }
+          }
           clearStoredSession();
           if (mounted) {
             setUser(null);

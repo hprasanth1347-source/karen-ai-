@@ -10,6 +10,7 @@ import { getNotificationPreferences, getNotificationStats, listNotificationHisto
 import { generateAndSendGreeting, getCompanionConfig, getGreetingHistory, updateCompanionConfig, } from '../services/dailyCompanion.service.js';
 import { config } from '../config/env.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
+import { createTelegramLinkCode } from '../services/persistence.service.js';
 import { success, error } from '../utils/response.js';
 const router = Router();
 router.use('/telegram', (req, res, next) => {
@@ -192,6 +193,17 @@ router.post('/telegram/companion/trigger', async (req, res) => {
         force: parsed.data.force,
     });
     return success(res, result);
+});
+/** POST /telegram/link-code — generate a single-use 10-min code to link Telegram to this Karen AI account */
+router.post('/telegram/link-code', async (req, res) => {
+    if (!req.user?.id) {
+        return error(res, 'Authentication required', 401, 'AUTH_REQUIRED');
+    }
+    const result = await createTelegramLinkCode(req.user.id);
+    return success(res, {
+        ...result,
+        instruction: `Send /link ${result.code} to your Karen AI Telegram bot within 10 minutes.`,
+    });
 });
 /** POST /telegram/webhook — Telegram Bot API webhook endpoint */
 router.post('/telegram/webhook', telegramWebhook);

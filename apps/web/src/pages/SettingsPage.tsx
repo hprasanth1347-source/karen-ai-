@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Save, Search, Palette } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Search, RefreshCw, Unplug, ShieldCheck, AlertTriangle, Palette } from 'lucide-react';
 import { api } from '../lib/api';
+import { useGoogleIntegration } from '../hooks/useGoogleIntegration';
 
 interface BrandSettings {
   brandName: string;
@@ -12,6 +13,14 @@ interface BrandSettings {
 }
 
 export const SettingsPage: React.FC = () => {
+  const {
+    status: googleStatus,
+    loading: googleLoading,
+    error: googleError,
+    refetch: refetchGoogle,
+    connect: connectGoogle,
+    disconnect: disconnectGoogle,
+  } = useGoogleIntegration();
   const [language, setLanguage] = useState('thanglish');
   const [timezone] = useState('Asia/Kolkata (IST)');
   const [defaultAi, setDefaultAi] = useState('groq');
@@ -156,6 +165,123 @@ export const SettingsPage: React.FC = () => {
             Save Brand Settings
           </button>
           {brandSaved && <span className="text-xs font-mono font-bold text-ink">{brandSaved}</span>}
+        </div>
+      </div>
+
+      <div className="bg-white border-3 border-ink p-5 shadow-brutal space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink pb-2">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-teal" />
+            <h3 className="font-extrabold text-sm">GOOGLE ACCOUNT &amp; INTEGRATIONS</h3>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void refetchGoogle()}
+              className="btn-ghost text-xs flex items-center gap-1"
+              disabled={googleLoading}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${googleLoading ? 'animate-spin' : ''}`} />
+              Refresh Status
+            </button>
+            {googleStatus.connected ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void connectGoogle('drive')}
+                  className="btn-teal text-xs"
+                >
+                  Reconnect / Permissions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void disconnectGoogle()}
+                  className="btn-ghost text-xs text-coral flex items-center gap-1"
+                >
+                  <Unplug className="w-3.5 h-3.5" />
+                  Disconnect Google
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void connectGoogle('drive')}
+                className="btn-teal text-xs"
+              >
+                Sign in with Google
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono bg-cream-50 border-2 border-ink p-3">
+          <div>
+            <span className="text-ink-muted">Google Account:</span>{' '}
+            <strong className={googleStatus.connected ? 'text-teal' : 'text-coral'}>
+              {googleLoading ? 'Checking...' : googleStatus.connected ? 'Connected' : googleStatus.googleStatus === 'needs_reauth' ? 'Reconnection Required' : 'Disconnected'}
+            </strong>
+          </div>
+          <div>
+            <span className="text-ink-muted">Email:</span>{' '}
+            <strong>{googleStatus.googleEmail || '—'}</strong>
+          </div>
+          <div>
+            <span className="text-ink-muted">Last Connected:</span>{' '}
+            <strong>
+              {googleStatus.connectedAt
+                ? new Date(googleStatus.connectedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+                : '—'}
+            </strong>
+          </div>
+          <div>
+            <span className="text-ink-muted">Refresh Token:</span>{' '}
+            <strong>{googleStatus.hasRefreshToken ? 'Stored (Auto-Refresh Active)' : 'Not Present'}</strong>
+          </div>
+        </div>
+
+        {googleError && (
+          <div className="p-2.5 border-2 border-ink bg-coral/15 text-coral text-xs font-bold flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{googleError}</span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+          {([
+            ['drive', 'Google Drive'],
+            ['gmail', 'Gmail'],
+            ['calendar', 'Google Calendar'],
+            ['sheets', 'Google Sheets'],
+            ['contacts', 'Google Contacts'],
+            ['classroom', 'Google Classroom'],
+          ] as const).map(([key, label]) => {
+            const svc = googleStatus.services[key];
+            const badge = svc.connected
+              ? 'bg-teal text-white'
+              : svc.status === 'permission_required'
+                ? 'bg-yellow text-ink'
+                : 'bg-cream-200 text-ink-muted';
+            const statusText = svc.connected
+              ? 'Connected'
+              : svc.status === 'permission_required'
+                ? 'Permission Required'
+                : svc.status === 'error'
+                  ? 'Error'
+                  : 'Disconnected';
+            return (
+              <div key={key} className="border-2 border-ink p-2.5 bg-white flex flex-col justify-between gap-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold">{label}</span>
+                  <span className={`px-1.5 py-0.5 text-[10px] font-mono font-bold border border-ink ${badge}`}>
+                    {statusText}
+                  </span>
+                </div>
+                {svc.error && !svc.connected && (
+                  <p className="text-[10px] text-ink-muted">{svc.error}</p>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 

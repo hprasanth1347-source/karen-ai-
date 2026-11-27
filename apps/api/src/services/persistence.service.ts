@@ -66,6 +66,9 @@ export interface StoredGoogleTokens {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
+  scope?: string;
+  email?: string;
+  connectedAt?: number;
 }
 
 export interface StoredInstagramTokens {
@@ -77,6 +80,10 @@ export interface StoredInstagramTokens {
 
 export async function getOwnerUserId(): Promise<string | null> {
   if (cachedOwnerId) return cachedOwnerId;
+  if (config.OWNER_USER_ID && UUID_RE.test(config.OWNER_USER_ID)) {
+    cachedOwnerId = config.OWNER_USER_ID;
+    return cachedOwnerId;
+  }
   if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('example.supabase.co')) {
     return null;
   }
@@ -167,14 +174,30 @@ export async function saveGoogleTokensToDb(
   }
   await ensureProfileRow(userId);
 
-  // Never overwrite an existing refreshToken with an empty one
-  if (!finalTokens.refreshToken) {
-    const existing = await loadGoogleTokensWithStatus(userId);
-    if (existing.tokens?.refreshToken) {
-      finalTokens = { ...finalTokens, refreshToken: existing.tokens.refreshToken };
-      memoryGoogleTokens = finalTokens;
-    }
+  // Never overwrite an existing refreshToken, scope, email, or connectedAt with empty values
+  const existing = await loadGoogleTokensWithStatus(userId);
+  if (existing.tokens) {
+    finalTokens = {
+      ...finalTokens,
+      refreshToken: finalTokens.refreshToken || existing.tokens.refreshToken || '',
+      scope: finalTokens.scope || existing.tokens.scope,
+      email: finalTokens.email || existing.tokens.email,
+      connectedAt: finalTokens.connectedAt || existing.tokens.connectedAt || Date.now(),
+    };
+    memoryGoogleTokens = finalTokens;
+  } else if (!finalTokens.connectedAt) {
+    finalTokens = { ...finalTokens, connectedAt: Date.now() };
+    memoryGoogleTokens = finalTokens;
   }
+
+  const scopesArray = finalTokens.scope
+    ? finalTokens.scope.split(/[\s,]+/).filter(Boolean)
+    : [
+        'https://www.googleapis.com/auth/drive.readonly',
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.send',
+        ...config.GOOGLE_CLASSROOM_SCOPES.split(/[\s,]+/).filter(Boolean),
+      ];
 
   const encrypted = encryptJson(finalTokens);
   const { error: upsertErr } = await supabaseAdmin.from('provider_connections').upsert(
@@ -182,13 +205,8 @@ export async function saveGoogleTokensToDb(
       user_id: userId,
       provider: 'google',
       status: 'active',
-      config: { payload: encrypted },
-      scopes: [
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/gmail.readonly',
-        'https://www.googleapis.com/auth/gmail.send',
-        ...config.GOOGLE_CLASSROOM_SCOPES.split(/[\s,]+/).filter(Boolean),
-      ],
+      config: { payload: encrypted, email: finalTokens.email || null },
+      scopes: scopesArray,
       expires_at: new Date(finalTokens.expiresAt).toISOString(),
       last_sync_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -200,11 +218,24 @@ export async function saveGoogleTokensToDb(
       userId,
       upsertErr,
     });
-    await saveUserSetting('google_oauth_tokens', {
-      payload: encrypted,
-      expiresAt: finalTokens.expiresAt,
-      updatedAt: new Date().toISOString(),
-    });
+    const { error: settingErr } = await supabaseAdmin
+      .from('user_settings')
+      .upsert(
+        {
+          user_id: userId,
+          key: 'google_oauth_tokens',
+          value: {
+            payload: encrypted,
+            expiresAt: finalTokens.expiresAt,
+            updatedAt: new Date().toISOString(),
+          },
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id,key' }
+      );
+    if (settingErr) {
+      throw new Error(`Failed to persist Google tokens to Supabase: ${settingErr.message}`);
+    }
   } else {
     // Also mirror in user_settings for fast/resilient fallback
     void saveUserSetting('google_oauth_tokens', {
@@ -444,4 +475,170 @@ export async function clearInstagramTokensFromDb(explicitUserId?: string): Promi
   } catch {
     // Ignore
   }
+}
+
+// ─── Telegram <-> Karen AI Account Linking (Single-Use, Expiring) ────────────
+
+export interface TelegramLinkRecord {
+  karenUserId: string;
+  telegramUserId: string;
+  chatId: string;
+  username?: string;
+  linkedAt: string;
+}
+
+const memoryTelegramLinkTokens = new Map<string, { karenUserId: string; expiresAt: number }>();
+const memoryTelegramLinks = new Map<string, TelegramLinkRecord>();
+
+export async function createTelegramLinkCode(karenUserId: string): Promise<{ code: string; expiresAt: string }> {
+  const crypto = await import('node:crypto');
+  const code = crypto.randomBytes(6).toString('hex').toUpperCase(); // 12-char single-use code
+  const expiresAtMs = Date.now() + 10 * 60 * 1000;
+  memoryTelegramLinkTokens.set(code, { karenUserId, expiresAt: expiresAtMs });
+
+  try {
+    await supabaseAdmin.from('user_settings').upsert(
+      {
+        user_id: karenUserId,
+        key: `telegram_link_code:${code}`,
+        value: { karenUserId, expiresAt: expiresAtMs, used: false },
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,key' }
+    );
+  } catch {
+    // Memory map still holds it for current instance
+  }
+
+  return { code, expiresAt: new Date(expiresAtMs).toISOString() };
+}
+
+export async function linkTelegramAccountToUser(record: TelegramLinkRecord): Promise<void> {
+  memoryTelegramLinks.set(record.chatId, record);
+  if (record.telegramUserId) memoryTelegramLinks.set(record.telegramUserId, record);
+
+  try {
+    await ensureProfileRow(record.karenUserId);
+    await supabaseAdmin.from('provider_connections').upsert(
+      {
+        user_id: record.karenUserId,
+        provider: 'telegram',
+        status: 'active',
+        config: {
+          chatId: record.chatId,
+          telegramUserId: record.telegramUserId,
+          username: record.username || null,
+          linkedAt: record.linkedAt,
+        },
+        last_sync_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,provider' }
+    );
+  } catch (err) {
+    logger.warn('linkTelegramAccountToUser failed', { err });
+  }
+}
+
+export async function consumeTelegramLinkCode(
+  rawCode: string,
+  telegramUserId: string,
+  chatId: string,
+  username?: string
+): Promise<{ ok: boolean; karenUserId?: string; error?: string }> {
+  const code = rawCode.trim().toUpperCase();
+  if (!code) return { ok: false, error: 'Missing link code.' };
+
+  let karenUserId: string | undefined;
+  let expiresAtMs = 0;
+
+  const mem = memoryTelegramLinkTokens.get(code);
+  if (mem) {
+    memoryTelegramLinkTokens.delete(code); // Single-use
+    karenUserId = mem.karenUserId;
+    expiresAtMs = mem.expiresAt;
+  } else {
+    try {
+      const { data } = await supabaseAdmin
+        .from('user_settings')
+        .select('user_id, value')
+        .eq('key', `telegram_link_code:${code}`)
+        .maybeSingle();
+      if (data?.value) {
+        const val = data.value as { karenUserId?: string; expiresAt?: number; used?: boolean };
+        if (val.used) return { ok: false, error: 'Link code already used.' };
+        karenUserId = val.karenUserId || data.user_id;
+        expiresAtMs = Number(val.expiresAt || 0);
+        // Mark single-use immediately
+        await supabaseAdmin
+          .from('user_settings')
+          .delete()
+          .eq('key', `telegram_link_code:${code}`);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  if (!karenUserId || !expiresAtMs) {
+    return { ok: false, error: 'Invalid or unknown link code. Generate a new one in Karen AI.' };
+  }
+  if (Date.now() > expiresAtMs) {
+    return { ok: false, error: 'Link code expired (10 min limit). Generate a new one in Karen AI.' };
+  }
+
+  await linkTelegramAccountToUser({
+    karenUserId,
+    telegramUserId: String(telegramUserId),
+    chatId: String(chatId),
+    username,
+    linkedAt: new Date().toISOString(),
+  });
+  return { ok: true, karenUserId };
+}
+
+export async function resolveKarenUserIdForTelegram(
+  chatId: string | number,
+  telegramUserId?: string | number
+): Promise<string | null> {
+  const chatKey = String(chatId);
+  const tgKey = telegramUserId ? String(telegramUserId) : '';
+
+  const mem = memoryTelegramLinks.get(chatKey) || (tgKey ? memoryTelegramLinks.get(tgKey) : undefined);
+  if (mem?.karenUserId) return mem.karenUserId;
+
+  if (config.SUPABASE_URL && !config.SUPABASE_URL.includes('example.supabase.co')) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('provider_connections')
+        .select('user_id, config')
+        .eq('provider', 'telegram')
+        .eq('status', 'active');
+      if (Array.isArray(data)) {
+        const match = data.find((row) => {
+          const cfg = (row.config || {}) as { chatId?: string; telegramUserId?: string };
+          return cfg.chatId === chatKey || (tgKey && cfg.telegramUserId === tgKey);
+        });
+        if (match?.user_id) {
+          const cfg = (match.config || {}) as { chatId?: string; telegramUserId?: string; username?: string; linkedAt?: string };
+          memoryTelegramLinks.set(chatKey, {
+            karenUserId: match.user_id,
+            chatId: cfg.chatId || chatKey,
+            telegramUserId: cfg.telegramUserId || tgKey,
+            username: cfg.username,
+            linkedAt: cfg.linkedAt || new Date().toISOString(),
+          });
+          return match.user_id;
+        }
+      }
+    } catch (err) {
+      logger.warn('resolveKarenUserIdForTelegram query failed', { err });
+    }
+  }
+
+  // Fallback ONLY for the configured owner chat ID
+  if (config.TELEGRAM_OWNER_CHAT_ID && chatKey === String(config.TELEGRAM_OWNER_CHAT_ID).trim()) {
+    return await getOwnerUserId();
+  }
+  return null;
 }

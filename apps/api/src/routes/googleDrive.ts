@@ -119,9 +119,11 @@ export { getRedirectUri as getGoogleRedirectUri };
 function buildGoogleAuthUrl(
   redirectUri: string,
   stateTarget: GoogleTargetPage = 'drive',
-  userId = 'owner'
+  userId = 'owner',
+  extraScopes?: string[]
 ): string {
   const scopes = [
+    'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/drive.file',
     'https://www.googleapis.com/auth/gmail.readonly',
@@ -139,6 +141,11 @@ function buildGoogleAuthUrl(
       'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly';
     for (const s of rawClassroomScopes.split(/[\s,]+/).filter(Boolean)) {
       if (!scopes.includes(s)) scopes.push(s);
+    }
+  }
+  if (extraScopes) {
+    for (const s of extraScopes) {
+      if (s && !scopes.includes(s)) scopes.push(s);
     }
   }
   const signedState = createSignedOAuthState(userId, stateTarget);
@@ -183,6 +190,7 @@ async function performGoogleTokenRefresh(
         access_token?: string;
         refresh_token?: string;
         expires_in?: number;
+        scope?: string;
         error?: string;
       };
 
@@ -191,6 +199,9 @@ async function performGoogleTokenRefresh(
           accessToken: json.access_token,
           refreshToken: json.refresh_token || stored.refreshToken,
           expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
+          scope: json.scope || stored.scope,
+          email: stored.email,
+          connectedAt: stored.connectedAt,
         };
         await saveGoogleTokensToDb(refreshed, userId);
         return refreshed.accessToken;
@@ -344,6 +355,7 @@ router.get('/auth/google/callback', async (req, res) => {
       access_token?: string;
       refresh_token?: string;
       expires_in?: number;
+      scope?: string;
       error?: string;
       error_description?: string;
     };
@@ -352,16 +364,35 @@ router.get('/auth/google/callback', async (req, res) => {
       return res.redirect(`${targetPage}?error=${encodeURIComponent(json.error_description || json.error || 'token_exchange_failed')}`);
     }
 
+    // Fetch Google account email for display & verification (non-fatal)
+    let googleEmail: string | undefined;
+    try {
+      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${json.access_token}` },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (userInfoRes.ok) {
+        const info = (await userInfoRes.json()) as { email?: string };
+        googleEmail = info.email;
+      }
+    } catch {
+      // Ignore userinfo failure
+    }
+
     const tokenPayload: StoredGoogleTokens = {
       accessToken: json.access_token,
       refreshToken: json.refresh_token || '',
       expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
+      scope: json.scope,
+      email: googleEmail,
+      connectedAt: Date.now(),
     };
 
     try {
       await saveGoogleTokensToDb(tokenPayload, verifiedState.userId);
     } catch (dbErr) {
-      logger.warn('saveGoogleTokensToDb threw, continuing with encrypted HttpOnly cookie', { dbErr });
+      logger.error('saveGoogleTokensToDb failed during OAuth callback', { dbErr });
+      return res.redirect(`${targetPage}?error=${encodeURIComponent('persistence_failed')}`);
     }
 
     // Also persist encrypted tokens in an HttpOnly cookie so Google features work even if DB is unavailable
@@ -380,6 +411,15 @@ router.get('/auth/google/callback', async (req, res) => {
 
     if (verifiedState.target === 'telegram') {
       try {
+        if (config.TELEGRAM_OWNER_CHAT_ID && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(verifiedState.userId)) {
+          const { linkTelegramAccountToUser } = await import('../services/persistence.service.js');
+          await linkTelegramAccountToUser({
+            karenUserId: verifiedState.userId,
+            telegramUserId: String(config.TELEGRAM_OWNER_CHAT_ID).trim(),
+            chatId: String(config.TELEGRAM_OWNER_CHAT_ID).trim(),
+            linkedAt: new Date().toISOString(),
+          }).catch(() => {});
+        }
         const { getTelegramBotInfo, sendTelegramMessage, telegramState } = await import('../providers/telegram.js');
         await sendTelegramMessage(
           '✅ *Google Account Connected!*\n\nDrive, Gmail, Calendar, Sheets, Contacts & Classroom are now ready in Telegram. Try `/drive`, `/gmail`, or `/classroom`.'
@@ -400,6 +440,154 @@ router.get('/auth/google/callback', async (req, res) => {
     const reason = err instanceof Error ? err.message : 'oauth_callback_error';
     return res.redirect(`${targetPage}?error=${encodeURIComponent(reason)}`);
   }
+});
+
+// ─── Comprehensive Google Integration Status ──────────────────────────────────
+// Returns per-service connection status for Drive, Gmail, Calendar, Sheets, Contacts, Classroom
+router.get('/google/integration-status', requireAuth, requireOwner, async (req, res) => {
+  const configured = isGoogleConfigured();
+  const userId = req.user?.id || (await getOwnerUserId()) || undefined;
+
+  // Try DB then cookie
+  let googleToken: string | null = null;
+  let googleStatus = await getGoogleConnectionStatus(userId);
+  if (googleStatus !== 'connected') {
+    const cookieTokens = readGoogleTokensFromCookie(req);
+    if (cookieTokens?.accessToken) {
+      googleToken = cookieTokens.accessToken;
+      googleStatus = 'connected';
+    }
+  } else {
+    googleToken = await getGoogleAccessToken(userId, req);
+  }
+
+  const connected = googleStatus === 'connected' && Boolean(googleToken);
+
+  // Load stored tokens to get google email, connectedAt, refresh capability, & scopes
+  const { tokens } = await loadGoogleTokensWithStatus(userId);
+  const storedScopes: string[] = tokens?.scope?.split(/[\s,]+/).filter(Boolean) ?? [];
+  const hasRefreshToken = Boolean(tokens?.refreshToken);
+  const connectedAt = tokens?.connectedAt ? new Date(tokens.connectedAt).toISOString() : undefined;
+
+  // Check individual service scopes (if scopes are recorded, verify exact match; otherwise probe API)
+  const hasScope = (s: string) =>
+    storedScopes.length === 0 || storedScopes.some((sc) => sc.includes(s));
+
+  type ServiceStatus = {
+    connected: boolean;
+    status: 'connected' | 'permission_required' | 'disconnected' | 'error';
+    error?: string;
+    scopeRequired?: string;
+  };
+  const makeStatus = (
+    conn: boolean,
+    svcStatus: ServiceStatus['status'],
+    err?: string,
+    scope?: string
+  ): ServiceStatus => ({
+    connected: conn,
+    status: svcStatus,
+    ...(err ? { error: err } : {}),
+    ...(scope ? { scopeRequired: scope } : {}),
+  });
+
+  async function probeService(url: string, scope: string): Promise<ServiceStatus> {
+    if (!connected || !googleToken) {
+      return makeStatus(
+        false,
+        googleStatus === 'needs_reauth' ? 'error' : 'disconnected',
+        googleStatus === 'needs_reauth' ? 'Google session expired — reconnect required' : 'Google not connected'
+      );
+    }
+    if (!hasScope(scope)) {
+      return makeStatus(false, 'permission_required', 'Permission not granted yet', scope);
+    }
+    try {
+      const r = await fetch(url, {
+        headers: { Authorization: `Bearer ${googleToken}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) return makeStatus(true, 'connected');
+      if (r.status === 403) {
+        return makeStatus(false, 'permission_required', 'Missing permission or API disabled in Google Cloud', scope);
+      }
+      if (r.status === 401) return makeStatus(false, 'error', 'Token expired — reconnect Google');
+      if (r.status === 429) return makeStatus(true, 'connected', 'Google API rate limit reached temporarily');
+      return makeStatus(false, 'error', `API error (${r.status})`);
+    } catch {
+      return makeStatus(false, 'error', 'Network timeout checking Google API');
+    }
+  }
+
+  // Probe all 6 services in parallel
+  const [drive, gmail, calendar, sheets, contacts, classroom] = await Promise.all([
+    probeService(
+      'https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id)',
+      'drive'
+    ),
+    probeService(
+      'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+      'gmail'
+    ),
+    probeService(
+      'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1',
+      'calendar'
+    ),
+    probeService(
+      'https://www.googleapis.com/drive/v3/files?q=mimeType%3D%27application%2Fvnd.google-apps.spreadsheet%27&pageSize=1&fields=files(id)',
+      'spreadsheets'
+    ),
+    probeService(
+      'https://people.googleapis.com/v1/people/me/connections?pageSize=1&personFields=names',
+      'contacts'
+    ),
+    probeService(
+      'https://classroom.googleapis.com/v1/courses?pageSize=1&courseStates=ACTIVE',
+      'classroom'
+    ),
+  ]);
+
+  let googleEmail: string | undefined = tokens?.email;
+  if (!googleEmail && gmail.connected && googleToken) {
+    try {
+      const r = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+        headers: { Authorization: `Bearer ${googleToken}` },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (r.ok) {
+        const j = (await r.json()) as { emailAddress?: string };
+        googleEmail = j.emailAddress;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return success(res, {
+    configured,
+    connected,
+    googleStatus,
+    googleEmail,
+    connectedAt,
+    hasRefreshToken,
+    scopes: storedScopes,
+    lastChecked: new Date().toISOString(),
+    services: { drive, gmail, calendar, sheets, contacts, classroom },
+  });
+});
+
+// Alias: /google/status (simpler check without probing)
+router.get('/google/status', requireAuth, requireOwner, async (req, res) => {
+  const configured = isGoogleConfigured();
+  const userId = req.user?.id || (await getOwnerUserId()) || undefined;
+  let googleStatus = await getGoogleConnectionStatus(userId);
+  if (googleStatus !== 'connected') {
+    const cookieTokens = readGoogleTokensFromCookie(req);
+    if (cookieTokens?.accessToken) googleStatus = 'connected';
+  }
+  return success(res, {
+    configured,
+    connected: googleStatus === 'connected',
+    status: googleStatus,
+  });
 });
 
 router.use('/drive', requireAuth, requireOwner);
@@ -427,8 +615,12 @@ router.get('/drive/auth-url', async (req, res) => {
   const redirectUri = getRedirectUri(req);
   const rawSource = typeof req.query.source === 'string' ? (req.query.source as GoogleTargetPage) : 'drive';
   const state: GoogleTargetPage = VALID_TARGET_PAGES.has(rawSource) ? rawSource : 'drive';
+  const extraScopes =
+    typeof req.query.scopes === 'string'
+      ? req.query.scopes.split(/[\s,]+/).filter(Boolean)
+      : undefined;
   return success(res, {
-    url: buildGoogleAuthUrl(redirectUri, state, userId),
+    url: buildGoogleAuthUrl(redirectUri, state, userId, extraScopes),
     redirectUri,
   });
 });

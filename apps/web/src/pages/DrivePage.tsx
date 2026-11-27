@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { HardDrive, Search, Lock, FileText, ExternalLink, RefreshCw, Unplug, Loader2, Mail, X, FileSpreadsheet } from 'lucide-react';
 import { api, readCachedGet } from '../lib/api';
+import { useGoogleIntegration } from '../hooks/useGoogleIntegration';
 
 interface DriveFile {
   id: string;
@@ -40,12 +41,13 @@ function formatSize(bytes?: string): string {
 }
 
 export const DrivePage: React.FC = () => {
-  const cachedStatus = readCachedGet<{ data?: { configured?: boolean; connected?: boolean } }>('/drive/status')?.data;
   const cachedFiles = readCachedGet<{ data?: DriveFile[] }>('/drive/files')?.data;
   const cachedImpEmails = readCachedGet<{ data?: ImportantEmail[] }>('/gmail/messages', { important: '1' })?.data;
 
-  const [configured, setConfigured] = useState(() => Boolean(cachedStatus?.configured));
-  const [connected, setConnected] = useState(() => Boolean(cachedStatus?.connected));
+  const { status: googleStatus, loading: googleLoading, error: googleError, authUrl, refetch: refetchGoogle } = useGoogleIntegration();
+  const configured = googleStatus.configured;
+  const connected = googleStatus.connected;
+
   const [loading, setLoading] = useState(() => !(cachedFiles && cachedFiles.length > 0));
   const [files, setFiles] = useState<DriveFile[]>(() => cachedFiles ?? []);
   const [importantEmails, setImportantEmails] = useState<ImportantEmail[]>(() => cachedImpEmails ?? []);
@@ -88,41 +90,29 @@ export const DrivePage: React.FC = () => {
     }
   }, [files.length]);
 
-  const refreshStatus = useCallback(async (force = false) => {
-    if (!files.length || force) setLoading(true);
-    try {
-      const res = await api.get('/drive/status', force ? ({ skipCache: true } as any) : undefined);
-      const status = res.data?.data;
-      setConfigured(Boolean(status?.configured));
-      setConnected(Boolean(status?.connected));
-      if (status?.connected) {
-        await loadFiles('', force);
-      } else {
-        setLoading(false);
-      }
-    } catch (err: any) {
-      setError(
-        err?.response?.status === 401
-          ? 'Sign in at /auth first to connect and view Google Drive.'
-          : err?.response?.data?.error || 'Failed to check Google Drive status.'
-      );
-      setLoading(false);
+  useEffect(() => {
+    if (googleError) {
+      setError(googleError);
     }
-  }, [loadFiles, files.length]);
+  }, [googleError]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const oauthErr = params.get('error');
-    if (oauthErr) {
-      setError(`Google OAuth error: ${oauthErr}`);
+    if (googleLoading) return;
+    if (connected) {
+      void loadFiles('', false);
+    } else {
+      setLoading(false);
     }
-    refreshStatus();
-  }, [refreshStatus]);
+  }, [connected, googleLoading, loadFiles]);
 
   const handleConnect = async () => {
     setError(null);
     try {
-      const res = await api.get('/drive/auth-url');
+      if (authUrl) {
+        window.location.href = authUrl;
+        return;
+      }
+      const res = await api.get('/drive/auth-url', { params: { source: 'drive' } });
       const url = res.data?.data?.url;
       if (url) {
         window.location.href = url;
@@ -134,9 +124,9 @@ export const DrivePage: React.FC = () => {
 
   const handleDisconnect = async () => {
     await api.post('/drive/disconnect').catch(() => {});
-    setConnected(false);
     setFiles([]);
     setImportantEmails([]);
+    void refetchGoogle();
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {

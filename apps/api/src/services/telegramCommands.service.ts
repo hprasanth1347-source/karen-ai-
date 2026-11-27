@@ -53,11 +53,12 @@ function formatDateTagIst(iso?: string): string {
 export async function handleTelegramDriveCommand(
   args: string,
   chatId: number,
-  sendDocument: TelegramDocumentSender
+  sendDocument: TelegramDocumentSender,
+  userId?: string
 ): Promise<string> {
-  const token = await getGoogleAccessToken();
+  const token = await getGoogleAccessToken(userId);
   if (!token) {
-    return `🔌 *Google Drive is not connected yet.*\nConnect once at: ${config.APP_URL}/drive`;
+    return `🔌 *Google Drive is not connected yet.*\nRun /connectgoogle to sign in with Google, or link your Karen AI account with /link <code>.`;
   }
 
   const query = args.trim();
@@ -137,10 +138,10 @@ export async function handleTelegramDriveCommand(
   return `📁 *Live Google Drive Files (${files.length}):*\n\n${lines.join('\n\n')}\n\nTip: Use \`/drive <filename>\` to send any file directly here.`;
 }
 
-export async function handleTelegramSheetsCommand(args: string): Promise<string> {
+export async function handleTelegramSheetsCommand(args: string, userId?: string): Promise<string> {
   const clean = args.trim();
   if (!clean) {
-    const list = await listGoogleSheets();
+    const list = await listGoogleSheets(undefined, userId);
     if (!list.ok) return `❌ ${list.error || 'Could not load Google Sheets.'}`;
     if (list.sheets.length === 0) {
       return `📊 No Google Sheets found. Create one with:\n\`/sheets create Expenses | Item,Amount\``;
@@ -197,19 +198,19 @@ async function resolveSheetId(idOrName: string): Promise<string | null> {
   return list.ok && list.sheets[0] ? list.sheets[0].id : null;
 }
 
-export async function handleTelegramCalendarCommand(args: string): Promise<string> {
+export async function handleTelegramCalendarCommand(args: string, userId?: string): Promise<string> {
   const clean = args.trim();
   if (clean.toLowerCase().startsWith('add ')) {
     const title = clean.slice(4).trim();
     if (!title) return '⚠️ Usage: `/calendar add Team Meeting`';
     const startIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    const res = await createCalendarEvent({ summary: title, startIso });
+    const res = await createCalendarEvent({ summary: title, startIso, userId });
     if (!res.ok) return `❌ ${res.error}`;
     return `📅 Added Calendar Event: *${res.event?.summary}*\n🕒 ${new Date(startIso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
   }
 
   const days = /^\d+$/.test(clean) ? Math.min(Number(clean), 30) : 7;
-  const res = await listCalendarEvents(days);
+  const res = await listCalendarEvents(days, userId);
   if (!res.ok) return `❌ ${res.error || 'Could not load Google Calendar.'}`;
   if (!res.events.length) return `📅 No upcoming Google Calendar events in the next ${days} days.`;
 
@@ -228,19 +229,19 @@ export async function handleTelegramCalendarCommand(args: string): Promise<strin
   return `📅 *Live Google Calendar (Next ${days}d):*\n\n${lines.join('\n\n')}`;
 }
 
-export async function handleTelegramContactsCommand(args: string): Promise<string> {
+export async function handleTelegramContactsCommand(args: string, userId?: string): Promise<string> {
   const clean = args.trim();
   if (clean.toLowerCase().startsWith('add ')) {
     const body = clean.slice(4).trim();
     const emailMatch = body.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i);
     const phoneMatch = body.match(/\+?\d[\d\s-]{7,15}\d/);
     const name = body.replace(emailMatch?.[0] || '', '').replace(phoneMatch?.[0] || '', '').trim() || 'New Contact';
-    const res = await createGoogleContact({ givenName: name, email: emailMatch?.[0], phone: phoneMatch?.[0] });
+    const res = await createGoogleContact({ givenName: name, email: emailMatch?.[0], phone: phoneMatch?.[0], userId });
     if (!res.ok) return `❌ ${res.error}`;
     return `📇 Saved *${res.contact?.name}* to Google Contacts.`;
   }
 
-  const res = await listGoogleContacts(clean || undefined);
+  const res = await listGoogleContacts(clean || undefined, userId);
   if (!res.ok) return `❌ ${res.error || 'Could not load Google Contacts.'}`;
   if (!res.contacts.length) return '📇 No matching Google Contacts found.';
   return `📇 *Google Contacts (${res.contacts.length}):*\n\n${res.contacts
@@ -249,7 +250,7 @@ export async function handleTelegramContactsCommand(args: string): Promise<strin
     .join('\n\n')}`;
 }
 
-export async function handleTelegramGmailCommand(args: string): Promise<string> {
+export async function handleTelegramGmailCommand(args: string, userId?: string): Promise<string> {
   const clean = args.trim();
   if (clean.toLowerCase().startsWith('send ')) {
     const body = clean.slice(5).trim();
@@ -270,6 +271,7 @@ export async function handleTelegramGmailCommand(args: string): Promise<string> 
     query: isUnreadOnly ? undefined : clean || undefined,
     unread: isUnreadOnly || undefined,
     limit: 8,
+    userId,
   });
   if (!res.ok) return `🔌 ${res.error || 'Gmail is not connected.'}\nRun /connectgoogle to connect your Google account.`;
   if (!res.items.length) return '✉️ No matching emails found.';

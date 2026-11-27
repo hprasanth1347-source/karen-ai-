@@ -71,7 +71,12 @@ import {
   listConversations,
 } from '../services/chatLibrary.service.js';
 import { executeInstagramVoiceCommand } from './instagram.js';
-import { loadUserSetting, saveUserSetting } from '../services/persistence.service.js';
+import {
+  consumeTelegramLinkCode,
+  loadUserSetting,
+  resolveKarenUserIdForTelegram,
+  saveUserSetting,
+} from '../services/persistence.service.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -432,7 +437,14 @@ const HELP_TEXT = `
 💬 *Chat:* Just type anything for a full AI response.
 `.trim();
 
-async function handleCommand(cmd: string, args: string, chatId: number): Promise<string> {
+async function handleCommand(
+  cmd: string,
+  args: string,
+  chatId: number,
+  fromId?: number,
+  username?: string
+): Promise<string> {
+  const linkedUserId = (await resolveKarenUserIdForTelegram(chatId, fromId)) || undefined;
   switch (cmd) {
     case '/start':
       return `👋 *Vanakkam! I'm Karen AI.*\n\nYour personal AI assistant is now active on Telegram.\n\nSend any message to chat, or type /help for commands.`;
@@ -680,20 +692,46 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       }
     }
 
+    case '/instasummary': {
+      const { sendHourlyInstagramDmSummary } = await import('../routes/cron.js');
+      const res = await sendHourlyInstagramDmSummary(true);
+      if (!res.chatsCount) {
+        return '📸 No active Instagram DM chats found to summarize right now.';
+      }
+      return res.summaryText;
+    }
+
+    case '/link': {
+      const code = args.trim();
+      if (!code) {
+        return '🔗 Usage: `/link <CODE>`\nGenerate a single-use link code in Karen AI (`/telegram` page) to link your Telegram account.';
+      }
+      const res = await consumeTelegramLinkCode(code, String(fromId || chatId), String(chatId), username);
+      if (!res.ok) {
+        return `❌ ${res.error}`;
+      }
+      return '✅ *Telegram Linked to Your Karen AI Account!*\n\nYour Telegram commands (`/drive`, `/gmail`, `/calendar`, `/sheets`, `/contacts`, `/classroom`) will now use your linked Karen AI Google connection.';
+    }
+
     case '/drive':
-      return handleTelegramDriveCommand(args, chatId, sendTelegramDocument);
+      if (!linkedUserId) return '🔗 Please link your Karen AI account first: `/link <CODE>` (generate code on the `/telegram` page).';
+      return handleTelegramDriveCommand(args, chatId, sendTelegramDocument, linkedUserId);
 
     case '/sheets':
-      return handleTelegramSheetsCommand(args);
+      if (!linkedUserId) return '🔗 Please link your Karen AI account first: `/link <CODE>` (generate code on the `/telegram` page).';
+      return handleTelegramSheetsCommand(args, linkedUserId);
 
     case '/calendar':
-      return handleTelegramCalendarCommand(args);
+      if (!linkedUserId) return '🔗 Please link your Karen AI account first: `/link <CODE>` (generate code on the `/telegram` page).';
+      return handleTelegramCalendarCommand(args, linkedUserId);
 
     case '/contacts':
-      return handleTelegramContactsCommand(args);
+      if (!linkedUserId) return '🔗 Please link your Karen AI account first: `/link <CODE>` (generate code on the `/telegram` page).';
+      return handleTelegramContactsCommand(args, linkedUserId);
 
     case '/gmail':
-      return handleTelegramGmailCommand(args);
+      if (!linkedUserId) return '🔗 Please link your Karen AI account first: `/link <CODE>` (generate code on the `/telegram` page).';
+      return handleTelegramGmailCommand(args, linkedUserId);
 
     case '/search':
       return handleTelegramSearchCommand(args);
@@ -739,13 +777,14 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
     }
 
     case '/classroom': {
-      let ov = await getClassroomOverview();
+      if (!linkedUserId) return '🔗 Please link your Karen AI account first: `/link <CODE>` (generate code on the `/telegram` page).';
+      let ov = await getClassroomOverview(undefined, linkedUserId);
       if (!ov.connected) {
         return `📚 *Google Classroom*\n\nNot connected yet.\nUse /connectgoogle or /connectclassroom to connect your Google account.`;
       }
       if (ov.stats.totalCourses === 0) {
-        await syncClassroomData().catch(() => { });
-        ov = await getClassroomOverview();
+        await syncClassroomData(undefined, linkedUserId).catch(() => { });
+        ov = await getClassroomOverview(undefined, linkedUserId);
       }
       return [
         `📚 *Karen Google Classroom*`,
@@ -895,15 +934,29 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
       if (!config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET) {
         return '❌ Google OAuth is not configured on the server yet.';
       }
-      const { getOwnerUserId } = await import('../services/persistence.service.js');
-      const ownerUserId = (await getOwnerUserId().catch(() => null)) || 'owner';
+      if (!linkedUserId) {
+        return '🔗 Please link your Telegram to your Karen AI account first using `/link <CODE>` (generate the code in Karen AI -> `/telegram`).';
+      }
+      const { getGoogleConnectionStatus } = await import('../routes/googleDrive.js');
+      const currentStatus = await getGoogleConnectionStatus(linkedUserId);
       const redirectUri =
         config.GOOGLE_REDIRECT_URI && !config.GOOGLE_REDIRECT_URI.includes('localhost')
           ? config.GOOGLE_REDIRECT_URI
           : config.NODE_ENV === 'production'
             ? 'https://karen-ai-me.vercel.app/api/v1/auth/google/callback'
             : `${config.APP_URL.replace(/\/$/, '')}/api/v1/auth/google/callback`;
-      const url = buildGoogleAuthUrl(redirectUri, 'telegram', ownerUserId);
+      const url = buildGoogleAuthUrl(redirectUri, 'telegram', linkedUserId);
+      if (currentStatus === 'connected') {
+        await tgApiCall('sendMessage', {
+          chat_id: chatId,
+          text: '✅ *Google Account Already Connected!*\n\nYour Gmail, Drive, Calendar, Sheets, Contacts & Classroom are already active.\n\nIf you need to grant missing permissions or switch accounts, tap below:',
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔄 Reconnect / Manage Permissions', url }]],
+          },
+        });
+        return '';
+      }
       await tgApiCall('sendMessage', {
         chat_id: chatId,
         text: '🔗 *Connect Google Account*\n(Gmail, Drive, Calendar, Sheets, Contacts, Tasks & Classroom)\n\nTap the button below to sign in with Google:',
@@ -1128,7 +1181,7 @@ async function processMessage(msg: TelegramMessage): Promise<void> {
         const spaceIdx = text.indexOf(' ');
         const cmd = spaceIdx > -1 ? text.slice(0, spaceIdx).toLowerCase() : text.toLowerCase();
         const args = spaceIdx > -1 ? text.slice(spaceIdx + 1).trim() : '';
-        reply = await handleCommand(cmd, args, chatId);
+        reply = await handleCommand(cmd, args, chatId, msg.from?.id, msg.from?.username);
       } else {
         const history = getHistory(chatId);
 

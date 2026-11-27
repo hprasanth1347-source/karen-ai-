@@ -64,7 +64,9 @@ async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit):
   let token: string | undefined;
   if (typeof window !== 'undefined') {
     try {
-      const raw = window.sessionStorage.getItem('karen_auth_session');
+      const raw =
+        window.sessionStorage.getItem('karen_auth_session') ||
+        window.localStorage.getItem('karen_auth_session');
       if (raw) {
         token = (JSON.parse(raw) as { accessToken?: string }).accessToken;
       }
@@ -477,20 +479,42 @@ export const InstagramPage: React.FC = () => {
             </div>
           )}
           <div>
-            <div className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-mint text-ink text-[11px] font-mono font-bold border-2 border-ink shadow-brutal-sm mb-1">
-              <span className="w-2 h-2 rounded-full bg-ink animate-pulse" />
-              <span>24/7 AUTONOMOUS AUTO-DM ONLINE</span>
+            <div
+              className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono font-bold border-2 border-ink shadow-brutal-sm mb-1 ${
+                !profile
+                  ? 'bg-cream-200 text-ink-muted'
+                  : autoReplyConfig.enabled
+                    ? 'bg-mint text-ink'
+                    : 'bg-yellow text-ink'
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  profile && autoReplyConfig.enabled ? 'bg-ink animate-pulse' : 'bg-ink-muted'
+                }`}
+              />
+              <span>
+                {!profile
+                  ? 'META TOKEN NOT CONNECTED'
+                  : autoReplyConfig.enabled
+                    ? 'AUTO-DM ENGINE ACTIVE'
+                    : 'AUTO-DM PAUSED'}
+              </span>
             </div>
             <h1 className="text-xl md:text-2xl font-black">
-              {profile?.name || 'Hari Prasath'}{' '}
-              <span className="text-sm font-mono text-ink-muted">
-                (@{profile?.username || 'hari.ii_14'})
-              </span>
+              {profile ? (
+                <>
+                  {profile.name || profile.username}{' '}
+                  <span className="text-sm font-mono text-ink-muted">(@{profile.username})</span>
+                </>
+              ) : (
+                'Instagram Live DM Inbox'
+              )}
             </h1>
             <p className="text-xs text-ink-muted font-mono">
-              Meta Graph API v21.0 • Response SLA: &lt;10s • Cache:{' '}
+              Meta Graph API v21.0 • Live Threads: {liveThreads.length} • Cache:{' '}
               <span className="font-bold text-ink">
-                {cacheBackend ? `${cacheBackend.backend.toUpperCase()} (${cacheBackend.hits} hits)` : 'UPSTASH / LRU'}
+                {cacheBackend ? `${cacheBackend.backend.toUpperCase()} (${cacheBackend.hits} hits)` : 'Checking…'}
               </span>
             </p>
           </div>
