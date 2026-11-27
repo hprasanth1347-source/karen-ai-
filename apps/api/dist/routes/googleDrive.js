@@ -29,7 +29,7 @@ function readGoogleTokensFromCookie(req) {
     }
     return null;
 }
-const VALID_TARGET_PAGES = new Set(['drive', 'gmail', 'classroom', 'contacts', 'sheets', 'tasks']);
+const VALID_TARGET_PAGES = new Set(['drive', 'gmail', 'classroom', 'contacts', 'sheets', 'tasks', 'telegram']);
 const router = Router();
 const refreshMutexes = new Map();
 function getStateSecret() {
@@ -314,6 +314,20 @@ router.get('/auth/google/callback', async (req, res) => {
         }
         catch (cookieErr) {
             logger.warn('Failed to set Google tokens cookie', { cookieErr });
+        }
+        if (verifiedState.target === 'telegram') {
+            try {
+                const { getTelegramBotInfo, sendTelegramMessage, telegramState } = await import('../providers/telegram.js');
+                await sendTelegramMessage('✅ *Google Account Connected!*\n\nDrive, Gmail, Calendar, Sheets, Contacts & Classroom are now ready in Telegram. Try `/drive`, `/gmail`, or `/classroom`.').catch(() => { });
+                const botInfo = telegramState.botUsername
+                    ? { username: telegramState.botUsername }
+                    : await getTelegramBotInfo().catch(() => null);
+                const botHandle = (botInfo?.username || 'Karen_personalbot').replace(/^@/, '');
+                return res.redirect(`https://t.me/${botHandle}`);
+            }
+            catch {
+                return res.redirect('https://t.me/Karen_personalbot');
+            }
         }
         return res.redirect(`${targetPage}?connected=1`);
     }

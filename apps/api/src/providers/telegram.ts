@@ -903,8 +903,7 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
           : config.NODE_ENV === 'production'
             ? 'https://karen-ai-me.vercel.app/api/v1/auth/google/callback'
             : `${config.APP_URL.replace(/\/$/, '')}/api/v1/auth/google/callback`;
-      const target = cmd === '/connectclassroom' ? 'classroom' : 'drive';
-      const url = buildGoogleAuthUrl(redirectUri, target, ownerUserId);
+      const url = buildGoogleAuthUrl(redirectUri, 'telegram', ownerUserId);
       await tgApiCall('sendMessage', {
         chat_id: chatId,
         text: '🔗 *Connect Google Account*\n(Gmail, Drive, Calendar, Sheets, Contacts, Tasks & Classroom)\n\nTap the button below to sign in with Google:',
