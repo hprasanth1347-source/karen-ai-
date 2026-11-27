@@ -216,12 +216,12 @@ export async function handleTelegramCalendarCommand(args: string): Promise<strin
   const lines = res.events.slice(0, 12).map((e, i) => {
     const startStr = e.start
       ? new Date(e.start).toLocaleString('en-IN', {
-          timeZone: 'Asia/Kolkata',
-          day: 'numeric',
-          month: 'short',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
+        timeZone: 'Asia/Kolkata',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
       : 'All day';
     return `${i + 1}. *${e.summary}*\n   🕒 ${startStr}${e.location ? ` · 📍 ${e.location}` : ''}`;
   });

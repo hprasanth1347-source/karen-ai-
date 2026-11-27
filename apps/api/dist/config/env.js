@@ -233,3 +233,18 @@ export const config = {
         envData.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ||
         '',
 };
+export function validateProductionConfig(envObj = process.env) {
+    if (envObj.NODE_ENV !== 'production')
+        return;
+    const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'ENCRYPTION_KEY', 'OWNER_USER_ID'];
+    const missing = required.filter((k) => {
+        const v = envObj[k];
+        return !v || v.trim().length < 16 || v.includes('placeholder') || v.includes('replace-with');
+    });
+    if (missing.length > 0) {
+        throw new Error(`CRITICAL PRODUCTION CONFIG MISSING OR WEAK: ${missing.join(', ')}`);
+    }
+    if (envObj.INSTAGRAM_ENABLED === 'true' && !envObj.META_APP_SECRET) {
+        throw new Error('CRITICAL PRODUCTION CONFIG MISSING: META_APP_SECRET is required when Instagram is enabled.');
+    }
+}

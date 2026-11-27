@@ -312,6 +312,10 @@ class InstagramAutoReplyService {
     return [...this.logs].slice(0, 30);
   }
 
+  public async emergencyStop(): Promise<AutoReplyConfig> {
+    return this.updateConfig({ enabled: false });
+  }
+
   public async clearLogs(): Promise<void> {
     this.logs = [];
     await saveUserSetting('instagram_auto_reply_logs', []);
@@ -512,6 +516,27 @@ Thanglish Style Guide (CRITICAL):
 
       const fastReply = await generateFastDmReply(prompt, mediaMeta?.history || [], provider, this.config.aiModel);
       replyText = fastReply || getThanglishFallback(senderUsername, intent);
+
+      // Anti-repetition check against this sender's last 5 replies
+      const recentForSender = this.logs
+        .filter((l) => l.senderId === senderId && l.status === 'SENT')
+        .slice(0, 5)
+        .map((l) => l.replyText.toLowerCase().trim());
+      const normReply = replyText.toLowerCase().trim();
+      const tooSimilar = recentForSender.some(
+        (prev) => prev === normReply || (prev.length > 20 && normReply.slice(0, 35) === prev.slice(0, 35))
+      );
+      if (tooSimilar) {
+        const varied = await generateFastDmReply(
+          `${prompt}\n\nIMPORTANT: Vary your phrasing completely from your previous replies: ${recentForSender.slice(0, 2).join(' | ')}`,
+          mediaMeta?.history || [],
+          provider,
+          this.config.aiModel
+        );
+        if (varied && varied.toLowerCase().trim() !== normReply) {
+          replyText = varied;
+        }
+      }
     }
 
     // 6. Send message live to Instagram via Meta Graph API (fast <10s SLA)
@@ -839,6 +864,7 @@ Thanglish Style Guide (CRITICAL):
         logger.warn('Background auto-reply poller error:', err);
       }
     }, 10000);
+    this.pollIntervalTimer.unref?.();
   }
 }
 

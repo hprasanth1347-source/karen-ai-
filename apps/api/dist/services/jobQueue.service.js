@@ -1,0 +1,75 @@
+import crypto from 'node:crypto';
+import { supabaseAdmin } from '../config/supabase.js';
+import { logger } from '../config/logger.js';
+const memoryQueue = new Map();
+export async function enqueueJob(input) {
+    if (input.idempotencyKey) {
+        for (const existing of memoryQueue.values()) {
+            if (existing.idempotencyKey === input.idempotencyKey)
+                return existing;
+        }
+    }
+    const id = crypto.randomUUID();
+    const job = {
+        id,
+        userId: input.userId,
+        type: input.type,
+        payload: input.payload,
+        status: 'queued',
+        runAt: input.runAt || new Date().toISOString(),
+        attempts: 0,
+        maxAttempts: input.maxAttempts ?? 5,
+        idempotencyKey: input.idempotencyKey,
+    };
+    memoryQueue.set(id, job);
+    await supabaseAdmin
+        .from('jobs')
+        .upsert({
+        id,
+        user_id: input.userId || null,
+        type: input.type,
+        payload: input.payload,
+        status: 'queued',
+        run_at: job.runAt,
+        max_attempts: job.maxAttempts,
+        idempotency_key: input.idempotencyKey || null,
+    }, { onConflict: 'idempotency_key', ignoreDuplicates: true })
+        .then(() => { }, (err) => logger.debug('Job DB enqueue fallback', { err }));
+    return job;
+}
+export async function markJobCompleted(jobId) {
+    const j = memoryQueue.get(jobId);
+    if (j)
+        j.status = 'succeeded';
+    await supabaseAdmin
+        .from('jobs')
+        .update({ status: 'succeeded', finished_at: new Date().toISOString(), locked_by: null, locked_at: null })
+        .eq('id', jobId)
+        .then(() => { }, () => { });
+}
+export async function markJobFailed(jobId, attempts, maxAttempts, errMsg) {
+    const nextAttempts = attempts + 1;
+    const dead = nextAttempts >= maxAttempts;
+    const backoffSec = Math.min(300, Math.pow(2, nextAttempts) * 5);
+    const nextRunAt = new Date(Date.now() + backoffSec * 1000).toISOString();
+    const j = memoryQueue.get(jobId);
+    if (j) {
+        j.attempts = nextAttempts;
+        j.status = dead ? 'dead' : 'queued';
+        j.lastError = errMsg.slice(0, 300);
+        j.runAt = nextRunAt;
+    }
+    await supabaseAdmin
+        .from('jobs')
+        .update({
+        attempts: nextAttempts,
+        status: dead ? 'dead' : 'queued',
+        run_at: nextRunAt,
+        last_error: errMsg.slice(0, 300),
+        locked_by: null,
+        locked_at: null,
+        ...(dead ? { finished_at: new Date().toISOString() } : {}),
+    })
+        .eq('id', jobId)
+        .then(() => { }, () => { });
+}

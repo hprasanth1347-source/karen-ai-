@@ -247,6 +247,7 @@ export function startCompanionScheduler() {
             logger.error('Companion scheduler tick failed', { err });
         });
     }, 60_000);
+    schedulerTimer.unref?.();
     logger.info('Karen Daily Companion scheduler started (Asia/Kolkata)');
 }
 export function stopCompanionScheduler() {

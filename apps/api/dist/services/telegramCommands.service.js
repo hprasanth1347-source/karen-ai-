@@ -2,9 +2,9 @@
  * Karen AI — Modular Telegram Workspace Commands & Live File/Alert Formatters
  */
 import { config } from '../config/env.js';
-import { getGoogleAccessToken } from '../routes/googleDrive.js';
+import { getGoogleAccessToken, sendGmailMessage } from '../routes/googleDrive.js';
 import { listGmailMessages } from './gmail.service.js';
-import { appendGoogleSheetRows, createCalendarEvent, createGoogleContact, createGoogleSheet, createGoogleTask, listCalendarEvents, listGoogleContacts, listGoogleSheets, readGoogleSheet, } from './googleWorkspace.service.js';
+import { appendGoogleSheetRows, createCalendarEvent, createGoogleContact, createGoogleSheet, createGoogleTask, listCalendarEvents, listGoogleContacts, listGoogleSheets, listGoogleTasks, readGoogleSheet, updateGoogleTask, } from './googleWorkspace.service.js';
 import { listTasks } from './task.service.js';
 import { searchWebWithFallback } from './search.service.js';
 import { listClassroomAssignments } from './classroom.service.js';
@@ -231,9 +231,28 @@ export async function handleTelegramContactsCommand(args) {
         .join('\n\n')}`;
 }
 export async function handleTelegramGmailCommand(args) {
-    const res = await listGmailMessages({ query: args.trim() || undefined, limit: 8 });
+    const clean = args.trim();
+    if (clean.toLowerCase().startsWith('send ')) {
+        const body = clean.slice(5).trim();
+        const parts = body.split('|').map((s) => s.trim());
+        if (parts.length < 3 || !parts[0] || !parts[1] || !parts[2]) {
+            return '⚠️ Usage: `/gmail send to@example.com | Subject | Message body`';
+        }
+        const [to, subject, message] = parts;
+        const sent = await sendGmailMessage(to, subject, message);
+        if (!sent.success) {
+            return `❌ Failed to send email: ${sent.error || 'Gmail send error'}`;
+        }
+        return `✅ Email sent via Gmail to *${to}*\nSubject: ${subject}`;
+    }
+    const isUnreadOnly = clean.toLowerCase() === 'unread';
+    const res = await listGmailMessages({
+        query: isUnreadOnly ? undefined : clean || undefined,
+        unread: isUnreadOnly || undefined,
+        limit: 8,
+    });
     if (!res.ok)
-        return `🔌 ${res.error || 'Gmail is not connected.'}\nConnect at ${config.APP_URL}/gmail`;
+        return `🔌 ${res.error || 'Gmail is not connected.'}\nRun /connectgoogle to connect your Google account.`;
     if (!res.items.length)
         return '✉️ No matching emails found.';
     return `✉️ *Live Gmail Messages (${res.items.length}):*\n\n${res.items
@@ -269,13 +288,40 @@ export async function handleTelegramTasksCommand(args) {
             return `❌ ${gRes.error}`;
         return `✅ Added to Live Google Tasks: *${gRes.task?.title}* (Due Today ${todayIstIso()})`;
     }
-    const tasks = await listTasks();
-    const active = tasks.filter((t) => t.status !== 'done').slice(0, 12);
-    if (!active.length) {
-        return '✅ No pending live Google Tasks right now!';
+    if (clean.toLowerCase().startsWith('done ')) {
+        const target = clean.slice(5).trim().toLowerCase();
+        if (!target)
+            return '⚠️ Usage: `/tasks done <task name>`';
+        const gList = await listGoogleTasks();
+        if (!gList.ok)
+            return `❌ ${gList.error || 'Could not load Google Tasks.'}`;
+        const match = gList.tasks.find((t) => t.status !== 'completed' && (t.id === target || t.title.toLowerCase().includes(target)));
+        if (!match)
+            return `⚠️ No open Google Task matched "${clean.slice(5).trim()}".`;
+        const doneRes = await updateGoogleTask({ taskId: match.id, status: 'completed' });
+        if (!doneRes.ok)
+            return `❌ ${doneRes.error || 'Could not complete task.'}`;
+        return `✅ Completed Google Task: *${match.title}*`;
     }
-    const lines = active.map((t, i) => `${i + 1}. *${t.title}* — ${formatDateTagIst(t.due)}`);
-    return `📋 *Live Google Tasks (${active.length}):*\n\n${lines.join('\n')}`;
+    const [gRes, localTasks] = await Promise.all([
+        listGoogleTasks().catch(() => ({ ok: false, tasks: [], error: 'Unavailable' })),
+        listTasks().catch(() => []),
+    ]);
+    const googleOpen = gRes.ok ? gRes.tasks.filter((t) => t.status !== 'completed') : [];
+    const localOpen = localTasks.filter((t) => t.status !== 'done');
+    if (googleOpen.length === 0 && localOpen.length === 0) {
+        return gRes.ok
+            ? '✅ No pending live Google Tasks right now!'
+            : `🔌 ${gRes.error || 'Google Tasks not connected.'}\nRun /connectgoogle to connect.`;
+    }
+    const lines = [];
+    for (const t of googleOpen.slice(0, 10)) {
+        lines.push(`${lines.length + 1}. *${t.title}* — ${formatDateTagIst(t.due)} [Google]`);
+    }
+    for (const t of localOpen.slice(0, Math.max(0, 12 - lines.length))) {
+        lines.push(`${lines.length + 1}. *${t.title}* — ${formatDateTagIst(t.due)}`);
+    }
+    return `📋 *Live Tasks (${googleOpen.length + localOpen.length}):*\n\n${lines.join('\n')}\n\nTip: \`/tasks add <title>\` or \`/tasks done <title>\``;
 }
 export async function buildLiveAlertsDigest() {
     const today = todayIstIso();

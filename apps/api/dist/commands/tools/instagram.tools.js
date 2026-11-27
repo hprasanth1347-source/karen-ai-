@@ -1,21 +1,28 @@
 import { z } from 'zod';
 import { getInstagramConversations, resolveInstagramRecipient } from '../../providers/instagram.js';
 import { wrapUntrustedContent } from '../../services/actionPolicy.service.js';
+import { instagramAutoReplyService } from '../../services/instagramAutoReply.js';
 export const instagramReadDmsTool = {
     name: 'instagram_read_dms',
     category: 'instagram',
-    description: 'Read recent Instagram DM threads.',
+    description: 'Read recent Instagram DM threads and auto-DM summary.',
     requiresConfirmation: false,
     inputSchema: z.object({ limit: z.number().int().min(1).max(10).default(5) }),
     jsonSchema: { type: 'object', properties: { limit: { type: 'number' } } },
     async execute(args) {
-        const convs = await getInstagramConversations().catch(() => []);
+        const [summaryText, convs] = await Promise.all([
+            instagramAutoReplyService.getDmDigestSummary().catch(() => ''),
+            getInstagramConversations().catch(() => []),
+        ]);
         const slice = convs.slice(0, args.limit ?? 5);
         if (slice.length === 0) {
-            return { ok: true, summary: 'No recent Instagram DM threads found.' };
+            return { ok: true, summary: summaryText || 'No recent Instagram DM threads found.' };
         }
         const wrapped = wrapUntrustedContent('instagram_dm', JSON.stringify(slice));
-        return { ok: true, summary: `Instagram DM Threads (${slice.length}):\n${wrapped}` };
+        return {
+            ok: true,
+            summary: `${summaryText ? `${summaryText}\n\n` : ''}Instagram DM Threads (${slice.length}):\n${wrapped}`,
+        };
     },
 };
 export const instagramSendDmTool = {

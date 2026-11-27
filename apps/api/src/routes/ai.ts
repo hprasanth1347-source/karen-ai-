@@ -10,6 +10,8 @@ import {
   listAIModels,
   type AIProvider,
 } from '../services/ai.service.js';
+import { aiProviderManager } from '../services/aiProviderManager.service.js';
+import { cacheService } from '../services/cache.service.js';
 import { voiceStatus, synthesizeFemaleVoice } from '../voice/policy.js';
 import { hydrateGoogleTokensFromRequest } from './googleDrive.js';
 import {
@@ -216,6 +218,17 @@ router.delete('/ai/conversations/:id', requireAuth, requireOwner, async (req, re
     return error(res, 'Conversation not found', 404);
   }
   return success(res, { deleted: true });
+});
+
+router.get('/ai/providers/health', requireAuth, requireOwner, async (_req, res) => {
+  const health = await aiProviderManager.health();
+  return success(res, health);
+});
+
+router.get('/admin/cache/stats', requireAuth, requireOwner, async (_req, res) => {
+  const { checkRedisHealth } = await import('@karen/shared');
+  const redis = await checkRedisHealth();
+  return success(res, { cache: cacheService.stats(), redis });
 });
 
 router.get('/voice/status', requireAuth, requireOwner, (_req, res) => {

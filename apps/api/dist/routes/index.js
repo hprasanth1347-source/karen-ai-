@@ -15,6 +15,8 @@ import instagramRoutes from './instagram.js';
 import telegramRoutes from './telegram.js';
 import loveModeRoutes from './loveMode.js';
 import classroomRoutes from './classroom.js';
+import newsroomRoutes from './newsroom.js';
+import automationRoutes from '../modules/automation/automation.routes.js';
 const router = Router();
 // Mount API v1 routes
 router.use('/v1', healthRoutes);
@@ -33,6 +35,8 @@ router.use('/v1/instagram', instagramRoutes);
 router.use('/v1', telegramRoutes);
 router.use('/v1', loveModeRoutes);
 router.use('/v1', classroomRoutes);
+router.use('/v1', newsroomRoutes);
+router.use('/v1', automationRoutes);
 // Keep public health check at /health and /api/v1/health; all other routes strictly under /api/v1
 router.use('/', healthRoutes);
 export default router;

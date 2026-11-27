@@ -581,9 +581,75 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
         ? '✅ WhatsApp is configured via Meta Cloud API.'
         : '❌ WhatsApp not configured. Add WHATSAPP_ACCESS_TOKEN in Vercel env vars.';
 
-    case '/instagram': {
+    case '/instagram':
+    case '/ig_status': {
       const { instagramAutoReplyService } = await import('../services/instagramAutoReply.js');
       return instagramAutoReplyService.getDmDigestSummary();
+    }
+
+    case '/newspaper':
+    case '/tamil':
+    case '/english':
+    case '/latest': {
+      const { generateDailyEditions, listEditions } = await import('../services/newsroom.service.js');
+      const lang = cmd === '/tamil' ? 'ta' : 'en';
+      let ed = listEditions().find((e) => e.language === lang);
+      if (!ed) {
+        const gen = await generateDailyEditions();
+        ed = lang === 'ta' ? gen.ta : gen.en;
+      }
+      const brand = ed.language === 'ta' ? 'கரென் டைம்ஸ் (KAREN TIMES)' : 'KAREN TIMES';
+      return `📰 *${brand}* — ${ed.editionDate} (Issue #${ed.issueNumber})\n_KNOWLEDGE IS WISDOM._\n\n${ed.summary}`;
+    }
+
+    case '/ig_stop': {
+      const { instagramAutoReplyService } = await import('../services/instagramAutoReply.js');
+      await instagramAutoReplyService.emergencyStop();
+      return '🛑 *Instagram Emergency Stop Activated*\n\nAuto-DM engine is now **OFF**. No automatic replies will be sent until you re-enable it.';
+    }
+
+    case '/remind': {
+      const { createReminder, listReminders, cancelReminder } = await import('../services/reminders.service.js');
+      const { getOwnerUserId } = await import('../services/persistence.service.js');
+      const ownerUserId = (await getOwnerUserId().catch(() => null)) || '00000000-0000-0000-0000-000000000001';
+      const clean = args.trim();
+      if (!clean || clean.toLowerCase() === 'list') {
+        const list = await listReminders(ownerUserId);
+        const active = list.filter((r) => r.status === 'scheduled');
+        if (!active.length) return '⏰ No scheduled reminders. Try: `/remind in 30m Call Arun` or `/remind daily 08:00 Drink water`';
+        return `⏰ *Scheduled Reminders (${active.length}):*\n\n${active
+          .slice(0, 10)
+          .map((r, i) => `${i + 1}. *${r.title}* — ${new Date(r.dueAt).toLocaleString('en-IN', { timeZone: r.timezone })}${r.recurrenceRule ? ` (${r.recurrenceRule})` : ''}`)
+          .join('\n')}`;
+      }
+      if (clean.toLowerCase().startsWith('cancel ')) {
+        const res = await cancelReminder(clean.slice(7).trim(), ownerUserId);
+        return res.ok ? `🗑️ Cancelled reminder: *${res.cancelledTitle}*` : '⚠️ No matching scheduled reminder found.';
+      }
+      const inMatch = clean.match(/^in\s+(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\s+(.+)$/i);
+      let dueMs = Date.now() + 60 * 60 * 1000;
+      let title = clean;
+      let recurrence: string | null = null;
+      if (inMatch) {
+        const qty = Number(inMatch[1]);
+        const unit = inMatch[2].toLowerCase().startsWith('h') ? 3600_000 : 60_000;
+        dueMs = Date.now() + qty * unit;
+        title = inMatch[3].trim();
+      } else if (/^daily\s+/i.test(clean)) {
+        recurrence = 'daily';
+        title = clean.replace(/^daily\s+/i, '').trim();
+        dueMs = Date.now() + 24 * 3600_000;
+      }
+      const saved = await createReminder({
+        userId: ownerUserId,
+        title,
+        dueAt: new Date(dueMs).toISOString(),
+        recurrenceRule: recurrence,
+        timezone: 'Asia/Kolkata',
+        channel: 'telegram',
+      });
+      const ist = new Date(saved.dueAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      return `⏰ *Reminder Saved!*\n• *${saved.title}*\n• 🕒 ${ist} IST${saved.recurrenceRule ? `\n• 🔁 ${saved.recurrenceRule}` : ''}`;
     }
 
     case '/insta': {
@@ -702,10 +768,17 @@ async function handleCommand(cmd: string, args: string, chatId: number): Promise
 
     case '/assignments':
     case '/pending':
+    case '/submitted':
     case '/overdue':
     case '/deadlines': {
       const cat =
-        cmd === '/pending' ? 'pending' : cmd === '/overdue' ? 'overdue' : 'all';
+        cmd === '/pending'
+          ? 'pending'
+          : cmd === '/submitted'
+            ? 'submitted'
+            : cmd === '/overdue'
+              ? 'overdue'
+              : 'all';
       let list = await listClassroomAssignments({ category: cat, sortBy: 'deadline' });
       if (list.length === 0) {
         await syncClassroomData().catch(() => { });

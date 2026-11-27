@@ -51,20 +51,33 @@ import router from './routes/index.js';
 const app = express();
 // Trust the first proxy (Vercel / reverse proxy) so req.ip reflects X-Forwarded-For.
 app.set('trust proxy', 1);
-const helmetMiddleware = helmet();
+const helmetMiddleware = helmet({
+    hsts: config.NODE_ENV === 'production' ? { maxAge: 31536000, includeSubDomains: true } : false,
+    frameguard: { action: 'deny' },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+});
 app.use(helmetMiddleware);
+function isOriginAllowed(origin) {
+    const allowed = config.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
+    if (allowed.includes(origin))
+        return true;
+    if (config.APP_URL && origin === config.APP_URL.replace(/\/$/, ''))
+        return true;
+    if (config.WEB_ORIGIN && origin === config.WEB_ORIGIN.replace(/\/$/, ''))
+        return true;
+    if (config.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+        return true;
+    }
+    return false;
+}
 app.use(cors({
     origin: (origin, callback) => {
         if (!origin)
             return callback(null, true);
-        const allowed = config.ALLOWED_ORIGINS.split(',').map((o) => o.trim());
-        if (allowed.includes(origin) ||
-            origin.endsWith('.vercel.app') ||
-            origin.includes('localhost') ||
-            origin.includes('127.0.0.1')) {
+        if (isOriginAllowed(origin)) {
             return callback(null, true);
         }
-        return callback(null, true);
+        return callback(new Error('CORS origin denied'));
     },
     credentials: true,
 }));
@@ -75,6 +88,21 @@ app.use(express.json({
     },
 }));
 app.use(requestId);
+app.use((req, res, next) => {
+    // CSRF Origin/Referer check for cookie-authenticated state-changing requests
+    const method = req.method.toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS')
+        return next();
+    if (req.path.endsWith('/webhook') || req.path.includes('/auth/google/callback'))
+        return next();
+    if (req.headers.authorization?.startsWith('Bearer '))
+        return next();
+    const origin = req.header('origin');
+    if (origin && !isOriginAllowed(origin)) {
+        return res.status(403).json({ ok: false, error: 'CSRF origin check failed', code: 'FORBIDDEN', requestId: req.requestId });
+    }
+    return next();
+});
 app.use(globalLimit);
 app.use('/api', router);
 app.use(router);

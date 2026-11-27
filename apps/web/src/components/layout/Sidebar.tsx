@@ -25,6 +25,7 @@ import {
   Settings,
   Heart,
   GraduationCap,
+  Newspaper,
   X
 } from 'lucide-react';
 
@@ -114,6 +115,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         { path: '/notifications', label: 'Notifications', icon: Bell },
         { path: '/contacts', label: 'Contact Manager', icon: Users },
         { path: '/automation', label: 'Automation Centre', icon: Cpu },
+        { path: '/newsroom', label: 'KAREN TIMES Newsroom', icon: Newspaper },
         { path: '/tasks', label: 'Tasks & Calendar', icon: CheckSquare },
         { path: '/reminders', label: 'Scheduled Alarms', icon: Clock },
       ],

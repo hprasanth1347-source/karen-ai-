@@ -20,6 +20,11 @@ import {
 } from '../providers/instagram.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
 import {
+  deleteContactData,
+  getContactCompanionProfile,
+  setContactBlocked,
+} from '../services/instagramCompanion.service.js';
+import {
   getActiveStories,
   getAllReels,
   getFollowerMonitorSummary,
@@ -349,8 +354,11 @@ router.post('/webhook', async (req, res) => {
   } else if (appSecret && !signature) {
     logger.warn('Instagram webhook missing x-hub-signature-256 header');
     return res.sendStatus(401);
+  } else if (config.NODE_ENV === 'production') {
+    logger.error('Instagram webhook rejected: META_APP_SECRET is not configured in production (fail-closed)');
+    return res.status(401).json({ ok: false, error: 'META_APP_SECRET not configured', code: 'INSTAGRAM_WEBHOOK_INVALID' });
   } else {
-    logger.warn('Instagram webhook processed without META_APP_SECRET verification (secret not configured)');
+    logger.warn('Instagram webhook processed without META_APP_SECRET verification (non-production)');
   }
 
   logger.info('Received and authenticated Instagram Webhook Event');
@@ -480,6 +488,31 @@ router.post('/auto-reply/toggle', async (_req, res) => {
   const current = await instagramAutoReplyService.getConfig();
   const updated = await instagramAutoReplyService.updateConfig({ enabled: !current.enabled });
   return success(res, updated);
+});
+
+router.post('/auto-reply/emergency-stop', async (_req, res) => {
+  const updated = await instagramAutoReplyService.emergencyStop();
+  return success(res, { stopped: true, config: updated });
+});
+
+router.get('/companion/contact/:senderId', (req, res) => {
+  const accountId = config.INSTAGRAM_ACCOUNT_ID || 'default';
+  const prof = getContactCompanionProfile(accountId, String(req.params.senderId));
+  return success(res, prof);
+});
+
+router.post('/companion/block', (req, res) => {
+  const senderId = String(req.body?.senderId || '').trim();
+  if (!senderId) return error(res, 'senderId is required', 400, 'VALIDATION_ERROR');
+  const accountId = config.INSTAGRAM_ACCOUNT_ID || 'default';
+  const prof = setContactBlocked(accountId, senderId, Boolean(req.body?.blocked ?? true));
+  return success(res, prof);
+});
+
+router.delete('/companion/contact/:senderId', (req, res) => {
+  const accountId = config.INSTAGRAM_ACCOUNT_ID || 'default';
+  const deleted = deleteContactData(accountId, String(req.params.senderId));
+  return success(res, { deleted });
 });
 
 router.post('/auto-reply/poll', async (req, res) => {

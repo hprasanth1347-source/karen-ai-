@@ -223,4 +223,24 @@ router.post('/cron/instagram-poll', verifyCronSecret, async (_req, res) => {
   }
 });
 
+router.post('/cron/reminders', verifyCronSecret, async (_req, res) => {
+  const { processDueReminders } = await import('../services/reminders.service.js');
+  const processed = await processDueReminders();
+  return success(res, { processed });
+});
+
+router.post('/cron/newsroom', verifyCronSecret, async (_req, res) => {
+  const { getNewsroomConfig, generateDailyEditions, deliverEditionToTelegram } = await import('../services/newsroom.service.js');
+  const cfg = getNewsroomConfig();
+  if (cfg.paused) return success(res, { skipped: true, reason: 'paused' });
+  const editions = await generateDailyEditions();
+  let delivered = false;
+  if (cfg.mode === 'AUTOMATIC') {
+    const enOk = await deliverEditionToTelegram(editions.en);
+    const taOk = await deliverEditionToTelegram(editions.ta);
+    delivered = enOk || taOk;
+  }
+  return success(res, { generated: true, mode: cfg.mode, delivered });
+});
+
 export default router;

@@ -10,26 +10,44 @@ function normalizeHandle(value) {
 function isNumericId(value) {
     return Boolean(value && /^\d+$/.test(value.trim()));
 }
+export function sanitizeMetaToken(raw) {
+    if (!raw)
+        return '';
+    let t = raw.trim();
+    if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+        t = t.slice(1, -1).trim();
+    }
+    if (/^bearer\s+/i.test(t)) {
+        t = t.replace(/^bearer\s+/i, '').trim();
+    }
+    t = t.replace(/[\r\n\s]+/g, '');
+    if (/^(undefined|null|none|your_|placeholder)/i.test(t) || t.length < 15) {
+        return '';
+    }
+    return t;
+}
 async function resolveIgAuth(userId) {
-    let token = config.INSTAGRAM_ACCESS_TOKEN || config.META_PAGE_ACCESS_TOKEN || '';
-    let accountId = config.INSTAGRAM_ACCOUNT_ID || '';
-    let pageId = isNumericId(config.INSTAGRAM_PAGE_ID) ? config.INSTAGRAM_PAGE_ID : '';
+    let token = sanitizeMetaToken(config.INSTAGRAM_ACCESS_TOKEN) || sanitizeMetaToken(config.META_PAGE_ACCESS_TOKEN);
+    let accountId = (config.INSTAGRAM_ACCOUNT_ID || '').trim();
+    let pageId = isNumericId(config.INSTAGRAM_PAGE_ID) ? config.INSTAGRAM_PAGE_ID.trim() : '';
     const stored = await loadInstagramTokensWithStatus(userId).catch(() => ({
         tokens: null,
         status: 'disconnected',
     }));
     if (stored.tokens && stored.status === 'connected') {
-        token = stored.tokens.accessToken || token;
-        accountId = stored.tokens.accountId || accountId;
+        const storedToken = sanitizeMetaToken(stored.tokens.accessToken);
+        if (storedToken)
+            token = storedToken;
+        accountId = (stored.tokens.accountId || accountId).trim();
         if (isNumericId(stored.tokens.pageId)) {
-            pageId = stored.tokens.pageId;
+            pageId = stored.tokens.pageId.trim();
         }
     }
     return {
-        token: token.trim(),
-        accountId: accountId.trim(),
-        pageId: pageId.trim(),
-        isIgToken: token.trim().startsWith('IG'),
+        token,
+        accountId,
+        pageId,
+        isIgToken: token.startsWith('IG'),
     };
 }
 let conversationsCache = null;
@@ -169,6 +187,38 @@ export async function getInstagramProfile(userId) {
         name: '',
         username: config.INSTAGRAM_USERNAME || '',
     };
+}
+export async function verifyMetaAccessToken(rawToken) {
+    const token = sanitizeMetaToken(rawToken);
+    if (!token) {
+        return { valid: false, error: 'Token format is empty or invalid. Paste a full Meta System-User Access Token (SUAT).' };
+    }
+    const isIg = token.startsWith('IG');
+    const urls = isIg
+        ? [`${IG_BASE_URL}/me?fields=id,user_id,username,name&access_token=${encodeURIComponent(token)}`]
+        : [
+            `${META_BASE_URL}/me?fields=id,name,username,instagram_business_account{id,username}&access_token=${encodeURIComponent(token)}`,
+            `${IG_BASE_URL}/me?fields=id,user_id,username,name&access_token=${encodeURIComponent(token)}`,
+        ];
+    let lastErr = 'Unable to verify token with Meta Graph API.';
+    for (const url of urls) {
+        const res = await metaFetch(url, undefined, 5000).catch(() => null);
+        if (!res)
+            continue;
+        const raw = (await res.json().catch(() => ({})));
+        if (res.ok && !raw.error) {
+            const igBiz = raw.instagram_business_account || raw;
+            return {
+                valid: true,
+                accountId: String(igBiz.user_id || igBiz.id || raw.id || ''),
+                username: igBiz.username || raw.username || raw.name,
+            };
+        }
+        if (raw.error?.message) {
+            lastErr = raw.error.message;
+        }
+    }
+    return { valid: false, error: lastErr };
 }
 export async function lookupInstagramUserById(igUserId, userId) {
     if (!igUserId)
@@ -312,7 +362,12 @@ export async function getInstagramConversations(options) {
         }
         if (!res || !res.ok || !json) {
             preferredConvRoute = null;
-            throw new Error(lastErrBody.error?.message || `Instagram conversation request failed (${res?.status || 500}).`);
+            const errMsg = lastErrBody.error?.message || `Instagram conversation request failed (${res?.status || 500}).`;
+            const errCode = lastErrBody.error?.code;
+            if (errCode === 190 || /Invalid OAuth access token|Cannot parse access token|Session has expired/i.test(errMsg)) {
+                throw new Error(`Meta Access Token invalid or expired (${errMsg}). Click "Meta Token" to paste a valid System-User Access Token (SUAT).`);
+            }
+            throw new Error(errMsg);
         }
         const rawThreads = Array.isArray(json.data) ? json.data : [];
         let ownerUsername = config.INSTAGRAM_USERNAME || '';

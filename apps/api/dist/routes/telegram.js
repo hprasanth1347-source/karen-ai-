@@ -5,7 +5,7 @@
  */
 import { Router } from 'express';
 import { z } from 'zod';
-import { telegramState, isTelegramConfigured, getTelegramBotInfo, registerTelegramWebhook, deleteTelegramWebhook, setTelegramCommands, startTelegramPolling, stopTelegramPolling, sendTelegramMessage, telegramWebhook, } from '../providers/telegram.js';
+import { telegramState, isTelegramConfigured, getTelegramBotInfo, getTelegramWebhookInfo, getPersistedTelegramState, registerTelegramWebhook, deleteTelegramWebhook, setTelegramCommands, startTelegramPolling, stopTelegramPolling, sendTelegramMessage, telegramWebhook, } from '../providers/telegram.js';
 import { getNotificationPreferences, getNotificationStats, listNotificationHistory, markNotificationRead, processNotificationEvent, retryFailedNotifications, updateNotificationPreferences, } from '../services/notificationEngine.service.js';
 import { generateAndSendGreeting, getCompanionConfig, getGreetingHistory, updateCompanionConfig, } from '../services/dailyCompanion.service.js';
 import { config } from '../config/env.js';
@@ -21,26 +21,30 @@ router.use('/telegram', (req, res, next) => {
 /** GET /telegram/status — bot info + live metrics */
 router.get('/telegram/status', async (_req, res) => {
     const configured = isTelegramConfigured();
-    let botInfo = null;
-    if (configured) {
-        botInfo = await getTelegramBotInfo().catch(() => null);
-    }
+    const [botInfo, webhookInfo, persisted] = await Promise.all([
+        configured ? getTelegramBotInfo().catch(() => null) : Promise.resolve(null),
+        configured ? getTelegramWebhookInfo().catch(() => null) : Promise.resolve(null),
+        getPersistedTelegramState(),
+    ]);
     return success(res, {
         configured,
         botUsername: botInfo?.username ?? (telegramState.botUsername || null),
         botName: botInfo?.name ?? null,
         ownerChatId: config.TELEGRAM_OWNER_CHAT_ID || null,
         pollingActive: telegramState.pollingActive,
-        webhookSet: telegramState.webhookSet,
-        lastIncoming: telegramState.lastIncoming
-            ? { text: telegramState.lastIncoming, timestamp: telegramState.startedAt || new Date().toISOString() }
+        webhookSet: webhookInfo ? Boolean(webhookInfo.url) : telegramState.webhookSet,
+        webhookUrl: webhookInfo?.url || null,
+        pendingUpdateCount: webhookInfo?.pendingUpdateCount ?? 0,
+        webhookLastError: webhookInfo?.lastErrorMessage || null,
+        lastIncoming: persisted.lastIncoming
+            ? { text: persisted.lastIncoming, timestamp: persisted.lastIncomingAt || telegramState.startedAt || new Date().toISOString() }
             : null,
-        lastOutgoing: telegramState.lastOutgoing
-            ? { text: telegramState.lastOutgoing, timestamp: telegramState.startedAt || new Date().toISOString() }
+        lastOutgoing: persisted.lastOutgoing
+            ? { text: persisted.lastOutgoing, timestamp: persisted.lastOutgoingAt || telegramState.startedAt || new Date().toISOString() }
             : null,
-        totalReceived: telegramState.totalReceived,
-        totalSent: telegramState.totalSent,
-        errors: telegramState.errors.slice(0, 5).map((e) => ({
+        totalReceived: persisted.totalReceived,
+        totalSent: persisted.totalSent,
+        errors: persisted.errors.slice(0, 5).map((e) => ({
             message: e,
             timestamp: new Date().toISOString(),
         })),
@@ -56,14 +60,16 @@ router.post('/telegram/register-webhook', async (req, res) => {
         url: z.string().url().optional(),
     });
     const parsed = schema.safeParse(req.body);
-    const webhookUrl = parsed.success && parsed.data.url
-        ? parsed.data.url
-        : `https://karen-ai-me.vercel.app/api/v1/telegram/webhook`;
-    const ok = await registerTelegramWebhook(webhookUrl);
-    if (ok) {
+    const host = req.get('host');
+    const defaultUrl = host && !host.includes('localhost') && !host.includes('127.0.0.1')
+        ? `https://${host}/api/v1/telegram/webhook`
+        : 'https://karen-ai-me.vercel.app/api/v1/telegram/webhook';
+    const webhookUrl = parsed.success && parsed.data.url ? parsed.data.url : defaultUrl;
+    const reg = await registerTelegramWebhook(webhookUrl);
+    if (reg.ok) {
         return success(res, { registered: true, webhookUrl });
     }
-    return error(res, 'Failed to register webhook with Telegram.', 502);
+    return error(res, reg.error || 'Failed to register webhook with Telegram.', 502);
 });
 /** POST /telegram/delete-webhook — remove webhook (use polling) */
 router.post('/telegram/delete-webhook', async (_req, res) => {

@@ -5,8 +5,9 @@ import { validate } from '../middleware/validate.js';
 import { success, error } from '../utils/response.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
-import { getInstagramProfile, getInstagramMedia, getInstagramConversations, getThreadDetails, sendInstagramMessage, draftInstagramReply, executeInstagramVoiceCommand, lookupInstagramUserById, invalidateInstagramCache, } from '../providers/instagram.js';
+import { getInstagramProfile, getInstagramMedia, getInstagramConversations, getThreadDetails, sendInstagramMessage, draftInstagramReply, executeInstagramVoiceCommand, lookupInstagramUserById, invalidateInstagramCache, sanitizeMetaToken, verifyMetaAccessToken, } from '../providers/instagram.js';
 import { instagramAutoReplyService } from '../services/instagramAutoReply.js';
+import { deleteContactData, getContactCompanionProfile, setContactBlocked, } from '../services/instagramCompanion.service.js';
 import { getActiveStories, getAllReels, getFollowerMonitorSummary, getFollowersAndFollowing, getInstagramConnectionHealth, getInstagramNotesActivity, handleInstagramCommentEvent, handleInstagramMentionEvent, handleInstagramNoteActivityEvent, publishInstagramContent, getAccountInsights, getMediaComments, replyToInstagramComment, getAdsSummary, } from '../services/instagramHub.service.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
 import { clearInstagramTokensFromDb, loadInstagramTokensWithStatus, loadUserSetting, saveInstagramTokensToDb, saveUserSetting, } from '../services/persistence.service.js';
@@ -124,17 +125,32 @@ router.post('/connect', validate(z.object({
     accessToken: z.string().min(10),
     accountId: z.string().optional(),
     pageId: z.string().optional(),
-    expiresInDays: z.number().min(1).max(365).optional(),
+    expiresInDays: z.number().min(1).max(3650).optional(),
 })), async (req, res) => {
-    const expiresAt = Date.now() + (req.body.expiresInDays ?? 60) * 24 * 60 * 60 * 1000;
+    const cleanToken = sanitizeMetaToken(req.body.accessToken);
+    if (!cleanToken) {
+        return error(res, 'Invalid Meta Access Token format. Please paste the full token (starting with EAA... or IG...).', 400);
+    }
+    const verification = await verifyMetaAccessToken(cleanToken);
+    if (!verification.valid) {
+        return error(res, `Meta rejected this token: ${verification.error}`, 400);
+    }
+    const expiresAt = Date.now() + (req.body.expiresInDays ?? 365) * 24 * 60 * 60 * 1000;
+    const resolvedAccountId = (req.body.accountId || verification.accountId || config.INSTAGRAM_ACCOUNT_ID || '').trim();
     await saveInstagramTokensToDb({
-        accessToken: req.body.accessToken.trim(),
-        accountId: (req.body.accountId || config.INSTAGRAM_ACCOUNT_ID || '').trim(),
+        accessToken: cleanToken,
+        accountId: resolvedAccountId,
         pageId: (req.body.pageId || config.INSTAGRAM_PAGE_ID || '').trim(),
         expiresAt,
     }, req.user?.id);
     invalidateInstagramCache();
-    return success(res, { connected: true, status: 'connected', expiresAt: new Date(expiresAt).toISOString() });
+    return success(res, {
+        connected: true,
+        status: 'connected',
+        accountId: resolvedAccountId || null,
+        username: verification.username || null,
+        expiresAt: new Date(expiresAt).toISOString(),
+    });
 });
 router.post('/disconnect', async (req, res) => {
     await clearInstagramTokensFromDb(req.user?.id);
@@ -265,8 +281,12 @@ router.post('/webhook', async (req, res) => {
         logger.warn('Instagram webhook missing x-hub-signature-256 header');
         return res.sendStatus(401);
     }
+    else if (config.NODE_ENV === 'production') {
+        logger.error('Instagram webhook rejected: META_APP_SECRET is not configured in production (fail-closed)');
+        return res.status(401).json({ ok: false, error: 'META_APP_SECRET not configured', code: 'INSTAGRAM_WEBHOOK_INVALID' });
+    }
     else {
-        logger.warn('Instagram webhook processed without META_APP_SECRET verification (secret not configured)');
+        logger.warn('Instagram webhook processed without META_APP_SECRET verification (non-production)');
     }
     logger.info('Received and authenticated Instagram Webhook Event');
     const body = (req.body || {});
@@ -374,9 +394,31 @@ router.post('/auto-reply/toggle', async (_req, res) => {
     const updated = await instagramAutoReplyService.updateConfig({ enabled: !current.enabled });
     return success(res, updated);
 });
-router.post('/auto-reply/poll', async (_req, res) => {
+router.post('/auto-reply/emergency-stop', async (_req, res) => {
+    const updated = await instagramAutoReplyService.emergencyStop();
+    return success(res, { stopped: true, config: updated });
+});
+router.get('/companion/contact/:senderId', (req, res) => {
+    const accountId = config.INSTAGRAM_ACCOUNT_ID || 'default';
+    const prof = getContactCompanionProfile(accountId, String(req.params.senderId));
+    return success(res, prof);
+});
+router.post('/companion/block', (req, res) => {
+    const senderId = String(req.body?.senderId || '').trim();
+    if (!senderId)
+        return error(res, 'senderId is required', 400, 'VALIDATION_ERROR');
+    const accountId = config.INSTAGRAM_ACCOUNT_ID || 'default';
+    const prof = setContactBlocked(accountId, senderId, Boolean(req.body?.blocked ?? true));
+    return success(res, prof);
+});
+router.delete('/companion/contact/:senderId', (req, res) => {
+    const accountId = config.INSTAGRAM_ACCOUNT_ID || 'default';
+    const deleted = deleteContactData(accountId, String(req.params.senderId));
+    return success(res, { deleted });
+});
+router.post('/auto-reply/poll', async (req, res) => {
     try {
-        const repliesSent = await instagramAutoReplyService.scanAndAutoReply();
+        const repliesSent = await instagramAutoReplyService.scanAndAutoReply(req.user?.id);
         const scanError = instagramAutoReplyService.getLastScanError();
         if (scanError && repliesSent === 0) {
             return error(res, scanError, 400, 'INSTAGRAM_POLL_ERROR');

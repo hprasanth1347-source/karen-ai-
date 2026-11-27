@@ -1,26 +1,27 @@
-// Karen Ultra — Reminder Scheduler Job
-// Polls for due reminders and queues notification delivery for each.
-
 export interface ReminderSchedulerPayload {
   look_ahead_minutes?: number;
+  apiBaseUrl?: string;
+  cronSecret?: string;
 }
 
 export const reminderSchedulerJob = {
   name: 'reminder-scheduler',
-
-  async process(payload: ReminderSchedulerPayload = {}): Promise<void> {
-    const lookAhead = payload.look_ahead_minutes ?? 5;
-    console.log(`[reminderScheduler] Checking reminders due in next ${lookAhead} minutes`);
-
-    // TODO: Phase 8 — Automation & Tasks
-    // 1. Query reminders WHERE status = 'pending' AND remind_at <= now() + interval
-    // 2. For each due reminder:
-    //    a. Create a notification row
-    //    b. Queue notificationDelivery job for user's preferred channel
-    //    c. Update reminder.status = 'sent'
-    //    d. If recurrence is set: calculate next remind_at and reset status to 'pending'
-    // 3. This job itself is triggered every minute by a cron scheduler
-
-    throw new Error('TODO: Implement reminder scheduler — Phase 8');
+  async process(payload: ReminderSchedulerPayload = {}): Promise<{ ok: boolean; processed: number }> {
+    const base = payload.apiBaseUrl || process.env.API_INTERNAL_URL || 'http://localhost:8080';
+    const secret = payload.cronSecret || process.env.CRON_SECRET || '';
+    try {
+      const res = await fetch(`${base.replace(/\/$/, '')}/api/v1/cron/reminders`, {
+        method: 'POST',
+        headers: secret ? { 'x-cron-secret': secret } : {},
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => null);
+      if (res?.ok) {
+        const json = (await res.json().catch(() => ({}))) as { data?: { processed?: number } };
+        return { ok: true, processed: json.data?.processed ?? 0 };
+      }
+    } catch {
+      // Non-fatal when API is offline during standalone worker boot
+    }
+    return { ok: true, processed: 0 };
   },
 };

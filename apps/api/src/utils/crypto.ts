@@ -8,6 +8,9 @@ const VERSION_PREFIX = 'v1';
 function getKey(): Buffer {
   const value = config.ENCRYPTION_KEY;
   if (!value) {
+    if (config.NODE_ENV === 'production') {
+      throw new Error('CRITICAL: ENCRYPTION_KEY is required in production and cannot fall back to a deterministic key.');
+    }
     if (config.NODE_ENV === 'test') {
       return crypto.createHash('sha256').update('karen-test-only-deterministic-key').digest();
     }
@@ -15,8 +18,7 @@ function getKey(): Buffer {
       config.SUPABASE_SERVICE_ROLE_KEY ||
       config.APP_SECRET ||
       config.JWT_SECRET ||
-      config.GOOGLE_CLIENT_SECRET ||
-      'karen-ai-deterministic-fallback-key';
+      'karen-ai-dev-only-key';
     return crypto.createHash('sha256').update(seed).digest();
   }
   const hexKey = /^[a-fA-F0-9]{64}$/.test(value) ? Buffer.from(value, 'hex') : null;

@@ -6,6 +6,7 @@ declare global {
         id: string;
         email: string;
         role: 'owner' | 'admin' | 'user' | 'readonly';
+        rbacRole?: 'CUSTOMER' | 'SUPPORT' | 'ADMIN' | 'OWNER';
       };
     }
   }

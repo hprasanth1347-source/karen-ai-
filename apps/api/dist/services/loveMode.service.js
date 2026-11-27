@@ -4,6 +4,7 @@
  */
 import { logger } from '../config/logger.js';
 import { loadUserSetting, saveUserSetting } from './persistence.service.js';
+import { cacheService } from './cache.service.js';
 const DEFAULT_STATE = {
     active: false,
     activatedAt: null,
@@ -40,13 +41,11 @@ async function saveToDb(chatId, state) {
 }
 // ─── Public API ───────────────────────────────────────────────────────────────
 export async function getLoveModeState(chatId) {
-    const cached = loveModeCache.get(cacheKey(chatId));
-    if (cached)
-        return cached;
-    const fromDb = await loadFromDb(chatId);
-    const state = fromDb ?? { ...DEFAULT_STATE };
-    loveModeCache.set(cacheKey(chatId), state);
-    return state;
+    const cKey = cacheService.buildKey('lovemode', String(chatId), 'state');
+    return cacheService.getOrSet(cKey, async () => {
+        const fromDb = await loadFromDb(chatId);
+        return fromDb ?? { ...DEFAULT_STATE };
+    }, { ttlSeconds: 60, tags: [`lovemode:${chatId}`] });
 }
 export async function setLoveModeActive(chatId, active) {
     const existing = await getLoveModeState(chatId);
@@ -57,8 +56,8 @@ export async function setLoveModeActive(chatId, active) {
         messageCount: active ? existing.messageCount : 0,
         conversationContext: active ? existing.conversationContext : '',
     };
-    loveModeCache.set(cacheKey(chatId), updated);
     await saveToDb(chatId, updated);
+    await cacheService.set(cacheService.buildKey('lovemode', String(chatId), 'state'), updated, 60, [`lovemode:${chatId}`]);
 }
 export async function incrementLoveModeMessageCount(chatId) {
     const state = await getLoveModeState(chatId);
