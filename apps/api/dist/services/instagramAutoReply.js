@@ -401,6 +401,8 @@ Thanglish Style Guide (CRITICAL):
             incomingText: messageText,
             replyText,
             intent,
+            urgentCategory: urgentInfo.important ? urgentInfo.category : undefined,
+            isEmergency: urgentInfo.important,
             metaMessageId: sendRes.messageId,
             status: sendRes.success ? 'SENT' : 'FAILED',
             timestamp: istTime,

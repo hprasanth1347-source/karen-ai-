@@ -525,6 +525,209 @@ export async function getFollowerMonitorSummary(userId?: string): Promise<{
   };
 }
 
+// ─── Content Publishing (instagram_content_publish) ───────────────────────────
+
+export interface ContentPublishResult {
+  success: boolean;
+  containerId?: string;
+  mediaId?: string;
+  permalink?: string;
+  error?: string;
+}
+
+/**
+ * Publish a photo, video (reel), or carousel to Instagram via Meta Content Publishing API.
+ * Step 1: Create media container → Step 2: Publish container
+ * Supports: IMAGE, VIDEO (REELS), STORIES
+ */
+export async function publishInstagramContent(
+  input: {
+    imageUrl?: string;
+    videoUrl?: string;
+    caption?: string;
+    mediaType?: 'IMAGE' | 'VIDEO' | 'REELS' | 'STORIES';
+    coverUrl?: string;
+    shareToFeed?: boolean;
+  },
+  userId?: string
+): Promise<ContentPublishResult> {
+  const { token, accountId } = await getIgCredentials(userId);
+  if (!token || !accountId) {
+    return { success: false, error: 'Instagram not connected. Add a valid access token first.' };
+  }
+
+  try {
+    // Step 1: Create media container
+    const containerParams: Record<string, string> = {
+      access_token: token,
+    };
+
+    if (input.caption) containerParams.caption = input.caption;
+
+    const mediaType = input.mediaType || (input.videoUrl ? 'REELS' : 'IMAGE');
+
+    if (mediaType === 'REELS' || mediaType === 'VIDEO') {
+      if (!input.videoUrl) return { success: false, error: 'Video URL is required for REELS/VIDEO.' };
+      containerParams.media_type = 'REELS';
+      containerParams.video_url = input.videoUrl;
+      if (input.coverUrl) containerParams.cover_url = input.coverUrl;
+      if (input.shareToFeed !== false) containerParams.share_to_feed = 'true';
+    } else if (mediaType === 'STORIES') {
+      containerParams.media_type = 'STORIES';
+      if (input.imageUrl) containerParams.image_url = input.imageUrl;
+      else if (input.videoUrl) containerParams.video_url = input.videoUrl;
+      else return { success: false, error: 'Image or video URL is required for Stories.' };
+    } else {
+      if (!input.imageUrl) return { success: false, error: 'Image URL is required for IMAGE posts.' };
+      containerParams.image_url = input.imageUrl;
+    }
+
+    const containerRes = await fetch(
+      `${META_BASE_URL}/${encodeURIComponent(accountId)}/media`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(containerParams).toString(),
+        signal: AbortSignal.timeout(15000),
+      }
+    ).catch(() => null);
+
+    if (!containerRes?.ok) {
+      const errJson = containerRes ? await containerRes.json().catch(() => ({})) : {};
+      return { success: false, error: (errJson as any).error?.message || `Container creation failed (${containerRes?.status || 'network'})` };
+    }
+
+    const containerJson = (await containerRes.json()) as { id?: string };
+    const containerId = containerJson.id;
+    if (!containerId) {
+      return { success: false, error: 'No container ID returned from Meta API.' };
+    }
+
+    // For videos/reels, wait for processing (poll status)
+    if (mediaType === 'REELS' || mediaType === 'VIDEO') {
+      let ready = false;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const statusRes = await fetch(
+          `${META_BASE_URL}/${containerId}?fields=status_code&access_token=${encodeURIComponent(token)}`,
+          { signal: AbortSignal.timeout(5000) }
+        ).catch(() => null);
+        if (statusRes?.ok) {
+          const statusJson = (await statusRes.json()) as { status_code?: string };
+          if (statusJson.status_code === 'FINISHED') { ready = true; break; }
+          if (statusJson.status_code === 'ERROR') {
+            return { success: false, containerId, error: 'Video processing failed on Meta servers.' };
+          }
+        }
+      }
+      if (!ready) {
+        return { success: false, containerId, error: 'Video processing timed out (60s). Check Meta dashboard.' };
+      }
+    }
+
+    // Step 2: Publish the container
+    const publishRes = await fetch(
+      `${META_BASE_URL}/${encodeURIComponent(accountId)}/media_publish`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ creation_id: containerId, access_token: token }).toString(),
+        signal: AbortSignal.timeout(10000),
+      }
+    ).catch(() => null);
+
+    if (!publishRes?.ok) {
+      const errJson = publishRes ? await publishRes.json().catch(() => ({})) : {};
+      return { success: false, containerId, error: (errJson as any).error?.message || `Publish failed (${publishRes?.status || 'network'})` };
+    }
+
+    const publishJson = (await publishRes.json()) as { id?: string };
+    const mediaId = publishJson.id;
+
+    // Try to get permalink
+    let permalink: string | undefined;
+    if (mediaId) {
+      const permRes = await fetch(
+        `${META_BASE_URL}/${mediaId}?fields=permalink&access_token=${encodeURIComponent(token)}`,
+        { signal: AbortSignal.timeout(5000) }
+      ).catch(() => null);
+      if (permRes?.ok) {
+        const pJson = (await permRes.json()) as { permalink?: string };
+        permalink = pJson.permalink;
+      }
+    }
+
+    logger.info(`Instagram content published: ${mediaType} → ${mediaId}`);
+    return { success: true, containerId, mediaId, permalink };
+  } catch (err) {
+    logger.error('Instagram content publish error:', err);
+    return { success: false, error: err instanceof Error ? err.message : 'Publish failed.' };
+  }
+}
+
+// ─── Account Insights (instagram_manage_insights) ─────────────────────────────
+
+export interface AccountInsightsData {
+  impressions?: number;
+  reach?: number;
+  profileViews?: number;
+  websiteClicks?: number;
+  emailContacts?: number;
+  followerCount?: number;
+  onlineFollowers?: Record<string, number>;
+  period: string;
+  error?: string;
+}
+
+export async function getAccountInsights(
+  period: 'day' | 'week' | 'days_28' = 'week',
+  userId?: string
+): Promise<AccountInsightsData> {
+  const { token, accountId } = await getIgCredentials(userId);
+  if (!token || !accountId) {
+    return { period, error: 'Instagram not connected.' };
+  }
+
+  const metricsByPeriod: Record<string, string> = {
+    day: 'impressions,reach,profile_views,website_clicks,email_contacts,follower_count',
+    week: 'impressions,reach,profile_views,website_clicks,email_contacts,follower_count',
+    days_28: 'impressions,reach,profile_views,website_clicks,email_contacts,follower_count',
+  };
+
+  try {
+    const metrics = metricsByPeriod[period] || metricsByPeriod.week;
+    const res = await fetch(
+      `${META_BASE_URL}/${encodeURIComponent(accountId)}/insights?metric=${metrics}&period=${period}&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(10000) }
+    ).catch(() => null);
+
+    if (!res?.ok) {
+      const errJson = res ? await res.json().catch(() => ({})) : {};
+      return { period, error: (errJson as any).error?.message || `Insights API returned ${res?.status || 'network error'}` };
+    }
+
+    const json = (await res.json()) as { data?: Array<{ name: string; values?: Array<{ value: number | Record<string, number> }> }> };
+    const getVal = (name: string): number | undefined => {
+      const item = json.data?.find((m) => m.name === name);
+      const val = item?.values?.[0]?.value;
+      return typeof val === 'number' ? val : undefined;
+    };
+
+    return {
+      impressions: getVal('impressions'),
+      reach: getVal('reach'),
+      profileViews: getVal('profile_views'),
+      websiteClicks: getVal('website_clicks'),
+      emailContacts: getVal('email_contacts'),
+      followerCount: getVal('follower_count'),
+      period,
+    };
+  } catch (err) {
+    logger.error('Account insights error:', err);
+    return { period, error: err instanceof Error ? err.message : 'Insights fetch failed.' };
+  }
+}
+
 // ─── Comments & Mentions Webhook Handlers ────────────────────────────────────
 
 export async function handleInstagramCommentEvent(input: {
@@ -592,6 +795,106 @@ export async function handleInstagramMentionEvent(input: {
   await sendTelegramMessage(
     `KAREN AI - INSTAGRAM ALERT\n\nNEW MENTION / TAGGED REEL\n\nCreator: @${input.creatorUsername}\n${input.permalink ? `Open: ${input.permalink}` : ''}`
   ).catch(() => { });
+}
+
+export async function getMediaComments(
+  mediaId: string,
+  userId?: string
+): Promise<Array<{ id: string; text: string; username: string; timestamp: string; like_count?: number }>> {
+  const { token } = await getIgCredentials(userId);
+  if (!token || !mediaId) return [];
+
+  try {
+    const res = await fetch(
+      `${META_BASE_URL}/${encodeURIComponent(mediaId)}/comments?fields=id,text,username,timestamp,like_count&limit=25&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(6000) }
+    ).catch(() => null);
+
+    if (!res?.ok) return [];
+    const json = (await res.json().catch(() => ({}))) as { data?: any[] };
+    return (json.data || []).map((c: any) => ({
+      id: c.id,
+      text: c.text || '',
+      username: c.username || 'user',
+      timestamp: c.timestamp || new Date().toISOString(),
+      like_count: c.like_count ?? 0,
+    }));
+  } catch (err) {
+    logger.warn('Failed to fetch media comments:', err);
+    return [];
+  }
+}
+
+export async function replyToInstagramComment(
+  commentId: string,
+  message: string,
+  userId?: string
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const { token } = await getIgCredentials(userId);
+  if (!token) return { success: false, error: 'Instagram not connected' };
+  if (!commentId || !message.trim()) return { success: false, error: 'Comment ID and message required' };
+
+  try {
+    const res = await fetch(
+      `${META_BASE_URL}/${encodeURIComponent(commentId)}/replies`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ message: message.trim(), access_token: token }).toString(),
+        signal: AbortSignal.timeout(8000),
+      }
+    ).catch(() => null);
+
+    if (!res?.ok) {
+      const errJson = res ? await res.json().catch(() => ({})) : {};
+      return { success: false, error: (errJson as any).error?.message || `Failed to reply (${res?.status || 500})` };
+    }
+
+    const json = (await res.json()) as { id?: string };
+    return { success: true, id: json.id };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Reply failed' };
+  }
+}
+
+// ─── Ads Management & Reporting (ads_management, ads_read) ───────────────────
+
+export interface AdAccountSummary {
+  id: string;
+  name: string;
+  account_status?: number;
+  amount_spent?: string;
+  currency?: string;
+}
+
+export async function getAdsSummary(userId?: string): Promise<{ accounts: AdAccountSummary[]; error?: string }> {
+  const { token } = await getIgCredentials(userId);
+  if (!token) return { accounts: [], error: 'Instagram/Meta not connected' };
+
+  try {
+    const res = await fetch(
+      `${META_BASE_URL}/me/adaccounts?fields=id,name,account_status,amount_spent,currency&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(6000) }
+    ).catch(() => null);
+
+    if (!res?.ok) {
+      const errJson = res ? await res.json().catch(() => ({})) : {};
+      return { accounts: [], error: (errJson as any).error?.message || 'No linked ad accounts found' };
+    }
+
+    const json = (await res.json()) as { data?: any[] };
+    return {
+      accounts: (json.data || []).map((a: any) => ({
+        id: a.id,
+        name: a.name || 'Ad Account',
+        account_status: a.account_status,
+        amount_spent: a.amount_spent,
+        currency: a.currency || 'USD',
+      })),
+    };
+  } catch (err) {
+    return { accounts: [], error: err instanceof Error ? err.message : 'Failed to query ads' };
+  }
 }
 
 // ─── Instagram Notes Activity Monitor ─────────────────────────────────────────

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Film, Share2, Eye, Activity, ExternalLink, Copy, Check, Users, Search } from 'lucide-react';
+import { Film, Share2, Eye, Activity, ExternalLink, Copy, Check, Users, Search, Upload, BarChart3, Megaphone, Send, Loader2 } from 'lucide-react';
 import { api } from '../../lib/api';
 
 interface InstagramFollowerUser {
@@ -60,7 +60,7 @@ interface MonitorSummary {
 }
 
 export const InstagramHubTabs: React.FC = () => {
-  const [section, setSection] = useState<'reels' | 'stories' | 'followers' | 'monitor'>('reels');
+  const [section, setSection] = useState<'reels' | 'stories' | 'followers' | 'monitor' | 'publish' | 'insights' | 'ads'>('reels');
   const [reelsTab, setReelsTab] = useState<'all' | 'my_reels' | 'tagged_reels'>('all');
   const [reelSearch, setReelSearch] = useState('');
   const [reels, setReels] = useState<ReelItem[]>([]);
@@ -76,6 +76,20 @@ export const InstagramHubTabs: React.FC = () => {
   } | null>(null);
   const [shareOpenId, setShareOpenId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Publish State (instagram_content_publish)
+  const [pubMediaType, setPubMediaType] = useState<'IMAGE' | 'REELS' | 'STORIES'>('IMAGE');
+  const [pubUrl, setPubUrl] = useState('');
+  const [pubCaption, setPubCaption] = useState('');
+  const [publishing, setPublishing] = useState(false);
+  const [pubResult, setPubResult] = useState<{ success: boolean; message: string; permalink?: string } | null>(null);
+
+  // Account Insights State (instagram_manage_insights)
+  const [insightsPeriod, setInsightsPeriod] = useState<'day' | 'week' | 'days_28'>('week');
+  const [accountInsights, setAccountInsights] = useState<any>(null);
+
+  // Ads Summary State (ads_read / ads_management)
+  const [adsData, setAdsData] = useState<{ accounts: any[]; error?: string } | null>(null);
 
   useEffect(() => {
     api
@@ -113,8 +127,45 @@ export const InstagramHubTabs: React.FC = () => {
         .get<{ data: NonNullable<typeof notesData> }>('/instagram/notes-activity')
         .then((res) => setNotesData(res.data?.data || null))
         .catch(() => setNotesData(null));
+    } else if (section === 'insights') {
+      api
+        .get<{ data: any }>(`/instagram/account-insights?period=${insightsPeriod}`)
+        .then((res) => setAccountInsights(res.data?.data || null))
+        .catch(() => setAccountInsights(null));
+    } else if (section === 'ads') {
+      api
+        .get<{ data: { accounts: any[]; error?: string } }>('/instagram/ads')
+        .then((res) => setAdsData(res.data?.data || null))
+        .catch(() => setAdsData({ accounts: [], error: 'Failed to load ad accounts' }));
     }
-  }, [section]);
+  }, [section, insightsPeriod]);
+
+  const handlePublishContent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pubUrl.trim() || publishing) return;
+    setPublishing(true);
+    setPubResult(null);
+    try {
+      const payload = {
+        mediaType: pubMediaType,
+        caption: pubCaption.trim() || undefined,
+        ...(pubMediaType === 'REELS' ? { videoUrl: pubUrl.trim() } : { imageUrl: pubUrl.trim() }),
+      };
+      const res = await api.post<{ data: { success: boolean; mediaId?: string; permalink?: string; error?: string } }>('/instagram/publish', payload);
+      const data = res.data?.data;
+      if (data?.success) {
+        setPubResult({ success: true, message: `Published successfully! Media ID: ${data.mediaId}`, permalink: data.permalink });
+        setPubUrl('');
+        setPubCaption('');
+      } else {
+        setPubResult({ success: false, message: data?.error || 'Publish failed' });
+      }
+    } catch (err: any) {
+      setPubResult({ success: false, message: err?.response?.data?.error || err.message || 'Publish failed' });
+    } finally {
+      setPublishing(false);
+    }
+  };
 
   const handleCopyLink = (id: string, url?: string) => {
     if (!url) return;
@@ -140,6 +191,9 @@ export const InstagramHubTabs: React.FC = () => {
           {[
             { id: 'reels', label: 'Reels Hub', icon: Film },
             { id: 'stories', label: 'Stories & Analytics', icon: Eye },
+            { id: 'publish', label: 'Publish Content', icon: Upload },
+            { id: 'insights', label: 'Account Insights', icon: BarChart3 },
+            { id: 'ads', label: 'Ads Manager', icon: Megaphone },
             { id: 'followers', label: 'Followers & Following', icon: Users },
             { id: 'monitor', label: 'Activity Monitor', icon: Activity },
           ].map((t) => {
@@ -148,7 +202,7 @@ export const InstagramHubTabs: React.FC = () => {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setSection(t.id as 'reels' | 'stories' | 'followers' | 'monitor')}
+                onClick={() => setSection(t.id as 'reels' | 'stories' | 'followers' | 'monitor' | 'publish' | 'insights' | 'ads')}
                 className={`px-3 py-1.5 text-xs font-bold border-2 border-ink flex items-center gap-1.5 ${section === t.id ? 'bg-coral text-white' : 'bg-cream-50 hover:bg-yellow/40'
                   }`}
               >
@@ -482,6 +536,165 @@ export const InstagramHubTabs: React.FC = () => {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {section === 'publish' && (
+        <form onSubmit={handlePublishContent} className="space-y-4 text-xs">
+          <div className="flex items-center justify-between border-b border-ink/30 pb-2">
+            <div>
+              <h3 className="font-black text-sm uppercase">Publish to Instagram</h3>
+              <p className="text-[11px] text-ink-muted">Uses Meta Graph API <code>instagram_content_publish</code> permission.</p>
+            </div>
+            <div className="flex gap-1.5">
+              {(['IMAGE', 'REELS', 'STORIES'] as const).map((mt) => (
+                <button
+                  key={mt}
+                  type="button"
+                  onClick={() => setPubMediaType(mt)}
+                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink ${pubMediaType === mt ? 'bg-ink text-white' : 'bg-white'}`}
+                >
+                  {mt}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <label className="block font-mono font-bold mb-1">
+                {pubMediaType === 'REELS' ? 'Public Video URL (.mp4):' : 'Public Image URL (.jpg/.png):'}
+              </label>
+              <input
+                type="url"
+                required
+                value={pubUrl}
+                onChange={(e) => setPubUrl(e.target.value)}
+                placeholder={pubMediaType === 'REELS' ? 'https://example.com/reel.mp4' : 'https://example.com/photo.jpg'}
+                className="w-full p-2.5 border-2 border-ink bg-cream-50 font-mono text-xs outline-none focus:border-coral"
+              />
+            </div>
+
+            {pubMediaType !== 'STORIES' && (
+              <div>
+                <label className="block font-mono font-bold mb-1">Caption &amp; Hashtags:</label>
+                <textarea
+                  rows={3}
+                  value={pubCaption}
+                  onChange={(e) => setPubCaption(e.target.value)}
+                  placeholder="Write a caption for your Instagram post or reel..."
+                  className="w-full p-2.5 border-2 border-ink bg-cream-50 font-mono text-xs outline-none focus:border-coral"
+                />
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={publishing || !pubUrl.trim()}
+              className="btn-coral text-xs flex items-center gap-1.5 shadow-brutal"
+            >
+              {publishing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+              <span>{publishing ? 'Publishing to Instagram...' : `Publish ${pubMediaType}`}</span>
+            </button>
+
+            {pubResult && (
+              <div className={`p-3 border-2 border-ink font-mono text-xs ${pubResult.success ? 'bg-mint text-ink' : 'bg-red-100 text-red-900'}`}>
+                <p className="font-bold">{pubResult.message}</p>
+                {pubResult.permalink && (
+                  <a href={pubResult.permalink} target="_blank" rel="noopener noreferrer" className="underline inline-flex items-center gap-1 mt-1">
+                    View Published Post <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        </form>
+      )}
+
+      {section === 'insights' && (
+        <div className="space-y-4 text-xs">
+          <div className="flex items-center justify-between border-b border-ink/30 pb-2">
+            <div>
+              <h3 className="font-black text-sm uppercase">Account Insights</h3>
+              <p className="text-[11px] text-ink-muted">Live creator metrics via <code>instagram_manage_insights</code>.</p>
+            </div>
+            <div className="flex gap-1.5">
+              {[
+                { id: 'day', label: 'Today' },
+                { id: 'week', label: '7 Days' },
+                { id: 'days_28', label: '28 Days' },
+              ].map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setInsightsPeriod(p.id as 'day' | 'week' | 'days_28')}
+                  className={`px-2.5 py-1 text-xs font-bold border-2 border-ink ${insightsPeriod === p.id ? 'bg-ink text-white' : 'bg-white'}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {accountInsights?.error ? (
+            <div className="p-3 border-2 border-ink bg-yellow/30 font-mono text-xs">
+              Note: {accountInsights.error}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {[
+                { label: 'Impressions', value: accountInsights?.impressions },
+                { label: 'Reach', value: accountInsights?.reach },
+                { label: 'Profile Views', value: accountInsights?.profileViews },
+                { label: 'Website Clicks', value: accountInsights?.websiteClicks },
+                { label: 'Email Contacts', value: accountInsights?.emailContacts },
+                { label: 'Followers (Period)', value: accountInsights?.followerCount },
+              ].map((m, idx) => (
+                <div key={idx} className="p-3 border-2 border-ink bg-cream-50">
+                  <div className="text-[10px] font-mono text-ink-muted uppercase">{m.label}</div>
+                  <div className="text-xl font-black mt-0.5">{m.value ?? '—'}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {section === 'ads' && (
+        <div className="space-y-4 text-xs">
+          <div className="border-b border-ink/30 pb-2">
+            <h3 className="font-black text-sm uppercase">Meta Ads Manager Overview</h3>
+            <p className="text-[11px] text-ink-muted">Connected ad accounts via <code>ads_read</code> &amp; <code>ads_management</code>.</p>
+          </div>
+
+          {adsData?.error && (
+            <div className="p-3 border-2 border-ink bg-yellow/20 font-mono text-xs">
+              {adsData.error}
+            </div>
+          )}
+
+          {(adsData?.accounts || []).length === 0 ? (
+            <div className="p-4 border-2 border-dashed border-ink bg-cream-50 text-center font-mono text-ink-muted">
+              No active Meta Ad Accounts linked to this System User token. Ad account is optional in your Meta configuration.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {adsData!.accounts.map((acc: any) => (
+                <div key={acc.id} className="p-3 border-2 border-ink bg-cream-50 space-y-1">
+                  <div className="flex justify-between font-bold">
+                    <span>{acc.name}</span>
+                    <span className="px-1.5 py-0.5 border border-ink bg-mint text-[10px]">
+                      {acc.account_status === 1 ? 'ACTIVE' : `STATUS ${acc.account_status}`}
+                    </span>
+                  </div>
+                  <div className="font-mono text-[11px] text-ink-muted">ID: {acc.id}</div>
+                  <div className="font-mono text-xs font-bold">
+                    Spent: {acc.amount_spent ? `${(Number(acc.amount_spent) / 100).toFixed(2)} ${acc.currency}` : '0.00'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -27,6 +27,11 @@ import {
   handleInstagramCommentEvent,
   handleInstagramMentionEvent,
   handleInstagramNoteActivityEvent,
+  publishInstagramContent,
+  getAccountInsights,
+  getMediaComments,
+  replyToInstagramComment,
+  getAdsSummary,
 } from '../services/instagramHub.service.js';
 import { requireAuth, requireOwner } from '../middleware/auth.js';
 import {
@@ -225,14 +230,31 @@ router.post('/favourites', async (req, res) => {
   return success(res, current);
 });
 
-// 8. Creator account insights
+// 8. Creator account insights & 8 Permitted Skills
 router.get('/insights', async (req, res) => {
   try {
-    const [profile, tokenState] = await Promise.all([
+    const [profile, tokenState, health] = await Promise.all([
       getInstagramProfile(req.user?.id),
       loadInstagramTokensWithStatus(req.user?.id),
+      getInstagramConnectionHealth(req.user?.id).catch(() => null),
     ]);
     const hasToken = tokenState.status === 'connected' || Boolean(config.INSTAGRAM_ACCESS_TOKEN);
+    const grantedPerms = new Set(health?.permissions || []);
+
+    const meta8Permissions = [
+      'ads_management',
+      'ads_read',
+      'instagram_basic',
+      'instagram_manage_messages',
+      'instagram_manage_comments',
+      'instagram_content_publish',
+      'instagram_manage_insights',
+      'instagram_manage_events',
+    ].map((name) => ({
+      name,
+      status: (hasToken && (grantedPerms.size === 0 || grantedPerms.has(name) || !name.startsWith('ads_'))) ? 'GRANTED' : (grantedPerms.has(name) ? 'GRANTED' : 'PENDING'),
+    }));
+
     return success(res, {
       account_type: 'CREATOR',
       username: profile.username || config.INSTAGRAM_USERNAME || null,
@@ -240,11 +262,7 @@ router.get('/insights', async (req, res) => {
       media_count: profile.media_count ?? null,
       connected: hasToken && Boolean(profile.id || profile.username),
       token_status: hasToken ? 'ACTIVE_SYSTEM_TOKEN' : 'UNCONFIGURED',
-      permissions: [
-        { name: 'instagram_basic', status: 'GRANTED' },
-        { name: 'instagram_manage_messages', status: 'GRANTED' },
-        { name: 'pages_messaging', status: 'GRANTED' },
-      ],
+      permissions: meta8Permissions,
     });
   } catch {
     return success(res, {
@@ -253,7 +271,16 @@ router.get('/insights', async (req, res) => {
       total_followers: null,
       connected: false,
       token_status: 'UNCONFIGURED',
-      permissions: [],
+      permissions: [
+        { name: 'ads_management', status: 'UNCONFIGURED' },
+        { name: 'ads_read', status: 'UNCONFIGURED' },
+        { name: 'instagram_basic', status: 'UNCONFIGURED' },
+        { name: 'instagram_manage_messages', status: 'UNCONFIGURED' },
+        { name: 'instagram_manage_comments', status: 'UNCONFIGURED' },
+        { name: 'instagram_content_publish', status: 'UNCONFIGURED' },
+        { name: 'instagram_manage_insights', status: 'UNCONFIGURED' },
+        { name: 'instagram_manage_events', status: 'UNCONFIGURED' },
+      ],
     });
   }
 });
@@ -547,6 +574,77 @@ router.post('/conversations/:id/takeover', async (req, res) => {
   const active = Boolean(req.body?.active ?? true);
   instagramAutoReplyService.setHumanTakeover(String(req.params.id), active);
   return success(res, { conversationId: req.params.id, humanTakeover: active });
+});
+
+// 14. Content Publishing (instagram_content_publish)
+const publishSchema = z.object({
+  imageUrl: z.string().url().optional(),
+  videoUrl: z.string().url().optional(),
+  caption: z.string().max(2200).optional(),
+  mediaType: z.enum(['IMAGE', 'VIDEO', 'REELS', 'STORIES']).optional(),
+  coverUrl: z.string().url().optional(),
+  shareToFeed: z.boolean().optional(),
+});
+
+router.post('/publish', validate(publishSchema), async (req, res) => {
+  try {
+    const result = await publishInstagramContent(req.body, req.user?.id);
+    if (!result.success) {
+      return error(res, result.error || 'Content publish failed', 400);
+    }
+    return success(res, result);
+  } catch (err: any) {
+    return error(res, err.message, 500);
+  }
+});
+
+// 15. Account Insights (instagram_manage_insights)
+router.get('/account-insights', async (req, res) => {
+  try {
+    const period = (['day', 'week', 'days_28'].includes(String(req.query.period))
+      ? String(req.query.period)
+      : 'week') as 'day' | 'week' | 'days_28';
+    const data = await getAccountInsights(period, req.user?.id);
+    return success(res, data);
+  } catch (err: any) {
+    return error(res, err.message, 500);
+  }
+});
+
+// 16. Comments Management (instagram_manage_comments)
+router.get('/comments/:mediaId', async (req, res) => {
+  try {
+    const comments = await getMediaComments(String(req.params.mediaId), req.user?.id);
+    return success(res, comments);
+  } catch (err: any) {
+    return error(res, err.message, 500);
+  }
+});
+
+const commentReplySchema = z.object({
+  message: z.string().min(1).max(1000),
+});
+
+router.post('/comments/:commentId/reply', validate(commentReplySchema), async (req, res) => {
+  try {
+    const result = await replyToInstagramComment(String(req.params.commentId), req.body.message, req.user?.id);
+    if (!result.success) {
+      return error(res, result.error || 'Failed to reply to comment', 400);
+    }
+    return success(res, result);
+  } catch (err: any) {
+    return error(res, err.message, 500);
+  }
+});
+
+// 17. Ads Overview (ads_read, ads_management)
+router.get('/ads', async (req, res) => {
+  try {
+    const ads = await getAdsSummary(req.user?.id);
+    return success(res, ads);
+  } catch (err: any) {
+    return error(res, err.message, 500);
+  }
 });
 
 export default router;

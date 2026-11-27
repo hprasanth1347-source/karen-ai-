@@ -253,3 +253,78 @@ test('Instagram webhook verifies token and dispatches Meta changes field=message
     invalidateInstagramCache();
   }
 });
+
+test('publishInstagramContent creates media container and publishes post', async () => {
+  const { publishInstagramContent } = await import('./instagramHub.service.js');
+  const { config } = await import('../config/env.js');
+  const prevToken = config.INSTAGRAM_ACCESS_TOKEN;
+  const prevAccount = config.INSTAGRAM_ACCOUNT_ID;
+  config.INSTAGRAM_ACCESS_TOKEN = 'test_token';
+  config.INSTAGRAM_ACCOUNT_ID = 'test_acc_123';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith('/media')) {
+      return new Response(JSON.stringify({ id: 'container_999' }), { status: 200 });
+    }
+    if (url.endsWith('/media_publish')) {
+      return new Response(JSON.stringify({ id: 'media_888' }), { status: 200 });
+    }
+    if (url.includes('media_888')) {
+      return new Response(JSON.stringify({ permalink: 'https://instagram.com/p/test' }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ error: { message: 'Unexpected' } }), { status: 400 });
+  }) as typeof fetch;
+
+  try {
+    const res = await publishInstagramContent({
+      imageUrl: 'https://example.com/test.jpg',
+      caption: 'Testing Karen AI Content Publishing #ai',
+    });
+    assert.equal(res.success, true);
+    assert.equal(res.containerId, 'container_999');
+    assert.equal(res.mediaId, 'media_888');
+    assert.equal(res.permalink, 'https://instagram.com/p/test');
+  } finally {
+    globalThis.fetch = origFetch;
+    config.INSTAGRAM_ACCESS_TOKEN = prevToken;
+    config.INSTAGRAM_ACCOUNT_ID = prevAccount;
+  }
+});
+
+test('getAccountInsights parses period metrics correctly', async () => {
+  const { getAccountInsights } = await import('./instagramHub.service.js');
+  const { config } = await import('../config/env.js');
+  const prevToken = config.INSTAGRAM_ACCESS_TOKEN;
+  const prevAccount = config.INSTAGRAM_ACCOUNT_ID;
+  config.INSTAGRAM_ACCESS_TOKEN = 'test_token';
+  config.INSTAGRAM_ACCOUNT_ID = 'test_acc_123';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        data: [
+          { name: 'impressions', values: [{ value: 5420 }] },
+          { name: 'reach', values: [{ value: 3100 }] },
+          { name: 'profile_views', values: [{ value: 450 }] },
+          { name: 'website_clicks', values: [{ value: 89 }] },
+        ],
+      }),
+      { status: 200 }
+    )) as typeof fetch;
+
+  try {
+    const insights = await getAccountInsights('week');
+    assert.equal(insights.period, 'week');
+    assert.equal(insights.impressions, 5420);
+    assert.equal(insights.reach, 3100);
+    assert.equal(insights.profileViews, 450);
+    assert.equal(insights.websiteClicks, 89);
+  } finally {
+    globalThis.fetch = origFetch;
+    config.INSTAGRAM_ACCESS_TOKEN = prevToken;
+    config.INSTAGRAM_ACCOUNT_ID = prevAccount;
+  }
+});

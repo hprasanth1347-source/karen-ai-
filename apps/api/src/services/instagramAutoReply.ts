@@ -35,6 +35,8 @@ export interface AutoReplyLog {
   incomingText: string;
   replyText: string;
   intent?: 'greeting' | 'availability' | 'project' | 'help' | 'thanks' | 'general';
+  urgentCategory?: UrgentDmCategory;
+  isEmergency?: boolean;
   metaMessageId?: string;
   status: 'SENT' | 'FAILED' | 'SKIPPED';
   timestamp: string;
@@ -505,6 +507,8 @@ Thanglish Style Guide (CRITICAL):
       incomingText: messageText,
       replyText,
       intent,
+      urgentCategory: urgentInfo.important ? urgentInfo.category : undefined,
+      isEmergency: urgentInfo.important,
       metaMessageId: sendRes.messageId,
       status: sendRes.success ? 'SENT' : 'FAILED',
       timestamp: istTime,
