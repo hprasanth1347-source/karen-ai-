@@ -16,8 +16,20 @@ const envSchema = z.object({
   PORT: z.string().default('8080'),
   API_PORT: z.string().default('8080'),
   ALLOWED_ORIGINS: z.string().default('http://localhost:5173,http://localhost:3000'),
-  WEB_ORIGIN: z.string().default('http://localhost:5173'),
-  APP_URL: z.string().default('http://localhost:5173'),
+  WEB_ORIGIN: z
+    .string()
+    .default(
+      process.env.VERCEL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || 'karen-ai-me.vercel.app'}`
+        : 'http://localhost:5173'
+    ),
+  APP_URL: z
+    .string()
+    .default(
+      process.env.VERCEL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || 'karen-ai-me.vercel.app'}`
+        : 'http://localhost:5173'
+    ),
 
   // Supabase
   SUPABASE_URL: z.string().url().optional(),
@@ -88,7 +100,6 @@ const envSchema = z.object({
         'https://www.googleapis.com/auth/classroom.courses.readonly',
         'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
         'https://www.googleapis.com/auth/classroom.announcements.readonly',
-        'https://www.googleapis.com/auth/classroom.rosters',
       ].join(' ')
     ),
   GOOGLE_TOKEN_ENCRYPTION_KEY: z.string().optional().default(''),

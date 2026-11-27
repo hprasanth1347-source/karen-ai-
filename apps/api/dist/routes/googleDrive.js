@@ -104,7 +104,7 @@ function buildGoogleAuthUrl(redirectUri, stateTarget = 'drive', userId = 'owner'
     ];
     if (config.GOOGLE_CLASSROOM_ENABLED || stateTarget === 'classroom') {
         const rawClassroomScopes = config.GOOGLE_CLASSROOM_SCOPES ||
-            'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly https://www.googleapis.com/auth/classroom.rosters';
+            'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.announcements.readonly';
         for (const s of rawClassroomScopes.split(/[\s,]+/).filter(Boolean)) {
             if (!scopes.includes(s))
                 scopes.push(s);
